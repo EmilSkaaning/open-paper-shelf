@@ -7,17 +7,27 @@ on:
 jobs:
   jules-review:
     runs-on: ubuntu-latest
-    # Only run if the PR is NOT a draft
-    if: github.event.pull_request.draft == false
     permissions:
       pull-requests: write
       contents: read
       statuses: write
     steps:
+      - name: Set jules/review status to success for draft PR
+        if: github.event.pull_request.draft == true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh api --method POST /repos/${{ github.repository }}/statuses/${{ github.event.pull_request.head.sha }} \
+            -f state='success' \
+            -f description='Skipped Jules Code Review for draft PR' \
+            -f context='jules/review'
+
       - name: Checkout repository
+        if: github.event.pull_request.draft == false
         uses: actions/checkout@v4
 
       - name: Run Jules PR Reviewer
+        if: github.event.pull_request.draft == false
         uses: sanjay3290/jules-pr-reviewer@v1
         with:
           jules_api_key: ${{ secrets.JULES_API_KEY }}
