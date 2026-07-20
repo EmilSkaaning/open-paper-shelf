@@ -17,7 +17,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Run Jules PR Reviewer
-        uses: google-labs/jules-pr-reviewer@v1
+        uses: sanjay3290/jules-pr-reviewer@v1
         with:
           api_key: ${{ secrets.JULES_API_KEY }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
