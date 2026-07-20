@@ -1,0 +1,25 @@
+[project]
+name = "open-paper-shelf"
+version = "0.1.0"
+description = "A front-end for papers backed by Google Drive"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "pydantic",
+    "pytest",
+    "poethepoet",
+    "fastapi",
+    "uvicorn",
+    "pip>=26.1.2",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.poe.tasks]
+test = "pytest"
+
+[tool.hatch.build.targets.wheel]
+packages = ["."]
+
