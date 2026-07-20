@@ -11,6 +11,7 @@ dependencies = [
     "fastapi",
     "uvicorn",
     "pip>=26.1.2",
+    "httpx",
 ]
 
 [build-system]
