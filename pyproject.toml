@@ -11,6 +11,8 @@ dependencies = [
     "fastapi",
     "uvicorn",
     "pip>=26.1.2",
+    "httpx",
+    "streamlit>=1.59.2",
 ]
 
 [build-system]
@@ -23,3 +25,8 @@ test = "pytest"
 [tool.hatch.build.targets.wheel]
 packages = ["."]
 
+[dependency-groups]
+dev = [
+    "pre-commit>=4.6.0",
+    "ruff>=0.15.22",
+]
