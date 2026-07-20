@@ -16,7 +16,7 @@ jobs:
       uses: astral-sh/setup-uv@v2
 
     - name: Install dependencies
-      run: uv pip install -e .[dev] # Or standard uv sync if using uv workspaces
+      run: uv sync
 
     - name: Run tests with poe
       run: uv run poe test
