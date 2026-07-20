@@ -24,5 +24,5 @@ repos:
       - id: end-of-file-fixer
       - id: no-commit-to-branch
         args: [--branch, main]
-        stages: [commit]
+        stages: [pre-commit]
       - id: trailing-whitespace
