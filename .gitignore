@@ -20,3 +20,6 @@ __pycache__/
 
 # pytest
 .pytest_cache/
+
+# Agentic / Superpowers files
+docs/superpowers/
