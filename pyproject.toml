@@ -12,6 +12,7 @@ dependencies = [
     "uvicorn",
     "pip>=26.1.2",
     "httpx",
+    "streamlit>=1.59.2",
 ]
 
 [build-system]
