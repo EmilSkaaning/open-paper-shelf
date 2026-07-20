@@ -3,10 +3,10 @@
 This file tracks the implementation steps to set up the foundational architecture for the Open Paper Shelf project.
 
 ## Task 1: Initialize Project Structure
-- [ ] Create `backend/` directory with `__init__.py` and a basic `main.py` (FastAPI).
-- [ ] Create `frontend/` directory with `__init__.py` and a basic `app.py` (Streamlit).
-- [ ] Create `tests/` directory with `__init__.py` and a basic `test_backend.py`.
-- [ ] Create a comprehensive `.gitignore` file for Python, Pyrefly, and Streamlit.
+- [x] Create `backend/` directory with `__init__.py` and a basic `main.py` (FastAPI).
+- [x] Create `frontend/` directory with `__init__.py` and a basic `app.py` (Streamlit).
+- [x] Create `tests/` directory with `__init__.py` and a basic `test_backend.py`.
+- [x] Create a comprehensive `.gitignore` file for Python, Pyrefly, and Streamlit.
 
 ## Task 2: Configure Tooling
 - [ ] Update `pyproject.toml` to include `streamlit` and `pyrefly` in the dependencies.

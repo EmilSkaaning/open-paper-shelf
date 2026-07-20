@@ -14,3 +14,9 @@ __pycache__/
 
 # OS generated files
 .DS_Store
+
+# pyrefly
+.pyre/
+
+# pytest
+.pytest_cache/
