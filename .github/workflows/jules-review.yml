@@ -19,6 +19,5 @@ jobs:
       - name: Run Jules PR Reviewer
         uses: sanjay3290/jules-pr-reviewer@v1
         with:
-          api_key: ${{ secrets.JULES_API_KEY }}
+          jules_api_key: ${{ secrets.JULES_API_KEY }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          enforce_blocking: false
