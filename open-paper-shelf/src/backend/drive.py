@@ -12,6 +12,10 @@ from google_auth_oauthlib.flow import Flow
 from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
 
+# Dictionary to cache Flow objects across Streamlit reruns.
+# Keys are the OAuth 'state' strings.
+OAUTH_FLOWS: Dict[str, Flow] = {}
+
 # Scopes needed for Google Drive API
 SCOPES: List[str] = ["https://www.googleapis.com/auth/drive.file"]
 FOLDER_NAME: str = "open-paper-shelf-lib"

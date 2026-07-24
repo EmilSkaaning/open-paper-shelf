@@ -17,6 +17,7 @@ from backend.drive import (  # noqa: E402
     load_credentials_from_file,
     save_credentials,
     get_or_create_library_folder,
+    OAUTH_FLOWS,
 )
 
 
@@ -41,9 +42,18 @@ def authenticate_user() -> Optional[Credentials]:
 
     # 3. Check if we are returning from Google Auth with a code in the URL
     code: Optional[str] = st.query_params.get("code")
-    if code:
+    state: Optional[str] = st.query_params.get("state")
+
+    if code and state:
         try:
-            flow = get_oauth_flow()
+            # Retrieve the exact Flow object that generated the authorization URL
+            flow = OAUTH_FLOWS.get(state)
+
+            if not flow:
+                st.error("Authentication session lost. Please try logging in again.")
+                st.query_params.clear()
+                return None
+
             flow.fetch_token(code=code)
             creds = flow.credentials
 
@@ -51,8 +61,11 @@ def authenticate_user() -> Optional[Credentials]:
             save_credentials(creds)
             st.session_state.credentials = creds
 
-            # Clean up the URL by removing the code parameter
+            # Clean up the URL
             st.query_params.clear()
+
+            # Clean up the cache
+            del OAUTH_FLOWS[state]
 
             return creds
         except Exception as e:
@@ -75,7 +88,11 @@ def main() -> None:
         try:
             flow = get_oauth_flow()
             # Generate the URL the user will click to authenticate
-            auth_url, _ = flow.authorization_url(prompt="consent")
+            auth_url, state = flow.authorization_url(prompt="consent")
+
+            # Save the flow so we have the PKCE code_verifier when they return
+            OAUTH_FLOWS[state] = flow
+
             st.link_button("Connect with Google", auth_url)
         except FileNotFoundError as e:
             st.error(str(e))
