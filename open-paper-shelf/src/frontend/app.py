@@ -12,20 +12,20 @@ src_path = Path(__file__).parent.parent
 if str(src_path) not in sys.path:
     sys.path.append(str(src_path))
 
-from backend.drive import (
+from backend.drive import (  # noqa: E402
     get_oauth_flow,
     load_credentials_from_file,
     save_credentials,
-    get_or_create_library_folder
+    get_or_create_library_folder,
 )
 
 
 def authenticate_user() -> Optional[Credentials]:
     """Handles the Google OAuth flow within Streamlit.
-    
+
     Checks session state, local files, and URL query parameters for valid
     authentication.
-    
+
     Returns:
         Credentials if authenticated, else None.
     """
@@ -46,19 +46,19 @@ def authenticate_user() -> Optional[Credentials]:
             flow = get_oauth_flow()
             flow.fetch_token(code=code)
             creds = flow.credentials
-            
+
             # Save for future use locally and in session
             save_credentials(creds)
             st.session_state.credentials = creds
-            
+
             # Clean up the URL by removing the code parameter
             st.query_params.clear()
-            
+
             return creds
         except Exception as e:
             st.error(f"Failed to authenticate: {e}")
             return None
-            
+
     return None
 
 
@@ -75,14 +75,14 @@ def main() -> None:
         try:
             flow = get_oauth_flow()
             # Generate the URL the user will click to authenticate
-            auth_url, _ = flow.authorization_url(prompt='consent')
+            auth_url, _ = flow.authorization_url(prompt="consent")
             st.link_button("Connect with Google", auth_url)
         except FileNotFoundError as e:
             st.error(str(e))
         return
 
     st.success("Successfully connected to Google Drive!")
-    
+
     if st.button("Initialize / Check Library Folder"):
         with st.spinner("Checking for folder..."):
             try:

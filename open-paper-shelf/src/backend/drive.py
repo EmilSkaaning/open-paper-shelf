@@ -13,9 +13,9 @@ from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
 
 # Scopes needed for Google Drive API
-SCOPES: List[str] = ['https://www.googleapis.com/auth/drive.file']
-FOLDER_NAME: str = 'open-paper-shelf-lib'
-FOLDER_MIME_TYPE: str = 'application/vnd.google-apps.folder'
+SCOPES: List[str] = ["https://www.googleapis.com/auth/drive.file"]
+FOLDER_NAME: str = "open-paper-shelf-lib"
+FOLDER_MIME_TYPE: str = "application/vnd.google-apps.folder"
 
 # Streamlit's default port for local development
 REDIRECT_URI: str = "http://localhost:8501/"
@@ -30,48 +30,46 @@ def get_oauth_flow() -> Flow:
     Raises:
         FileNotFoundError: If the credentials.json file is not found.
     """
-    if not os.path.exists('credentials.json'):
+    if not os.path.exists("credentials.json"):
         raise FileNotFoundError(
             "credentials.json not found. Please download it from "
             "Google Cloud Console (Web application type) and place it in the project root. "
             "Ensure the authorized redirect URI includes 'http://localhost:8501/'."
         )
     return Flow.from_client_secrets_file(
-        'credentials.json',
-        scopes=SCOPES,
-        redirect_uri=REDIRECT_URI
+        "credentials.json", scopes=SCOPES, redirect_uri=REDIRECT_URI
     )
 
 
 def load_credentials_from_file() -> Optional[Credentials]:
     """Attempts to load and refresh credentials from a local token.json file.
-    
+
     Returns:
         Optional[Credentials]: Valid credentials if available, otherwise None.
     """
     creds: Optional[Credentials] = None
-    if os.path.exists('token.json'):
-        creds = Credentials.from_authorized_user_file('token.json', SCOPES)
-        
+    if os.path.exists("token.json"):
+        creds = Credentials.from_authorized_user_file("token.json", SCOPES)
+
     if creds and not creds.valid:
         if creds.expired and creds.refresh_token:
             creds.refresh(Request())
             # Save refreshed credentials
-            with open('token.json', 'w') as token:
+            with open("token.json", "w") as token:
                 token.write(creds.to_json())
         else:
             creds = None
-            
+
     return creds
 
 
 def save_credentials(creds: Credentials) -> None:
     """Saves the credentials to token.json for future use.
-    
+
     Args:
         creds: The authenticated Google credentials to save.
     """
-    with open('token.json', 'w') as token:
+    with open("token.json", "w") as token:
         token.write(creds.to_json())
 
 
@@ -84,20 +82,22 @@ def get_or_create_library_folder(creds: Credentials) -> str:
     Returns:
         str: The Google Drive folder ID of the library folder.
     """
-    service = build('drive', 'v3', credentials=creds)
+    service = build("drive", "v3", credentials=creds)
 
     query: str = f"name = '{FOLDER_NAME}' and mimeType = '{FOLDER_MIME_TYPE}' and trashed = false"
-    results: Dict[str, Any] = service.files().list(
-        q=query, spaces='drive', fields='files(id, name)'
-    ).execute()
-    items: List[Dict[str, str]] = results.get('files', [])
+    results: Dict[str, Any] = (
+        service.files()
+        .list(q=query, spaces="drive", fields="files(id, name)")
+        .execute()
+    )
+    items: List[Dict[str, str]] = results.get("files", [])
 
     if not items:
         folder_metadata: Dict[str, str] = {
-            'name': FOLDER_NAME,
-            'mimeType': FOLDER_MIME_TYPE
+            "name": FOLDER_NAME,
+            "mimeType": FOLDER_MIME_TYPE,
         }
-        folder = service.files().create(body=folder_metadata, fields='id').execute()
-        return str(folder.get('id'))
+        folder = service.files().create(body=folder_metadata, fields="id").execute()
+        return str(folder.get("id"))
     else:
-        return str(items[0].get('id'))
+        return str(items[0].get("id"))
