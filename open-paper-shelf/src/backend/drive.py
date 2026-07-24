@@ -86,7 +86,7 @@ def get_or_create_library_folder(creds: Credentials) -> str:
     Returns:
         str: The Google Drive folder ID of the library folder.
     """
-    service = build("drive", "v3", credentials=creds)
+    service: Any = build("drive", "v3", credentials=creds)
 
     query: str = f"name = '{FOLDER_NAME}' and mimeType = '{FOLDER_MIME_TYPE}' and trashed = false"
     results: Dict[str, Any] = (
@@ -101,7 +101,9 @@ def get_or_create_library_folder(creds: Credentials) -> str:
             "name": FOLDER_NAME,
             "mimeType": FOLDER_MIME_TYPE,
         }
-        folder = service.files().create(body=folder_metadata, fields="id").execute()
+        folder: Dict[str, Any] = (
+            service.files().create(body=folder_metadata, fields="id").execute()
+        )
         return str(folder.get("id"))
     else:
         return str(items[0].get("id"))
