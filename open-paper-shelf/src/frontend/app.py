@@ -47,7 +47,7 @@ def authenticate_user() -> Optional[Credentials]:
     if code and state:
         try:
             # Retrieve the exact Flow object that generated the authorization URL
-            flow = OAUTH_FLOWS.get(state)
+            flow = OAUTH_FLOWS.pop(state, None)
 
             if not flow:
                 st.error("Authentication session lost. Please try logging in again.")
@@ -63,9 +63,6 @@ def authenticate_user() -> Optional[Credentials]:
 
             # Clean up the URL
             st.query_params.clear()
-
-            # Clean up the cache
-            del OAUTH_FLOWS[state]
 
             return creds
         except Exception as e:
@@ -88,7 +85,9 @@ def main() -> None:
         try:
             flow = get_oauth_flow()
             # Generate the URL the user will click to authenticate
-            auth_url, state = flow.authorization_url(prompt="consent")
+            auth_url, state = flow.authorization_url(
+                access_type="offline", prompt="consent"
+            )
 
             # Save the flow so we have the PKCE code_verifier when they return
             OAUTH_FLOWS[state] = flow
