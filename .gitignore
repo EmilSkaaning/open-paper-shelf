@@ -20,8 +20,11 @@ __pycache__/
 
 # pytest
 .pytest_cache/
+.coverage
 
 # Agentic / Superpowers files
 docs/superpowers/
+.agents/
 
+# Credentials
 token.json
