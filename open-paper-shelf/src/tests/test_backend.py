@@ -1,16 +1,17 @@
-import sys
-from pathlib import Path
+"""Tests for the main backend endpoints."""
+
 from fastapi.testclient import TestClient
 
-# Add the src directory to Python's search path dynamically
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from backend.main import app  # noqa: E402
+class TestMainEndpoints:
+    """Test suite for the main FastAPI application endpoints."""
 
-client = TestClient(app)
+    def test_read_root_success(self, client: TestClient) -> None:
+        """Test the root endpoint returns the expected welcome message.
 
-
-def test_read_root():
-    response = client.get("/")
-    assert response.status_code == 200
-    assert response.json() == {"message": "Welcome to Open Paper Shelf API"}
+        Args:
+            client: The FastAPI test client fixture.
+        """
+        response = client.get("/")
+        assert response.status_code == 200
+        assert response.json() == {"message": "Welcome to Open Paper Shelf API"}
