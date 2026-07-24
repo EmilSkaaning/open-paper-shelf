@@ -29,21 +29,21 @@ This document governs how work is done and how function/class documentation and 
 Use this workflow whenever committing changes or saving work.
 
 ### Step 1 — Understand the changes
-Run `git diff` and `git status` in parallel to understand what changed and why. Read any relevant modified files if the diff alone is not enough to write a precise commit message.
+The agent must run `git diff` and `git status` in parallel to understand what changed and why. The agent should read any relevant modified files if the diff alone is not enough to write a precise commit message.
 
 ### Step 1b — Decide whether to split into multiple commits
-Inspect the full diff across all changed files (not just one file at a time). Group changes by logical concern.
-* Split into multiple commits when the diff contains *two or more genuinely unrelated logical changes* (e.g. a bug fix in one module plus a new feature in another).
-* Do *not* split:
+The agent must inspect the full diff across all changed files (not just one file at a time) and group changes by logical concern.
+* The agent should split changes into multiple commits when the diff contains *two or more genuinely unrelated logical changes* (e.g. a bug fix in one module plus a new feature in another).
+* The agent must *not* split:
   * A single feature/fix that happens to touch several files
   * Small incidental changes tightly coupled to the main change (e.g. a helper used by the new code)
-If a split makes sense, tell the user the proposed grouping and commit order before proceeding, and repeat Steps 2–6 (stage, message, commit) once per group. If everything belongs to one logical change, proceed as a single commit.
+If a split makes sense, the agent must inform the user of the proposed grouping and commit order before proceeding, and repeat Steps 2–6 (stage, message, commit) once per group. If everything belongs to one logical change, the agent should proceed as a single commit.
 
 ### Step 2 — Update documentation
-For each changed Python file, apply the `func-documentation` standards described in the general guidelines. Re-run `git diff` after this step to ensure documentation changes are staged together with the code changes in Step 4.
+For each changed Python file, the agent must apply the `func-documentation` standards described in the general guidelines. The agent must re-run `git diff` after this step to ensure documentation changes are staged together with the code changes in Step 4.
 
 ### Step 3 — Quality checks
-Run the following checks. If either fails, report the errors to the user and stop — do not commit broken code.
+The agent must run the following checks. If either fails, the agent must report the errors to the user and stop — the agent must not commit broken code.
 
 *Ruff (format + lint):*
 ```bash
@@ -56,19 +56,19 @@ uv run ruff check .
 uv run pyrefly check
 ```
 
-If checks fail, offer to auto-fix what can be fixed automatically:
+If checks fail, the agent should offer to auto-fix what can be fixed automatically:
 * `uv run ruff format .` — fixes formatting
 * `uv run ruff check --fix .` — fixes auto-fixable lint issues
 * Pyrefly errors must be fixed manually.
 
-Re-run checks after any auto-fix before proceeding.
+The agent must re-run checks after any auto-fix before proceeding.
 
 ### Step 4 — Stage files
-Stage only the files relevant to the logical change, including any documentation files updated in Step 2. Prefer explicit file paths over `git add .` to avoid accidentally including unrelated or sensitive files.
-If untracked files exist that are unrelated to the change, leave them unstaged.
+The agent must stage only the files relevant to the logical change, including any documentation files updated in Step 2. The agent should prefer explicit file paths over `git add .` to avoid accidentally including unrelated or sensitive files.
+If untracked files exist that are unrelated to the change, the agent must leave them unstaged.
 
 ### Step 5 — Write the commit message
-Use [Conventional Commits](https://www.conventionalcommits.org/) format:
+The agent must use [Conventional Commits](https://www.conventionalcommits.org/) format:
 ```
 <type>(<scope>): <short description>
 
@@ -78,9 +78,10 @@ Use [Conventional Commits](https://www.conventionalcommits.org/) format:
 * **Scope**: the module, pipeline, or component affected
 * **Short description**: imperative mood, lowercase, no trailing period
 
-Construct the message, then show it to the user for confirmation before committing.
+The agent must construct the message, then show it to the user for confirmation before committing.
 
 ### Step 6 — Commit
+The agent must execute the commit using the agreed message:
 ```bash
 git commit -m "$(cat <<'EOF'
 type(scope): short description
@@ -89,7 +90,7 @@ Optional body here.
 EOF
 )"
 ```
-Do not push. If splitting into multiple commits (Step 1b), repeat Steps 4–6 for each remaining group before finishing.
+The agent must not push. If splitting into multiple commits (Step 1b), the agent must repeat Steps 4–6 for each remaining group before finishing.
 
 ---
 
