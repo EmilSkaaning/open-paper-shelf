@@ -4,7 +4,7 @@ This module provides functionality to authenticate with Google Drive
 using OAuth 2.0 Web Flow and to ensure the library folder exists.
 """
 
-import os
+from pathlib import Path
 from typing import Optional, List, Dict, Any
 
 from google.oauth2.credentials import Credentials
@@ -15,6 +15,7 @@ from googleapiclient.discovery import build
 # Dictionary to cache Flow objects across Streamlit reruns.
 # Keys are the OAuth 'state' strings.
 OAUTH_FLOWS: Dict[str, Flow] = {}
+MAX_OAUTH_FLOWS: int = 100
 
 # Scopes needed for Google Drive API
 SCOPES: List[str] = ["https://www.googleapis.com/auth/drive.file"]
@@ -23,6 +24,24 @@ FOLDER_MIME_TYPE: str = "application/vnd.google-apps.folder"
 
 # Streamlit's default port for local development
 REDIRECT_URI: str = "http://localhost:8501/"
+
+# Resolve project root to reliably find credentials and tokens
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
+CREDENTIALS_PATH = PROJECT_ROOT / "credentials.json"
+TOKEN_PATH = PROJECT_ROOT / "token.json"
+
+
+def add_oauth_flow(state: str, flow: Flow) -> None:
+    """Adds an OAuth flow to the cache, evicting the oldest if at capacity.
+
+    Args:
+        state (str): The OAuth state string.
+        flow (Flow): The configured OAuth 2.0 flow.
+    """
+    if len(OAUTH_FLOWS) >= MAX_OAUTH_FLOWS:
+        # Remove the oldest entry (Python 3.7+ dicts preserve insertion order)
+        OAUTH_FLOWS.pop(next(iter(OAUTH_FLOWS)))
+    OAUTH_FLOWS[state] = flow
 
 
 def get_oauth_flow() -> Flow:
@@ -34,14 +53,14 @@ def get_oauth_flow() -> Flow:
     Raises:
         FileNotFoundError: If the credentials.json file is not found.
     """
-    if not os.path.exists("credentials.json"):
+    if not CREDENTIALS_PATH.exists():
         raise FileNotFoundError(
             "credentials.json not found. Please download it from "
             "Google Cloud Console (Web application type) and place it in the project root. "
             "Ensure the authorized redirect URI includes 'http://localhost:8501/'."
         )
     return Flow.from_client_secrets_file(
-        "credentials.json", scopes=SCOPES, redirect_uri=REDIRECT_URI
+        str(CREDENTIALS_PATH), scopes=SCOPES, redirect_uri=REDIRECT_URI
     )
 
 
@@ -52,14 +71,14 @@ def load_credentials_from_file() -> Optional[Credentials]:
         Optional[Credentials]: Valid credentials if available, otherwise None.
     """
     creds: Optional[Credentials] = None
-    if os.path.exists("token.json"):
-        creds = Credentials.from_authorized_user_file("token.json", SCOPES)
+    if TOKEN_PATH.exists():
+        creds = Credentials.from_authorized_user_file(str(TOKEN_PATH), SCOPES)
 
     if creds and not creds.valid:
         if creds.expired and creds.refresh_token:
             creds.refresh(Request())
             # Save refreshed credentials
-            with open("token.json", "w") as token:
+            with open(TOKEN_PATH, "w") as token:
                 token.write(creds.to_json())
         else:
             creds = None
@@ -73,7 +92,7 @@ def save_credentials(creds: Credentials) -> None:
     Args:
         creds: The authenticated Google credentials to save.
     """
-    with open("token.json", "w") as token:
+    with open(TOKEN_PATH, "w") as token:
         token.write(creds.to_json())
 
 

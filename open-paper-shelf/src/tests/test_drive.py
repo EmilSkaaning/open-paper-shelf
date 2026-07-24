@@ -15,6 +15,8 @@ from backend.drive import (
     REDIRECT_URI,
     FOLDER_NAME,
     FOLDER_MIME_TYPE,
+    CREDENTIALS_PATH,
+    TOKEN_PATH,
 )
 
 
@@ -23,20 +25,20 @@ class TestGetOauthFlow:
 
     def test_missing_credentials_file(self, mocker: MockerFixture) -> None:
         """Test FileNotFoundError is raised when credentials.json is missing."""
-        mocker.patch("os.path.exists", return_value=False)
+        mocker.patch("backend.drive.Path.exists", return_value=False)
 
         with pytest.raises(FileNotFoundError, match="credentials.json not found"):
             get_oauth_flow()
 
     def test_flow_creation_success(self, mocker: MockerFixture) -> None:
         """Test Flow is created correctly when credentials exist."""
-        mocker.patch("os.path.exists", return_value=True)
+        mocker.patch("backend.drive.Path.exists", return_value=True)
         mock_from_secrets = mocker.patch("backend.drive.Flow.from_client_secrets_file")
 
         get_oauth_flow()
 
         mock_from_secrets.assert_called_once_with(
-            "credentials.json", scopes=SCOPES, redirect_uri=REDIRECT_URI
+            str(CREDENTIALS_PATH), scopes=SCOPES, redirect_uri=REDIRECT_URI
         )
 
 
@@ -45,7 +47,7 @@ class TestLoadCredentials:
 
     def test_no_token_file(self, mocker: MockerFixture) -> None:
         """Test returns None when token.json does not exist."""
-        mocker.patch("os.path.exists", return_value=False)
+        mocker.patch("backend.drive.Path.exists", return_value=False)
 
         assert load_credentials_from_file() is None
 
@@ -67,7 +69,7 @@ class TestLoadCredentials:
         expected_refresh_called: bool,
     ) -> None:
         """Test various credential states using parametrize."""
-        mocker.patch("os.path.exists", return_value=True)
+        mocker.patch("backend.drive.Path.exists", return_value=True)
 
         mock_creds = mocker.MagicMock(spec=Credentials)
         mock_creds.valid = is_valid
@@ -85,7 +87,7 @@ class TestLoadCredentials:
 
         if expected_refresh_called:
             mock_creds.refresh.assert_called_once()
-            mock_open.assert_called_once_with("token.json", "w")
+            mock_open.assert_called_once_with(TOKEN_PATH, "w")
             assert result is mock_creds
         elif not is_valid:
             assert result is None
@@ -104,7 +106,7 @@ class TestSaveCredentials:
 
         save_credentials(mock_creds)
 
-        mock_open.assert_called_once_with("token.json", "w")
+        mock_open.assert_called_once_with(TOKEN_PATH, "w")
         mock_open().write.assert_called_once_with('{"dummy": "data"}')
 
 

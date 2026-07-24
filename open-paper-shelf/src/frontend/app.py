@@ -18,6 +18,7 @@ from backend.drive import (  # noqa: E402
     save_credentials,
     get_or_create_library_folder,
     OAUTH_FLOWS,
+    add_oauth_flow,
 )
 
 
@@ -62,7 +63,8 @@ def authenticate_user() -> Optional[Credentials]:
             st.session_state.credentials = creds
 
             # Clean up the URL
-            st.query_params.clear()
+            st.query_params.pop("code", None)
+            st.query_params.pop("state", None)
 
             return creds
         except Exception as e:
@@ -90,7 +92,7 @@ def main() -> None:
             )
 
             # Save the flow so we have the PKCE code_verifier when they return
-            OAUTH_FLOWS[state] = flow
+            add_oauth_flow(state, flow)
 
             st.link_button("Connect with Google", auth_url)
         except FileNotFoundError as e:
