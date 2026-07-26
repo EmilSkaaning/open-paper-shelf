@@ -98,7 +98,7 @@ def sync_library_index(creds):
         return
 
     remote_time = remote_info.get("modifiedTime")
-    if not local_path.exists() or st.session_state.last_sync_time != remote_time:
+    if not local_path.exists() or st.session_state.get("last_sync_time") != remote_time:
         try:
             download_file(creds, remote_info["id"], local_path)
             st.session_state.last_sync_time = remote_time
