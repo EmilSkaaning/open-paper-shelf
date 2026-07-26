@@ -171,69 +171,76 @@ def main() -> None:
     with left_col.container(border=True, height=800):
         st.subheader("Papers")
 
-        # Upload new paper
+        # State initialization
         if "uploader_key" not in st.session_state:
             st.session_state.uploader_key = 0
 
-        with st.popover("Upload PDF(s)"):
-            uploaded_files = st.file_uploader(
-                "Choose PDF(s)",
-                type=["pdf"],
-                accept_multiple_files=True,
-                label_visibility="collapsed",
-                key=f"uploader_{st.session_state.uploader_key}",
-            )
-            if uploaded_files:
-                if st.button("Process Uploads"):
-                    conflicts = []
-                    new_uploads = []
-                    for uf in uploaded_files:
-                        safe_name = Path(uf.name).name
-                        existing_ids = [
-                            p["id"]
-                            for p in st.session_state.drive_pdfs
-                            if p["name"] == safe_name
-                        ]
-                        if existing_ids:
-                            conflicts.append((uf, safe_name, existing_ids))
+        if "selected_paper" not in st.session_state:
+            st.session_state.selected_paper = None
+
+        pdf_names = [p["name"] for p in st.session_state.drive_pdfs]
+        checked_papers = [
+            name for name in pdf_names if st.session_state.get(f"chk_{name}", False)
+        ]
+
+        # Icon bar
+        icon_cols = st.columns([1, 1, 8])
+        with icon_cols[0]:
+            with st.popover("📤", help="Upload PDF(s)"):
+                uploaded_files = st.file_uploader(
+                    "Choose PDF(s)",
+                    type=["pdf"],
+                    accept_multiple_files=True,
+                    label_visibility="collapsed",
+                    key=f"uploader_{st.session_state.uploader_key}",
+                )
+                if uploaded_files:
+                    if st.button("Process Uploads"):
+                        conflicts = []
+                        new_uploads = []
+                        for uf in uploaded_files:
+                            safe_name = Path(uf.name).name
+                            existing_ids = [
+                                p["id"]
+                                for p in st.session_state.drive_pdfs
+                                if p["name"] == safe_name
+                            ]
+                            if existing_ids:
+                                conflicts.append((uf, safe_name, existing_ids))
+                            else:
+                                new_uploads.append((uf, safe_name))
+
+                        # Process non-conflicting files immediately
+                        if new_uploads:
+                            for uf, safe_name in new_uploads:
+                                with st.spinner(f"Uploading {safe_name}..."):
+                                    with tempfile.NamedTemporaryFile(
+                                        delete=False, suffix=".pdf"
+                                    ) as tmp_file:
+                                        tmp_file.write(uf.getbuffer())
+                                        temp_file_path = Path(tmp_file.name)
+                                    upload_pdf(
+                                        creds,
+                                        folder_id,
+                                        temp_file_path,
+                                        display_name=safe_name,
+                                    )
+                                    temp_file_path.unlink(missing_ok=True)
+
+                        if conflicts:
+                            bulk_overwrite_dialog(creds, folder_id, conflicts)
                         else:
-                            new_uploads.append((uf, safe_name))
+                            st.session_state.drive_pdfs = list_pdfs_in_library(
+                                creds, folder_id
+                            )
+                            st.session_state.uploader_key += 1
+                            st.success("Uploaded successfully!")
+                            st.rerun()
 
-                    # Process non-conflicting files immediately
-                    if new_uploads:
-                        for uf, safe_name in new_uploads:
-                            with st.spinner(f"Uploading {safe_name}..."):
-                                with tempfile.NamedTemporaryFile(
-                                    delete=False, suffix=".pdf"
-                                ) as tmp_file:
-                                    tmp_file.write(uf.getbuffer())
-                                    temp_file_path = Path(tmp_file.name)
-                                upload_pdf(
-                                    creds,
-                                    folder_id,
-                                    temp_file_path,
-                                    display_name=safe_name,
-                                )
-                                temp_file_path.unlink(missing_ok=True)
-
-                    if conflicts:
-                        bulk_overwrite_dialog(creds, folder_id, conflicts)
-                    else:
-                        st.session_state.drive_pdfs = list_pdfs_in_library(
-                            creds, folder_id
-                        )
-                        st.session_state.uploader_key += 1
-                        st.success("Uploaded successfully!")
-                        st.rerun()
-
-        with st.popover("Manage Library"):
-            all_pdf_names = [p["name"] for p in st.session_state.drive_pdfs]
-            papers_to_delete = st.multiselect(
-                "Select papers to delete", options=all_pdf_names
-            )
-            if papers_to_delete:
-                if st.button("Delete Selected", type="primary"):
-                    for paper_name in papers_to_delete:
+        with icon_cols[1]:
+            if checked_papers:
+                if st.button("🗑️", help="Delete selected papers"):
+                    for paper_name in checked_papers:
                         ids = [
                             p["id"]
                             for p in st.session_state.drive_pdfs
@@ -242,6 +249,11 @@ def main() -> None:
                         for file_id in ids:
                             with st.spinner(f"Deleting {paper_name}..."):
                                 delete_pdf(creds, file_id)
+                        # Reset the checkbox state
+                        st.session_state[f"chk_{paper_name}"] = False
+                        if st.session_state.selected_paper == paper_name:
+                            st.session_state.selected_paper = None
+
                     st.session_state.drive_pdfs = list_pdfs_in_library(creds, folder_id)
                     st.success("Deleted successfully!")
                     st.rerun()
@@ -252,16 +264,28 @@ def main() -> None:
         )
 
         # List PDFs
-        pdf_names = [p["name"] for p in st.session_state.drive_pdfs]
         filtered_names = [n for n in pdf_names if search_query.lower() in n.lower()]
 
         if filtered_names:
-            selected_paper = st.radio(
-                "Select paper", filtered_names, label_visibility="collapsed"
-            )
+            for name in filtered_names:
+                col1, col2 = st.columns([0.15, 0.85])
+                with col1:
+                    st.checkbox(
+                        "Select", key=f"chk_{name}", label_visibility="collapsed"
+                    )
+                with col2:
+                    is_selected = st.session_state.selected_paper == name
+                    if st.button(
+                        name,
+                        use_container_width=True,
+                        type="secondary" if is_selected else "tertiary",
+                    ):
+                        st.session_state.selected_paper = name
+                        st.rerun()
         else:
             st.write("No papers found.")
-            selected_paper = None
+
+        selected_paper = st.session_state.selected_paper
 
     with right_col.container(border=True, height=800):
         if selected_paper:
