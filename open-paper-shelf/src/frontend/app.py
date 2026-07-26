@@ -19,6 +19,9 @@ from backend.drive import (  # noqa: E402
     get_or_create_library_folder,
     OAUTH_FLOWS,
     add_oauth_flow,
+    list_pdfs_in_library,
+    download_pdf,
+    upload_pdf,
 )
 
 
@@ -76,13 +79,13 @@ def authenticate_user() -> Optional[Credentials]:
 
 def main() -> None:
     """Main function to run the Streamlit app."""
-    st.set_page_config(page_title="Open Paper Shelf", page_icon="📚")
-    st.title("Open Paper Shelf")
-    st.write("Welcome to your Google Drive-backed paper library!")
+    st.set_page_config(page_title="Open Paper Shelf", page_icon="📚", layout="wide")
 
     creds: Optional[Credentials] = authenticate_user()
 
     if not creds:
+        st.title("Open Paper Shelf")
+        st.write("Welcome to your Google Drive-backed paper library!")
         st.info("Please connect your Google account to continue.")
         try:
             flow = get_oauth_flow()
@@ -99,15 +102,83 @@ def main() -> None:
             st.error(str(e))
         return
 
-    st.success("Successfully connected to Google Drive!")
+    # --- Initialization / Syncing ---
+    if "folder_id" not in st.session_state:
+        with st.spinner("Initializing library and syncing papers..."):
+            st.session_state.folder_id = get_or_create_library_folder(creds)
 
-    if st.button("Initialize / Check Library Folder"):
-        with st.spinner("Checking for folder..."):
-            try:
-                folder_id: str = get_or_create_library_folder(creds)
-                st.success(f"Library folder is ready! Folder ID: {folder_id}")
-            except Exception as e:
-                st.error(f"An error occurred: {e}")
+            # Sync files
+            pdfs = list_pdfs_in_library(creds, st.session_state.folder_id)
+            st.session_state.drive_pdfs = pdfs
+
+            # Create local papers dir
+            project_root = Path(__file__).resolve().parent.parent.parent.parent
+            papers_dir = project_root / "papers"
+            papers_dir.mkdir(exist_ok=True)
+            st.session_state.papers_dir = papers_dir
+
+            # Download missing PDFs
+            for pdf in pdfs:
+                pdf_path = papers_dir / pdf["name"]
+                if not pdf_path.exists():
+                    download_pdf(creds, pdf["id"], pdf_path)
+
+    papers_dir = st.session_state.papers_dir
+    folder_id = st.session_state.folder_id
+
+    # --- UI Layout ---
+    left_col, right_col = st.columns([1, 3])
+
+    with left_col.container(border=True, height=800):
+        st.subheader("Papers")
+
+        # Upload new paper
+        with st.popover("Upload PDF"):
+            uploaded_file = st.file_uploader(
+                "Choose a PDF", type=["pdf"], label_visibility="collapsed"
+            )
+            if uploaded_file is not None:
+                # save to local
+                file_path = papers_dir / uploaded_file.name
+                with open(file_path, "wb") as f:
+                    f.write(uploaded_file.getbuffer())
+
+                # upload to drive
+                with st.spinner(f"Uploading {uploaded_file.name}..."):
+                    upload_pdf(creds, folder_id, file_path)
+                    st.success("Uploaded!")
+                    # Refresh list
+                    st.session_state.drive_pdfs = list_pdfs_in_library(creds, folder_id)
+                    st.rerun()
+
+        # Search box
+        search_query = st.text_input(
+            "Search", placeholder="Search by title...", label_visibility="collapsed"
+        )
+
+        # List PDFs
+        pdf_names = [p["name"] for p in st.session_state.drive_pdfs]
+        filtered_names = [n for n in pdf_names if search_query.lower() in n.lower()]
+
+        if filtered_names:
+            selected_paper = st.radio(
+                "Select paper", filtered_names, label_visibility="collapsed"
+            )
+        else:
+            st.write("No papers found.")
+            selected_paper = None
+
+    with right_col.container(border=True, height=800):
+        if selected_paper:
+            # FastAPI static mount is at /papers/ (assuming FastAPI runs on port 8000)
+            fastapi_url = f"http://localhost:8000/papers/{selected_paper}"
+            pdf_display = f'<iframe src="{fastapi_url}" width="100%" height="750" style="border:none;" type="application/pdf"></iframe>'
+            st.markdown(pdf_display, unsafe_allow_html=True)
+        else:
+            st.info(
+                "Select a paper from the list to view it here.",
+                icon=":material/arrow_back:",
+            )
 
 
 if __name__ == "__main__":
