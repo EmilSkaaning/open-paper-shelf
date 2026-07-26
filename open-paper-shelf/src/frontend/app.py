@@ -1,5 +1,6 @@
 """Main Streamlit application for Open Paper Shelf."""
 
+import os
 import sys
 import urllib.parse
 from pathlib import Path
@@ -24,6 +25,7 @@ from backend.drive import (  # noqa: E402
     list_pdfs_in_library,
     download_pdf,
     upload_pdf,
+    delete_pdf,
 )
 
 
@@ -79,6 +81,31 @@ def authenticate_user() -> Optional[Credentials]:
     return None
 
 
+@st.dialog("Overwrite existing file?")
+def overwrite_dialog(
+    creds: Credentials, folder_id: str, file_path: Path, existing_ids: list[str]
+) -> None:
+    st.write(
+        f"The file {file_path.name.replace('.temp_upload_', '', 1)} already exists in your Google Drive library."
+    )
+    st.write("Do you want to overwrite it?")
+    if st.button("Yes, overwrite it"):
+        with st.spinner("Deleting old version(s)..."):
+            for file_id in existing_ids:
+                delete_pdf(creds, file_id)
+        with st.spinner("Uploading new version..."):
+            upload_pdf(creds, folder_id, file_path)
+            st.session_state.drive_pdfs = list_pdfs_in_library(creds, folder_id)
+            st.session_state.uploader_key += 1
+            st.success("Overwritten successfully!")
+            file_path.unlink(missing_ok=True)
+            st.rerun()
+    if st.button("Cancel"):
+        st.session_state.uploader_key += 1
+        file_path.unlink(missing_ok=True)
+        st.rerun()
+
+
 def main() -> None:
     """Main function to run the Streamlit app."""
     st.set_page_config(page_title="Open Paper Shelf", page_icon="📚", layout="wide")
@@ -117,12 +144,7 @@ def main() -> None:
             PAPERS_DIR.mkdir(exist_ok=True)
             st.session_state.papers_dir = PAPERS_DIR
 
-            # Download missing PDFs
-            for pdf in pdfs:
-                safe_name = Path(pdf["name"]).name
-                pdf_path = PAPERS_DIR / safe_name
-                if not pdf_path.exists():
-                    download_pdf(creds, pdf["id"], pdf_path)
+            # Do NOT download PDFs synchronously on load, to prevent blocking UI.
 
     papers_dir = st.session_state.papers_dir
     folder_id = st.session_state.folder_id
@@ -145,20 +167,34 @@ def main() -> None:
                 key=f"uploader_{st.session_state.uploader_key}",
             )
             if uploaded_file is not None:
-                # save to local
                 safe_name = Path(uploaded_file.name).name
-                file_path = papers_dir / safe_name
-                with open(file_path, "wb") as f:
+
+                # We need to save it locally temporarily to upload it, or for the dialog
+                # It's better to just save it with a temp name in case it overwrites another local file before confirmed
+                temp_file_path = papers_dir / f".temp_upload_{safe_name}"
+                with open(temp_file_path, "wb") as f:
                     f.write(uploaded_file.getbuffer())
 
-                # upload to drive
-                with st.spinner(f"Uploading {safe_name}..."):
-                    upload_pdf(creds, folder_id, file_path)
-                    st.success("Uploaded!")
-                    # Refresh list and clear uploader
-                    st.session_state.drive_pdfs = list_pdfs_in_library(creds, folder_id)
-                    st.session_state.uploader_key += 1
-                    st.rerun()
+                # Check if file with same name exists in drive
+                existing_ids = [
+                    p["id"]
+                    for p in st.session_state.drive_pdfs
+                    if p["name"] == safe_name
+                ]
+
+                if existing_ids:
+                    overwrite_dialog(creds, folder_id, temp_file_path, existing_ids)
+                else:
+                    with st.spinner(f"Uploading {safe_name}..."):
+                        upload_pdf(creds, folder_id, temp_file_path)
+                        st.success("Uploaded!")
+                        # Refresh list and clear uploader
+                        st.session_state.drive_pdfs = list_pdfs_in_library(
+                            creds, folder_id
+                        )
+                        st.session_state.uploader_key += 1
+                        temp_file_path.unlink(missing_ok=True)
+                        st.rerun()
 
         # Search box
         search_query = st.text_input(
@@ -179,11 +215,26 @@ def main() -> None:
 
     with right_col.container(border=True, height=800):
         if selected_paper:
-            # FastAPI static mount is at /papers/ (assuming FastAPI runs on port 8000)
-            safe_paper_name = urllib.parse.quote(selected_paper)
-            fastapi_url = f"http://localhost:8000/papers/{safe_paper_name}"
-            pdf_display = f'<iframe src="{fastapi_url}" width="100%" height="750" style="border:none;" type="application/pdf"></iframe>'
-            st.markdown(pdf_display, unsafe_allow_html=True)
+            # Find the ID of the selected paper
+            selected_pdf = next(
+                (p for p in st.session_state.drive_pdfs if p["name"] == selected_paper),
+                None,
+            )
+            if selected_pdf:
+                safe_paper_name = Path(selected_paper).name
+                unique_local_name = f"{selected_pdf['id']}_{safe_paper_name}"
+                local_pdf_path = papers_dir / unique_local_name
+
+                if not local_pdf_path.exists():
+                    with st.spinner(f"Downloading {safe_paper_name} from Drive..."):
+                        download_pdf(creds, selected_pdf["id"], local_pdf_path)
+
+                base_url = os.environ.get("FASTAPI_URL", "http://localhost:8000")
+                fastapi_url = f"{base_url.rstrip('/')}/papers/{urllib.parse.quote(unique_local_name)}"
+                pdf_display = f'<iframe src="{fastapi_url}" width="100%" height="750" style="border:none;" type="application/pdf"></iframe>'
+                st.markdown(pdf_display, unsafe_allow_html=True)
+            else:
+                st.error("Selected paper not found in library data.")
         else:
             st.info(
                 "Select a paper from the list to view it here.",
