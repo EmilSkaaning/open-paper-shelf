@@ -4,12 +4,21 @@ import os
 import sys
 import urllib.parse
 import tempfile
+import re
+import shutil
 from pathlib import Path
 from typing import Optional, Any
 
 import streamlit as st
 from st_keyup import st_keyup
 from google.oauth2.credentials import Credentials
+
+
+def get_safe_filename(name: str) -> str:
+    """Returns a filesystem-safe filename by removing invalid characters."""
+    base = Path(name).name
+    return re.sub(r'[<>:"/\\|?*]', "_", base)
+
 
 # Ensure the src directory is in the path to import backend
 src_path = Path(__file__).parent.parent
@@ -102,19 +111,25 @@ def bulk_overwrite_dialog(
     st.write("Do you want to overwrite all of them?")
     if st.button("Yes, overwrite all"):
         for uf, name, existing_ids in conflicts:
-            with st.spinner(f"Deleting old versions of {name}..."):
-                for file_id in existing_ids:
-                    delete_pdf(creds, file_id)
-            with st.spinner(f"Uploading new version of {name}..."):
-                with tempfile.NamedTemporaryFile(
-                    delete=False, suffix=".pdf"
-                ) as tmp_file:
-                    tmp_file.write(uf.getbuffer())
-                    temp_file_path = Path(tmp_file.name)
-                try:
-                    upload_pdf(creds, folder_id, temp_file_path, display_name=name)
-                finally:
-                    temp_file_path.unlink(missing_ok=True)
+            try:
+                with st.spinner(f"Deleting old versions of {name}..."):
+                    for file_id in existing_ids:
+                        delete_pdf(creds, file_id)
+                        shutil.rmtree(
+                            st.session_state.papers_dir / file_id, ignore_errors=True
+                        )
+                with st.spinner(f"Uploading new version of {name}..."):
+                    with tempfile.NamedTemporaryFile(
+                        delete=False, suffix=".pdf"
+                    ) as tmp_file:
+                        tmp_file.write(uf.getbuffer())
+                        temp_file_path = Path(tmp_file.name)
+                    try:
+                        upload_pdf(creds, folder_id, temp_file_path, display_name=name)
+                    finally:
+                        temp_file_path.unlink(missing_ok=True)
+            except Exception as e:
+                st.error(f"Failed to overwrite {name}: {e}")
 
         st.session_state.drive_pdfs = list_pdfs_in_library(creds, folder_id)
         st.session_state.pending_conflicts = None
@@ -208,7 +223,7 @@ def main() -> None:
             conflicts = []
             new_uploads = []
             for uf in uploaded_files:
-                safe_name = Path(uf.name).name
+                safe_name = get_safe_filename(uf.name)
                 existing_ids = [
                     p["id"]
                     for p in st.session_state.drive_pdfs
@@ -222,21 +237,24 @@ def main() -> None:
             # Process non-conflicting files immediately
             if new_uploads:
                 for uf, safe_name in new_uploads:
-                    with st.spinner(f"Uploading {safe_name}..."):
-                        with tempfile.NamedTemporaryFile(
-                            delete=False, suffix=".pdf"
-                        ) as tmp_file:
-                            tmp_file.write(uf.getbuffer())
-                            temp_file_path = Path(tmp_file.name)
-                        try:
-                            upload_pdf(
-                                creds,
-                                folder_id,
-                                temp_file_path,
-                                display_name=safe_name,
-                            )
-                        finally:
-                            temp_file_path.unlink(missing_ok=True)
+                    try:
+                        with st.spinner(f"Uploading {safe_name}..."):
+                            with tempfile.NamedTemporaryFile(
+                                delete=False, suffix=".pdf"
+                            ) as tmp_file:
+                                tmp_file.write(uf.getbuffer())
+                                temp_file_path = Path(tmp_file.name)
+                            try:
+                                upload_pdf(
+                                    creds,
+                                    folder_id,
+                                    temp_file_path,
+                                    display_name=safe_name,
+                                )
+                            finally:
+                                temp_file_path.unlink(missing_ok=True)
+                    except Exception as e:
+                        st.error(f"Failed to upload {safe_name}: {e}")
 
             if conflicts:
                 st.session_state.pending_conflicts = conflicts
@@ -257,12 +275,19 @@ def main() -> None:
                 type="primary" if checked_papers else "secondary",
             ):
                 for pdf in checked_papers:
-                    with st.spinner(f"Deleting {pdf['name']}..."):
-                        delete_pdf(creds, pdf["id"])
-                    # Reset the checkbox state
-                    st.session_state[f"chk_{pdf['id']}"] = False
-                    if st.session_state.selected_paper == pdf["id"]:
-                        st.session_state.selected_paper = None
+                    try:
+                        with st.spinner(f"Deleting {pdf['name']}..."):
+                            delete_pdf(creds, pdf["id"])
+                            shutil.rmtree(
+                                st.session_state.papers_dir / pdf["id"],
+                                ignore_errors=True,
+                            )
+                        # Reset the checkbox state
+                        st.session_state[f"chk_{pdf['id']}"] = False
+                        if st.session_state.selected_paper == pdf["id"]:
+                            st.session_state.selected_paper = None
+                    except Exception as e:
+                        st.error(f"Failed to delete {pdf['name']}: {e}")
 
                 st.session_state.drive_pdfs = list_pdfs_in_library(creds, folder_id)
                 st.success("Deleted successfully!")
@@ -315,19 +340,23 @@ def main() -> None:
                 None,
             )
             if selected_pdf:
-                safe_paper_name = Path(selected_pdf["name"]).name
+                safe_paper_name = get_safe_filename(selected_pdf["name"])
                 paper_folder = papers_dir / selected_pdf["id"]
                 local_pdf_path = paper_folder / safe_paper_name
 
                 if not local_pdf_path.exists():
                     paper_folder.mkdir(exist_ok=True)
-                    with st.spinner(f"Downloading {safe_paper_name} from Drive..."):
-                        download_pdf(creds, selected_pdf["id"], local_pdf_path)
+                    try:
+                        with st.spinner(f"Downloading {safe_paper_name} from Drive..."):
+                            download_pdf(creds, selected_pdf["id"], local_pdf_path)
+                    except Exception as e:
+                        st.error(f"Failed to download {safe_paper_name}: {e}")
 
-                base_url = os.environ.get("FASTAPI_URL", "http://localhost:8000")
-                fastapi_url = f"{base_url.rstrip('/')}/papers/{selected_pdf['id']}/{urllib.parse.quote(safe_paper_name)}"
-                pdf_display = f'<iframe src="{fastapi_url}" width="100%" height="750" style="border:none;" type="application/pdf"></iframe>'
-                st.markdown(pdf_display, unsafe_allow_html=True)
+                if local_pdf_path.exists():
+                    base_url = os.environ.get("FASTAPI_URL", "http://localhost:8000")
+                    fastapi_url = f"{base_url.rstrip('/')}/papers/{selected_pdf['id']}/{urllib.parse.quote(safe_paper_name)}"
+                    pdf_display = f'<iframe src="{fastapi_url}" width="100%" height="750" style="border:none;" type="application/pdf"></iframe>'
+                    st.markdown(pdf_display, unsafe_allow_html=True)
             else:
                 st.error("Selected paper not found in library data.")
         else:
