@@ -200,3 +200,83 @@ class TestAppMetadataSync:
 
         mock_st.error.assert_called_once()
         assert "Failed to load metadata for corrupt" in mock_st.error.call_args[0][0]
+
+    @patch("frontend.app.upload_metadata")
+    @patch("frontend.app.download_pdf")
+    @patch("frontend.app.authenticate_user")
+    @patch("frontend.app.get_or_create_library_folder")
+    @patch("frontend.app.list_pdfs_in_library")
+    @patch("frontend.app.list_metadata_in_library")
+    @patch("frontend.app.st")
+    def test_selected_paper_renders_metadata_form_and_saves(
+        self,
+        mock_st: MagicMock,
+        mock_list_metadata: MagicMock,
+        mock_list_pdfs: MagicMock,
+        mock_get_folder: MagicMock,
+        mock_auth: MagicMock,
+        mock_download_pdf: MagicMock,
+        mock_upload_metadata: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """Test that selecting a paper renders metadata edit form and form submission updates state and uploads.
+
+        Args:
+            mock_st: Mock for streamlit module.
+            mock_list_metadata: Mock for list_metadata_in_library.
+            mock_list_pdfs: Mock for list_pdfs_in_library.
+            mock_get_folder: Mock for get_or_create_library_folder.
+            mock_auth: Mock for authenticate_user.
+            mock_download_pdf: Mock for download_pdf.
+            mock_upload_metadata: Mock for upload_metadata.
+            tmp_path: Temporary directory fixture.
+        """
+        mock_creds = MagicMock()
+        mock_auth.return_value = mock_creds
+        mock_get_folder.return_value = "folder_123"
+        mock_list_pdfs.return_value = [{"id": "paper123", "name": "sample.pdf"}]
+        mock_list_metadata.return_value = []
+
+        session_state = MockSessionState(
+            {
+                "folder_id": "folder_123",
+                "drive_pdfs": [{"id": "paper123", "name": "sample.pdf"}],
+                "papers_dir": tmp_path,
+                "metadata_dir": tmp_path / "metadata",
+                "metadata": {
+                    "paper123": {
+                        "title": "Old Title",
+                        "tags": ["ml"],
+                        "status": "Reading",
+                        "citation": "cite123",
+                        "notes": "Old notes",
+                    }
+                },
+                "selected_paper": "paper123",
+            }
+        )
+        (tmp_path / "metadata").mkdir(parents=True, exist_ok=True)
+        (tmp_path / "paper123").mkdir(parents=True, exist_ok=True)
+        (tmp_path / "paper123" / "sample.pdf").write_bytes(b"pdf content")
+
+        mock_st.session_state = session_state
+        mock_st.columns.return_value = [MagicMock(), MagicMock()]
+        mock_st.text_input.side_effect = lambda label, value="": value
+        mock_st.selectbox.side_effect = lambda label, options=None, index=0: (
+            options[index] if options else ""
+        )
+        mock_st.text_area.side_effect = lambda label, value="", height=200: value
+        mock_st.form_submit_button.return_value = True
+
+        with patch("frontend.app.PAPERS_DIR", tmp_path):
+            from frontend.app import main
+
+            main()
+
+        assert "paper123" in session_state.metadata
+        mock_upload_metadata.assert_called_once()
+        local_file = tmp_path / "metadata" / "paper123_meta.json"
+        assert local_file.exists()
+        saved_data = json.loads(local_file.read_text())
+        assert saved_data["title"] == "Old Title"
+        mock_st.success.assert_called_with("Metadata saved!")

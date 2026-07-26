@@ -379,11 +379,91 @@ def main() -> None:
                     except Exception as e:
                         st.error(f"Failed to download {safe_paper_name}: {e}")
 
-                if local_pdf_path.exists():
-                    base_url = os.environ.get("FASTAPI_URL", "http://localhost:8000")
-                    fastapi_url = f"{base_url.rstrip('/')}/papers/{selected_pdf['id']}/{urllib.parse.quote(safe_paper_name)}"
-                    pdf_display = f'<iframe src="{fastapi_url}" width="100%" height="750" style="border:none;" type="application/pdf"></iframe>'
-                    st.markdown(pdf_display, unsafe_allow_html=True)
+                pdf_col, meta_col = st.columns([3, 1])
+
+                with pdf_col:
+                    if local_pdf_path.exists():
+                        base_url = os.environ.get(
+                            "FASTAPI_URL", "http://localhost:8000"
+                        )
+                        fastapi_url = f"{base_url.rstrip('/')}/papers/{selected_pdf['id']}/{urllib.parse.quote(safe_paper_name)}"
+                        pdf_display = f'<iframe src="{fastapi_url}" width="100%" height="750" style="border:none;" type="application/pdf"></iframe>'
+                        st.markdown(pdf_display, unsafe_allow_html=True)
+
+                with meta_col:
+                    with st.expander("Metadata", expanded=True):
+                        # Load existing or create default
+                        existing_data = st.session_state.metadata.get(
+                            selected_paper, {}
+                        )
+                        if not existing_data:
+                            existing_data = PaperMetadata(
+                                title=selected_pdf["name"]
+                            ).model_dump()
+
+                        meta = PaperMetadata(**existing_data)
+
+                        with st.form(key=f"meta_form_{selected_paper}"):
+                            new_title = st.text_input("Title", value=meta.title)
+                            tags_str = st.text_input(
+                                "Tags (comma separated)", value=", ".join(meta.tags)
+                            )
+
+                            status_options = ["Unread", "Reading", "Read", "TODO"]
+                            current_index = (
+                                status_options.index(meta.status)
+                                if meta.status in status_options
+                                else 0
+                            )
+                            new_status = st.selectbox(
+                                "Status", options=status_options, index=current_index
+                            )
+
+                            new_citation = st.text_input(
+                                "Citation", value=meta.citation
+                            )
+                            new_notes = st.text_area(
+                                "Notes", value=meta.notes, height=200
+                            )
+
+                            if st.form_submit_button("Save Changes"):
+                                updated_tags = [
+                                    t.strip() for t in tags_str.split(",") if t.strip()
+                                ]
+                                updated_meta = PaperMetadata(
+                                    title=new_title,
+                                    tags=updated_tags,
+                                    status=new_status,  # type: ignore
+                                    citation=new_citation,
+                                    notes=new_notes,
+                                )
+
+                                # Update session state
+                                st.session_state.metadata[selected_paper] = (
+                                    updated_meta.model_dump()
+                                )
+
+                                # Save locally
+                                meta_filename = f"{selected_paper}_meta.json"
+                                local_meta_path = (
+                                    st.session_state.metadata_dir / meta_filename
+                                )
+                                with open(local_meta_path, "w", encoding="utf-8") as f:
+                                    json.dump(updated_meta.model_dump(), f, indent=2)
+
+                                # Upload to drive
+                                try:
+                                    with st.spinner("Saving metadata to Drive..."):
+                                        upload_metadata(
+                                            creds,
+                                            folder_id,
+                                            local_meta_path,
+                                            meta_filename,
+                                        )
+                                    st.success("Metadata saved!")
+                                except Exception as e:
+                                    st.error(f"Failed to save metadata to Drive: {e}")
+
             else:
                 st.error("Selected paper not found in library data.")
         else:
