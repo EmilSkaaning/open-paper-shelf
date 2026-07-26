@@ -283,17 +283,20 @@ def download_metadata(creds: Credentials, file_id: str, dest_path: Path) -> None
     service: Any = build("drive", "v3", credentials=creds)
     request: Any = service.files().get_media(fileId=file_id)
 
-    with tempfile.NamedTemporaryFile(dir=dest_path.parent, delete=False) as tmp_file:
-        tmp_path = Path(tmp_file.name)
-        downloader = MediaIoBaseDownload(tmp_file, request)
-        done: bool = False
-        while not done:
-            status, done = downloader.next_chunk()
-
+    tmp_path: Optional[Path] = None
     try:
+        with tempfile.NamedTemporaryFile(
+            dir=dest_path.parent, delete=False
+        ) as tmp_file:
+            tmp_path = Path(tmp_file.name)
+            downloader = MediaIoBaseDownload(tmp_file, request)
+            done: bool = False
+            while not done:
+                status, done = downloader.next_chunk()
+
         tmp_path.rename(dest_path)
     finally:
-        if tmp_path.exists():
+        if tmp_path is not None and tmp_path.exists():
             tmp_path.unlink(missing_ok=True)
 
 
@@ -316,8 +319,9 @@ def upload_metadata(
     """
     service: Any = build("drive", "v3", credentials=creds)
 
+    safe_display_name: str = display_name.replace("'", "\\'")
     query: str = (
-        f"name = '{display_name}' and '{folder_id}' in parents and trashed = false"
+        f"name = '{safe_display_name}' and '{folder_id}' in parents and trashed = false"
     )
     existing: Dict[str, Any] = (
         service.files().list(q=query, spaces="drive", fields="files(id)").execute()
