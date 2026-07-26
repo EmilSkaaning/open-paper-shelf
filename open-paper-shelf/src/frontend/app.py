@@ -3,6 +3,7 @@
 import os
 import sys
 import urllib.parse
+import tempfile
 from pathlib import Path
 from typing import Optional
 
@@ -83,18 +84,20 @@ def authenticate_user() -> Optional[Credentials]:
 
 @st.dialog("Overwrite existing file?")
 def overwrite_dialog(
-    creds: Credentials, folder_id: str, file_path: Path, existing_ids: list[str]
+    creds: Credentials,
+    folder_id: str,
+    file_path: Path,
+    display_name: str,
+    existing_ids: list[str],
 ) -> None:
-    st.write(
-        f"The file {file_path.name.replace('.temp_upload_', '', 1)} already exists in your Google Drive library."
-    )
+    st.write(f"The file {display_name} already exists in your Google Drive library.")
     st.write("Do you want to overwrite it?")
     if st.button("Yes, overwrite it"):
         with st.spinner("Deleting old version(s)..."):
             for file_id in existing_ids:
                 delete_pdf(creds, file_id)
         with st.spinner("Uploading new version..."):
-            upload_pdf(creds, folder_id, file_path)
+            upload_pdf(creds, folder_id, file_path, display_name=display_name)
             st.session_state.drive_pdfs = list_pdfs_in_library(creds, folder_id)
             st.session_state.uploader_key += 1
             st.success("Overwritten successfully!")
@@ -169,11 +172,12 @@ def main() -> None:
             if uploaded_file is not None:
                 safe_name = Path(uploaded_file.name).name
 
-                # We need to save it locally temporarily to upload it, or for the dialog
-                # It's better to just save it with a temp name in case it overwrites another local file before confirmed
-                temp_file_path = papers_dir / f".temp_upload_{safe_name}"
-                with open(temp_file_path, "wb") as f:
-                    f.write(uploaded_file.getbuffer())
+                # Store the buffer in a temporary file outside of papers_dir
+                with tempfile.NamedTemporaryFile(
+                    delete=False, suffix=".pdf"
+                ) as tmp_file:
+                    tmp_file.write(uploaded_file.getbuffer())
+                    temp_file_path = Path(tmp_file.name)
 
                 # Check if file with same name exists in drive
                 existing_ids = [
@@ -183,10 +187,14 @@ def main() -> None:
                 ]
 
                 if existing_ids:
-                    overwrite_dialog(creds, folder_id, temp_file_path, existing_ids)
+                    overwrite_dialog(
+                        creds, folder_id, temp_file_path, safe_name, existing_ids
+                    )
                 else:
                     with st.spinner(f"Uploading {safe_name}..."):
-                        upload_pdf(creds, folder_id, temp_file_path)
+                        upload_pdf(
+                            creds, folder_id, temp_file_path, display_name=safe_name
+                        )
                         st.success("Uploaded!")
                         # Refresh list and clear uploader
                         st.session_state.drive_pdfs = list_pdfs_in_library(
@@ -222,15 +230,16 @@ def main() -> None:
             )
             if selected_pdf:
                 safe_paper_name = Path(selected_paper).name
-                unique_local_name = f"{selected_pdf['id']}_{safe_paper_name}"
-                local_pdf_path = papers_dir / unique_local_name
+                paper_folder = papers_dir / selected_pdf["id"]
+                local_pdf_path = paper_folder / safe_paper_name
 
                 if not local_pdf_path.exists():
+                    paper_folder.mkdir(exist_ok=True)
                     with st.spinner(f"Downloading {safe_paper_name} from Drive..."):
                         download_pdf(creds, selected_pdf["id"], local_pdf_path)
 
                 base_url = os.environ.get("FASTAPI_URL", "http://localhost:8000")
-                fastapi_url = f"{base_url.rstrip('/')}/papers/{urllib.parse.quote(unique_local_name)}"
+                fastapi_url = f"{base_url.rstrip('/')}/papers/{selected_pdf['id']}/{urllib.parse.quote(safe_paper_name)}"
                 pdf_display = f'<iframe src="{fastapi_url}" width="100%" height="750" style="border:none;" type="application/pdf"></iframe>'
                 st.markdown(pdf_display, unsafe_allow_html=True)
             else:
