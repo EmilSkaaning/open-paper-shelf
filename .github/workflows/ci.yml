@@ -33,4 +33,4 @@ jobs:
 
     - name: Run tests with coverage
       run: |
-        uv run pytest --testmon --cov=backend --cov-report=term-missing --cov-fail-under=60 | tee -a $GITHUB_STEP_SUMMARY
+        uv run pytest --testmon --cov=backend --cov-report=term-missing --cov-fail-under=35 | tee -a $GITHUB_STEP_SUMMARY

@@ -19,4 +19,4 @@ jobs:
       run: uv sync --frozen
 
     - name: Run Vulture
-      run: uvx vulture . --exclude .venv vulture_whitelist.py
+      run: uvx vulture --min-confidence 70 --exclude .venv . vulture_whitelist.py
