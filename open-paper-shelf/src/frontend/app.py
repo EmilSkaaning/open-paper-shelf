@@ -153,7 +153,7 @@ def main() -> None:
         page_title="Open Paper Shelf",
         page_icon="📚",
         layout="wide",
-        initial_sidebar_state="collapsed",
+        initial_sidebar_state="expanded",
     )
 
     creds: Optional[Credentials] = authenticate_user()
@@ -298,32 +298,30 @@ def main() -> None:
                 st.rerun()
 
         # Icon bar
-        icon_cols = st.columns([1.5, 8.5])
-        with icon_cols[0]:
-            if st.button(
-                "🗑️",
-                help="Delete selected papers",
-                disabled=not bool(checked_papers),
-                type="primary" if checked_papers else "secondary",
-            ):
-                for pdf in checked_papers:
-                    try:
-                        with st.spinner(f"Deleting {pdf['name']}..."):
-                            delete_pdf(creds, pdf["id"])
-                            shutil.rmtree(
-                                st.session_state.papers_dir / pdf["id"],
-                                ignore_errors=True,
-                            )
-                        # Reset the checkbox state
-                        st.session_state[f"chk_{pdf['id']}"] = False
-                        if st.session_state.selected_paper == pdf["id"]:
-                            st.session_state.selected_paper = None
-                    except Exception as e:
-                        st.error(f"Failed to delete {pdf['name']}: {e}")
+        if st.button(
+            "🗑️",
+            help="Delete selected papers",
+            disabled=not bool(checked_papers),
+            type="primary" if checked_papers else "secondary",
+        ):
+            for pdf in checked_papers:
+                try:
+                    with st.spinner(f"Deleting {pdf['name']}..."):
+                        delete_pdf(creds, pdf["id"])
+                        shutil.rmtree(
+                            st.session_state.papers_dir / pdf["id"],
+                            ignore_errors=True,
+                        )
+                    # Reset the checkbox state
+                    st.session_state[f"chk_{pdf['id']}"] = False
+                    if st.session_state.selected_paper == pdf["id"]:
+                        st.session_state.selected_paper = None
+                except Exception as e:
+                    st.error(f"Failed to delete {pdf['name']}: {e}")
 
-                st.session_state.drive_pdfs = list_pdfs_in_library(creds, folder_id)
-                st.success("Deleted successfully!")
-                st.rerun()
+            st.session_state.drive_pdfs = list_pdfs_in_library(creds, folder_id)
+            st.success("Deleted successfully!")
+            st.rerun()
 
         # Search box
         search_query = st_keyup(
