@@ -24,6 +24,8 @@ build-backend = "hatchling.build"
 
 [tool.poe.tasks]
 test = "pytest"
+fastapi = "fastapi dev open-paper-shelf/src/main.py --port 8000"
+streamlit = "streamlit run open-paper-shelf/src/frontend/app.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["."]
