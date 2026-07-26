@@ -219,7 +219,7 @@ def main() -> None:
             label_visibility="collapsed",
             key=f"uploader_{st.session_state.uploader_key}",
         )
-        if uploaded_files:
+        if uploaded_files and not st.session_state.get("pending_conflicts"):
             conflicts = []
             new_uploads = []
             for uf in uploaded_files:

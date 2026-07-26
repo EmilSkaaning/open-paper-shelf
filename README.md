@@ -11,6 +11,9 @@ A front-end for papers backed by Google Drive.
    uv run poe fastapi
    # or: uv run fastapi dev open-paper-shelf/src/backend/main.py --port 8000
    ```
+
+> [!WARNING]
+> **Security Note:** The FastAPI backend serves the `PAPERS_DIR` via an unauthenticated `StaticFiles` endpoint. While acceptable for `localhost`, if deployed on a shared network or bound to `0.0.0.0`, anyone can access the downloaded PDFs. Implement endpoint authentication before a public deployment.
 4. In a separate terminal, run the Streamlit frontend locally:
    ```bash
    uv run poe streamlit
