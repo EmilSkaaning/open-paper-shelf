@@ -5,7 +5,7 @@ import sys
 import urllib.parse
 import tempfile
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Any
 
 import streamlit as st
 from google.oauth2.credentials import Credentials
@@ -82,42 +82,43 @@ def authenticate_user() -> Optional[Credentials]:
     return None
 
 
-@st.dialog("Overwrite existing file?")
-def overwrite_dialog(
+@st.dialog("Overwrite existing files?")
+def bulk_overwrite_dialog(
     creds: Credentials,
     folder_id: str,
-    file_path: Path,
-    display_name: str,
-    existing_ids: list[str],
+    conflicts: list[tuple[Any, str, list[str]]],
 ) -> None:
-    """Displays a dialog to overwrite an existing Google Drive PDF.
-
-    If confirmed, deletes the old versions from Google Drive and uploads
-    the new version.
+    """Displays a dialog to overwrite multiple existing Google Drive PDFs.
 
     Args:
         creds: The authenticated Google credentials.
         folder_id: The Google Drive folder ID to upload to.
-        file_path: The local path of the temporary file to upload.
-        display_name: The desired clean name for the file in Google Drive.
-        existing_ids: A list of Google Drive file IDs that will be deleted.
+        conflicts: A list of tuples containing (UploadedFile, safe_name, existing_ids).
     """
-    st.write(f"The file {display_name} already exists in your Google Drive library.")
-    st.write("Do you want to overwrite it?")
-    if st.button("Yes, overwrite it"):
-        with st.spinner("Deleting old version(s)..."):
-            for file_id in existing_ids:
-                delete_pdf(creds, file_id)
-        with st.spinner("Uploading new version..."):
-            upload_pdf(creds, folder_id, file_path, display_name=display_name)
-            st.session_state.drive_pdfs = list_pdfs_in_library(creds, folder_id)
-            st.session_state.uploader_key += 1
-            st.success("Overwritten successfully!")
-            file_path.unlink(missing_ok=True)
-            st.rerun()
+    st.write("The following files already exist in your Google Drive library:")
+    for _, name, _ in conflicts:
+        st.write(f"- {name}")
+    st.write("Do you want to overwrite all of them?")
+    if st.button("Yes, overwrite all"):
+        for uf, name, existing_ids in conflicts:
+            with st.spinner(f"Deleting old versions of {name}..."):
+                for file_id in existing_ids:
+                    delete_pdf(creds, file_id)
+            with st.spinner(f"Uploading new version of {name}..."):
+                with tempfile.NamedTemporaryFile(
+                    delete=False, suffix=".pdf"
+                ) as tmp_file:
+                    tmp_file.write(uf.getbuffer())
+                    temp_file_path = Path(tmp_file.name)
+                upload_pdf(creds, folder_id, temp_file_path, display_name=name)
+                temp_file_path.unlink(missing_ok=True)
+
+        st.session_state.drive_pdfs = list_pdfs_in_library(creds, folder_id)
+        st.session_state.uploader_key += 1
+        st.success("Overwritten successfully!")
+        st.rerun()
     if st.button("Cancel"):
         st.session_state.uploader_key += 1
-        file_path.unlink(missing_ok=True)
         st.rerun()
 
 
@@ -174,47 +175,76 @@ def main() -> None:
         if "uploader_key" not in st.session_state:
             st.session_state.uploader_key = 0
 
-        with st.popover("Upload PDF"):
-            uploaded_file = st.file_uploader(
-                "Choose a PDF",
+        with st.popover("Upload PDF(s)"):
+            uploaded_files = st.file_uploader(
+                "Choose PDF(s)",
                 type=["pdf"],
+                accept_multiple_files=True,
                 label_visibility="collapsed",
                 key=f"uploader_{st.session_state.uploader_key}",
             )
-            if uploaded_file is not None:
-                safe_name = Path(uploaded_file.name).name
+            if uploaded_files:
+                if st.button("Process Uploads"):
+                    conflicts = []
+                    new_uploads = []
+                    for uf in uploaded_files:
+                        safe_name = Path(uf.name).name
+                        existing_ids = [
+                            p["id"]
+                            for p in st.session_state.drive_pdfs
+                            if p["name"] == safe_name
+                        ]
+                        if existing_ids:
+                            conflicts.append((uf, safe_name, existing_ids))
+                        else:
+                            new_uploads.append((uf, safe_name))
 
-                # Store the buffer in a temporary file outside of papers_dir
-                with tempfile.NamedTemporaryFile(
-                    delete=False, suffix=".pdf"
-                ) as tmp_file:
-                    tmp_file.write(uploaded_file.getbuffer())
-                    temp_file_path = Path(tmp_file.name)
+                    # Process non-conflicting files immediately
+                    if new_uploads:
+                        for uf, safe_name in new_uploads:
+                            with st.spinner(f"Uploading {safe_name}..."):
+                                with tempfile.NamedTemporaryFile(
+                                    delete=False, suffix=".pdf"
+                                ) as tmp_file:
+                                    tmp_file.write(uf.getbuffer())
+                                    temp_file_path = Path(tmp_file.name)
+                                upload_pdf(
+                                    creds,
+                                    folder_id,
+                                    temp_file_path,
+                                    display_name=safe_name,
+                                )
+                                temp_file_path.unlink(missing_ok=True)
 
-                # Check if file with same name exists in drive
-                existing_ids = [
-                    p["id"]
-                    for p in st.session_state.drive_pdfs
-                    if p["name"] == safe_name
-                ]
-
-                if existing_ids:
-                    overwrite_dialog(
-                        creds, folder_id, temp_file_path, safe_name, existing_ids
-                    )
-                else:
-                    with st.spinner(f"Uploading {safe_name}..."):
-                        upload_pdf(
-                            creds, folder_id, temp_file_path, display_name=safe_name
-                        )
-                        st.success("Uploaded!")
-                        # Refresh list and clear uploader
+                    if conflicts:
+                        bulk_overwrite_dialog(creds, folder_id, conflicts)
+                    else:
                         st.session_state.drive_pdfs = list_pdfs_in_library(
                             creds, folder_id
                         )
                         st.session_state.uploader_key += 1
-                        temp_file_path.unlink(missing_ok=True)
+                        st.success("Uploaded successfully!")
                         st.rerun()
+
+        with st.popover("Manage Library"):
+            all_pdf_names = [p["name"] for p in st.session_state.drive_pdfs]
+            papers_to_delete = st.multiselect(
+                "Select papers to delete", options=all_pdf_names
+            )
+            if papers_to_delete:
+                if st.button("Delete Selected", type="primary"):
+                    for paper_name in papers_to_delete:
+                        ids = [
+                            p["id"]
+                            for p in st.session_state.drive_pdfs
+                            if p["name"] == paper_name
+                        ]
+                        for file_id in ids:
+                            with st.spinner(f"Deleting {paper_name}..."):
+                                delete_pdf(creds, file_id)
+                    st.session_state.drive_pdfs = list_pdfs_in_library(creds, folder_id)
+                    st.success("Deleted successfully!")
+                    st.rerun()
 
         # Search box
         search_query = st.text_input(
