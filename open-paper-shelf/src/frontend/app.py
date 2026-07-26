@@ -175,60 +175,62 @@ def main() -> None:
             st.rerun()
 
         st.header("Upload Paper")
-        uploaded_file = st.file_uploader("Choose a PDF file", type="pdf")
-        if uploaded_file is not None:
+        uploaded_files = st.file_uploader(
+            "Choose PDF files", type="pdf", accept_multiple_files=True
+        )
+        if uploaded_files:
             if st.button("Upload"):
-                paper_id = uuid.uuid4().hex
                 with st.spinner("Uploading to Google Drive..."):
-                    # Create local temp file
-                    with tempfile.NamedTemporaryFile(
-                        delete=False, suffix=".pdf"
-                    ) as tmp:
-                        tmp.write(uploaded_file.getvalue())
-                        tmp_path = Path(tmp.name)
+                    for uploaded_file in uploaded_files:
+                        paper_id = uuid.uuid4().hex
+                        with tempfile.NamedTemporaryFile(
+                            delete=False, suffix=".pdf"
+                        ) as tmp:
+                            tmp.write(uploaded_file.getvalue())
+                            tmp_path = Path(tmp.name)
 
-                    try:
-                        # 1. Create Folder
-                        folder_id = create_paper_folder(
-                            creds, st.session_state.current_papers_id, paper_id
-                        )
-                        # 2. Upload PDF
-                        pdf_file_id = upload_file_to_folder(
-                            creds, folder_id, tmp_path, "paper.pdf", "application/pdf"
-                        )
+                        try:
+                            folder_id = create_paper_folder(
+                                creds, st.session_state.current_papers_id, paper_id
+                            )
+                            pdf_file_id = upload_file_to_folder(
+                                creds,
+                                folder_id,
+                                tmp_path,
+                                "paper.pdf",
+                                "application/pdf",
+                            )
+                            meta = PaperMetadata(title=uploaded_file.name)
+                            meta_tmp_path = (
+                                Path(tempfile.gettempdir()) / f"{paper_id}_meta.json"
+                            )
+                            meta_tmp_path.write_text(meta.model_dump_json(indent=2))
+                            meta_file_id = upload_file_to_folder(
+                                creds,
+                                folder_id,
+                                meta_tmp_path,
+                                "meta.json",
+                                "application/json",
+                            )
+                            meta_tmp_path.unlink()
 
-                        # 3. Upload initial Meta
-                        meta = PaperMetadata(title=uploaded_file.name)
-                        meta_tmp_path = (
-                            Path(tempfile.gettempdir()) / f"{paper_id}_meta.json"
-                        )
-                        meta_tmp_path.write_text(meta.model_dump_json(indent=2))
-                        meta_file_id = upload_file_to_folder(
-                            creds,
-                            folder_id,
-                            meta_tmp_path,
-                            "meta.json",
-                            "application/json",
-                        )
-                        meta_tmp_path.unlink()
+                            st.session_state.index.papers[paper_id] = PaperIndexEntry(
+                                title=meta.title,
+                                pdf_file_id=pdf_file_id,
+                                meta_file_id=meta_file_id,
+                                folder_id=folder_id,
+                            )
+                        finally:
+                            tmp_path.unlink(missing_ok=True)
 
-                        # 4. Update Index
-                        st.session_state.index.papers[paper_id] = PaperIndexEntry(
-                            title=meta.title,
-                            pdf_file_id=pdf_file_id,
-                            meta_file_id=meta_file_id,
-                            folder_id=folder_id,
-                        )
-                        upload_library_index(
-                            creds,
-                            st.session_state.current_papers_id,
-                            st.session_state.index,
-                        )
-                        st.session_state.last_sync_time = None  # Force fetch next time
-                        st.success("Uploaded successfully!")
-                        st.rerun()
-                    finally:
-                        tmp_path.unlink(missing_ok=True)
+                    upload_library_index(
+                        creds,
+                        st.session_state.current_papers_id,
+                        st.session_state.index,
+                    )
+                    st.session_state.last_sync_time = None
+                    st.success("Uploaded successfully!")
+                    st.rerun()
 
         st.header("Library Papers")
         search_query = st_keyup(
