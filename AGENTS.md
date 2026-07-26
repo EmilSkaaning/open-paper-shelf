@@ -8,19 +8,25 @@ This document governs how work is done and how function/class documentation and 
 * Always execute python commands and tools using `uv` to ensure proper environment isolation.
 * Example: `uv run pytest` or `uv run ruff format .`
 
-### Testing
-* Verify your changes by running unit tests before making any commit.
+### Coding & Documentation Standards (`func-documentation` skill)
+* **Type Hints**: Add or update type hints for any new or modified functions/classes. All variables and functions must be fully type-hinted.
+* **Docstrings**: Provide clean docstrings describing parameters, return values, and exceptions for any new or modified functions/classes. **Use the Google docstring format strictly.**
+* **Input Verification**: Use Pydantic models for incoming data structures and API endpoint validation.
+* **Exclusions**: Skip files where the changes are purely deletions or trivial (e.g. config, constants, `__init__.py`).
+
+### Testing & Quality Assurance
+* **Unit Test Coverage**: Ensure 100% unit test coverage for all new and existing backend functions.
+* **Structured Tests**: Group similar tests under test classes.
+* **Parametrization**: Use `@pytest.mark.parametrize` for screening over large settings to keep test code clean.
+* **Fixtures**: Information used multiple times should be extracted into `conftest.py` files as pytest fixtures.
+* **Mocking**: Use `pytest-mock` for mocking external dependencies (e.g., file system, APIs).
+* **Execution**: Verify your changes by running unit tests before making any commit.
 * Run tests using poe task runner or pytest:
   ```bash
   uv run poe test
   # or
   uv run pytest
   ```
-
-### Coding & Documentation Standards (`func-documentation` skill)
-* **Type Hints**: Add or update type hints for any new or modified functions/classes.
-* **Docstrings**: Provide clean docstrings describing parameters, return values, and exceptions for any new or modified functions/classes. Use standard Python docstring style.
-* **Exclusions**: Skip files where the changes are purely deletions or trivial (e.g. config, constants, `__init__.py`).
 
 ---
 
