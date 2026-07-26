@@ -1,5 +1,6 @@
 """Main Streamlit application for Open Paper Shelf."""
 
+import json
 import os
 import sys
 import urllib.parse
@@ -25,6 +26,7 @@ src_path = Path(__file__).parent.parent
 if str(src_path) not in sys.path:
     sys.path.append(str(src_path))
 
+from backend.models import PaperMetadata  # noqa: E402, F401
 from backend.drive import (  # noqa: E402
     PAPERS_DIR,
     get_oauth_flow,
@@ -37,6 +39,9 @@ from backend.drive import (  # noqa: E402
     download_pdf,
     upload_pdf,
     delete_pdf,
+    list_metadata_in_library,
+    download_metadata,
+    upload_metadata,  # noqa: F401
 )
 
 
@@ -74,17 +79,16 @@ def authenticate_user() -> Optional[Credentials]:
                 return None
 
             flow.fetch_token(code=code)
-            creds = flow.credentials
+            obtained_creds = flow.credentials
+            if isinstance(obtained_creds, Credentials):
+                save_credentials(obtained_creds)
+                st.session_state.credentials = obtained_creds
 
-            # Save for future use locally and in session
-            save_credentials(creds)
-            st.session_state.credentials = creds
+                # Clean up the URL
+                st.query_params.pop("code", None)
+                st.query_params.pop("state", None)
 
-            # Clean up the URL
-            st.query_params.pop("code", None)
-            st.query_params.pop("state", None)
-
-            return creds
+                return obtained_creds
         except Exception as e:
             st.error(f"Failed to authenticate: {e}")
             return None
@@ -181,6 +185,29 @@ def main() -> None:
             st.session_state.papers_dir = PAPERS_DIR
 
             # Do NOT download PDFs synchronously on load, to prevent blocking UI.
+
+            # Create local metadata dir
+            metadata_dir = PAPERS_DIR / "metadata"
+            metadata_dir.mkdir(exist_ok=True, parents=True)
+            st.session_state.metadata_dir = metadata_dir
+            st.session_state.metadata = {}
+
+            # Sync metadata
+            metadata_files = list_metadata_in_library(creds, st.session_state.folder_id)
+            for meta_file in metadata_files:
+                name = meta_file["name"]
+                if name.endswith("_meta.json"):
+                    paper_id = name.replace("_meta.json", "")
+                    local_meta_path = metadata_dir / name
+                    if not local_meta_path.exists():
+                        download_metadata(creds, meta_file["id"], local_meta_path)
+
+                    if local_meta_path.exists():
+                        try:
+                            with open(local_meta_path, "r", encoding="utf-8") as f:
+                                st.session_state.metadata[paper_id] = json.load(f)
+                        except Exception as e:
+                            st.error(f"Failed to load metadata for {paper_id}: {e}")
 
     papers_dir = st.session_state.papers_dir
     folder_id = st.session_state.folder_id
