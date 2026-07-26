@@ -149,7 +149,12 @@ def bulk_overwrite_dialog(
 
 def main() -> None:
     """Main function to run the Streamlit app."""
-    st.set_page_config(page_title="Open Paper Shelf", page_icon="📚", layout="wide")
+    st.set_page_config(
+        page_title="Open Paper Shelf",
+        page_icon="📚",
+        layout="wide",
+        initial_sidebar_state="collapsed",
+    )
 
     creds: Optional[Credentials] = authenticate_user()
 
@@ -219,9 +224,7 @@ def main() -> None:
         bulk_overwrite_dialog(creds, folder_id, st.session_state.pending_conflicts)
 
     # --- UI Layout ---
-    left_col, right_col = st.columns([1, 3])
-
-    with left_col.container(border=True, height=800):
+    with st.sidebar:
         st.subheader("Papers")
 
         # State initialization
@@ -361,7 +364,7 @@ def main() -> None:
 
         selected_paper = st.session_state.selected_paper
 
-    with right_col.container(border=True, height=800):
+    with st.container():
         if selected_paper:
             # Find the selected paper by ID
             selected_pdf = next(
@@ -381,7 +384,7 @@ def main() -> None:
                     except Exception as e:
                         st.error(f"Failed to download {safe_paper_name}: {e}")
 
-                pdf_col, meta_col = st.columns([3, 1])
+                meta_col, pdf_col = st.columns([1, 3])
 
                 with pdf_col:
                     if local_pdf_path.exists():
