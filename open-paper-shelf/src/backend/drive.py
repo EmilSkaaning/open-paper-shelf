@@ -200,19 +200,26 @@ def delete_pdf(creds: Credentials, file_id: str) -> None:
     service.files().delete(fileId=file_id).execute()
 
 
-def upload_pdf(creds: Credentials, folder_id: str, file_path: Path) -> str:
+def upload_pdf(
+    creds: Credentials,
+    folder_id: str,
+    file_path: Path,
+    display_name: Optional[str] = None,
+) -> str:
     """Uploads a local PDF file to the specified Google Drive folder.
 
     Args:
         creds: The authenticated Google credentials.
         folder_id: The ID of the Google Drive folder.
         file_path: The local path to the PDF file.
+        display_name: Optional custom name for the file in Google Drive. If not provided, defaults to file_path.name.
 
     Returns:
         The Google Drive file ID of the newly uploaded file.
     """
     service: Any = build("drive", "v3", credentials=creds)
-    file_metadata: Dict[str, Any] = {"name": file_path.name, "parents": [folder_id]}
+    name_to_use = display_name if display_name else file_path.name
+    file_metadata: Dict[str, Any] = {"name": name_to_use, "parents": [folder_id]}
     media = MediaFileUpload(str(file_path), mimetype="application/pdf", resumable=True)
     file: Dict[str, Any] = (
         service.files()
