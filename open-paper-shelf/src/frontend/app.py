@@ -10,7 +10,13 @@ from pydantic import ValidationError
 import os
 from st_keyup import st_keyup
 
-from backend.drive import (
+import sys
+
+src_path = Path(__file__).resolve().parent.parent
+if str(src_path) not in sys.path:
+    sys.path.append(str(src_path))
+
+from backend.drive import (  # noqa: E402
     add_oauth_flow,
     create_library,
     create_paper_folder,
@@ -27,7 +33,7 @@ from backend.drive import (
     upload_library_index,
     PAPERS_DIR,
 )
-from backend.models import LibraryIndex, PaperIndexEntry, PaperMetadata
+from backend.models import LibraryIndex, PaperIndexEntry, PaperMetadata  # noqa: E402
 
 st.set_page_config(layout="wide", page_title="Open Paper Shelf")
 
