@@ -59,7 +59,18 @@ def save_credentials(creds: Credentials) -> None:
 def _get_or_create_folder(
     service: Any, name: str, parent_id: Optional[str] = None
 ) -> str:
-    query = f"name = '{name}' and mimeType = '{FOLDER_MIME_TYPE}' and trashed = false"
+    """Gets an existing Google Drive folder ID or creates a new folder.
+
+    Args:
+        service (Any): The Google Drive API v3 resource service.
+        name (str): The name of the folder to find or create.
+        parent_id (Optional[str], optional): The ID of the parent folder. Defaults to None.
+
+    Returns:
+        str: The Google Drive file ID of the folder.
+    """
+    escaped_name = name.replace("'", "\\'")
+    query = f"name = '{escaped_name}' and mimeType = '{FOLDER_MIME_TYPE}' and trashed = false"
     if parent_id:
         query += f" and '{parent_id}' in parents"
     results = (
@@ -140,7 +151,7 @@ def download_library_index(
             done = False
             while not done:
                 _, done = downloader.next_chunk()
-        tmp_path.rename(dest_path)
+        tmp_path.replace(dest_path)
     finally:
         if tmp_path and tmp_path.exists():
             tmp_path.unlink(missing_ok=True)
@@ -183,8 +194,25 @@ def create_paper_folder(
 def upload_file_to_folder(
     creds: Credentials, folder_id: str, file_path: Path, filename: str, mime_type: str
 ) -> str:
+    """Uploads a file to a specific Google Drive folder.
+
+    If a file with the given name already exists in the folder, it is updated.
+
+    Args:
+        creds (Credentials): The Google OAuth credentials.
+        folder_id (str): The ID of the parent folder in Google Drive.
+        file_path (Path): The local path of the file to upload.
+        filename (str): The destination name for the file in Google Drive.
+        mime_type (str): The MIME type of the uploaded file.
+
+    Returns:
+        str: The Google Drive file ID of the uploaded file.
+    """
     service: Any = build("drive", "v3", credentials=creds)
-    query = f"name = '{filename}' and '{folder_id}' in parents and trashed = false"
+    escaped_filename = filename.replace("'", "\\'")
+    query = (
+        f"name = '{escaped_filename}' and '{folder_id}' in parents and trashed = false"
+    )
     existing = (
         service.files().list(q=query, spaces="drive", fields="files(id)").execute()
     )
@@ -218,7 +246,7 @@ def download_file(creds: Credentials, file_id: str, dest_path: Path) -> None:
             done = False
             while not done:
                 _, done = downloader.next_chunk()
-        tmp_path.rename(dest_path)
+        tmp_path.replace(dest_path)
     finally:
         if tmp_path and tmp_path.exists():
             tmp_path.unlink(missing_ok=True)
