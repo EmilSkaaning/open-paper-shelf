@@ -1,6 +1,7 @@
 """Main Streamlit application for Open Paper Shelf."""
 
 import sys
+import urllib.parse
 from pathlib import Path
 from typing import Optional
 
@@ -13,6 +14,7 @@ if str(src_path) not in sys.path:
     sys.path.append(str(src_path))
 
 from backend.drive import (  # noqa: E402
+    PAPERS_DIR,
     get_oauth_flow,
     load_credentials_from_file,
     save_credentials,
@@ -112,14 +114,13 @@ def main() -> None:
             st.session_state.drive_pdfs = pdfs
 
             # Create local papers dir
-            project_root = Path(__file__).resolve().parent.parent.parent.parent
-            papers_dir = project_root / "papers"
-            papers_dir.mkdir(exist_ok=True)
-            st.session_state.papers_dir = papers_dir
+            PAPERS_DIR.mkdir(exist_ok=True)
+            st.session_state.papers_dir = PAPERS_DIR
 
             # Download missing PDFs
             for pdf in pdfs:
-                pdf_path = papers_dir / pdf["name"]
+                safe_name = Path(pdf["name"]).name
+                pdf_path = PAPERS_DIR / safe_name
                 if not pdf_path.exists():
                     download_pdf(creds, pdf["id"], pdf_path)
 
@@ -133,22 +134,30 @@ def main() -> None:
         st.subheader("Papers")
 
         # Upload new paper
+        if "uploader_key" not in st.session_state:
+            st.session_state.uploader_key = 0
+
         with st.popover("Upload PDF"):
             uploaded_file = st.file_uploader(
-                "Choose a PDF", type=["pdf"], label_visibility="collapsed"
+                "Choose a PDF",
+                type=["pdf"],
+                label_visibility="collapsed",
+                key=f"uploader_{st.session_state.uploader_key}",
             )
             if uploaded_file is not None:
                 # save to local
-                file_path = papers_dir / uploaded_file.name
+                safe_name = Path(uploaded_file.name).name
+                file_path = papers_dir / safe_name
                 with open(file_path, "wb") as f:
                     f.write(uploaded_file.getbuffer())
 
                 # upload to drive
-                with st.spinner(f"Uploading {uploaded_file.name}..."):
+                with st.spinner(f"Uploading {safe_name}..."):
                     upload_pdf(creds, folder_id, file_path)
                     st.success("Uploaded!")
-                    # Refresh list
+                    # Refresh list and clear uploader
                     st.session_state.drive_pdfs = list_pdfs_in_library(creds, folder_id)
+                    st.session_state.uploader_key += 1
                     st.rerun()
 
         # Search box
@@ -171,7 +180,8 @@ def main() -> None:
     with right_col.container(border=True, height=800):
         if selected_paper:
             # FastAPI static mount is at /papers/ (assuming FastAPI runs on port 8000)
-            fastapi_url = f"http://localhost:8000/papers/{selected_paper}"
+            safe_paper_name = urllib.parse.quote(selected_paper)
+            fastapi_url = f"http://localhost:8000/papers/{safe_paper_name}"
             pdf_display = f'<iframe src="{fastapi_url}" width="100%" height="750" style="border:none;" type="application/pdf"></iframe>'
             st.markdown(pdf_display, unsafe_allow_html=True)
         else:
