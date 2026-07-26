@@ -1,510 +1,359 @@
-"""Main Streamlit application for Open Paper Shelf."""
-
 import json
-import os
-import sys
-import urllib.parse
-import tempfile
-import time
-import re
 import shutil
+import tempfile
+import uuid
 from pathlib import Path
-from typing import Optional, Any
+from typing import Any, Optional
 
 import streamlit as st
+from pydantic import ValidationError
+import os
 from st_keyup import st_keyup
-from google.oauth2.credentials import Credentials
 
-
-def get_safe_filename(name: str) -> str:
-    """Returns a filesystem-safe filename by removing invalid characters."""
-    base = Path(name).name
-    return re.sub(r'[<>:"/\\|?*]', "_", base)
-
-
-# Ensure the src directory is in the path to import backend
-src_path = Path(__file__).parent.parent
-if str(src_path) not in sys.path:
-    sys.path.append(str(src_path))
-
-from backend.models import PaperMetadata  # noqa: E402
-from backend.drive import (  # noqa: E402
-    PAPERS_DIR,
+from backend.drive import (
+    add_oauth_flow,
+    create_library,
+    create_paper_folder,
+    delete_paper_folder,
+    download_file,
+    get_library_index_file,
     get_oauth_flow,
+    get_or_create_root_folder,
+    get_papers_folder,
+    list_libraries,
     load_credentials_from_file,
     save_credentials,
-    get_or_create_library_folder,
-    OAUTH_FLOWS,
-    add_oauth_flow,
-    list_pdfs_in_library,
-    download_pdf,
-    upload_pdf,
-    delete_pdf,
-    list_metadata_in_library,
-    download_metadata,
-    upload_metadata,
+    upload_file_to_folder,
+    upload_library_index,
+    PAPERS_DIR,
 )
+from backend.models import LibraryIndex, PaperIndexEntry, PaperMetadata
+
+st.set_page_config(layout="wide", page_title="Open Paper Shelf")
 
 
-def authenticate_user() -> Optional[Credentials]:
-    """Handles the Google OAuth flow within Streamlit.
-
-    Checks session state, local files, and URL query parameters for valid
-    authentication.
-
-    Returns:
-        Credentials if authenticated, else None.
-    """
-    # 1. Check if we already have valid credentials in session state
-    if "credentials" in st.session_state:
-        return st.session_state.credentials
-
-    # 2. Check if we have credentials saved locally
-    creds: Optional[Credentials] = load_credentials_from_file()
+def authenticate_user() -> Optional[Any]:
+    creds = load_credentials_from_file()
     if creds:
-        st.session_state.credentials = creds
         return creds
 
-    # 3. Check if we are returning from Google Auth with a code in the URL
-    code: Optional[str] = st.query_params.get("code")
-    state: Optional[str] = st.query_params.get("state")
+    if "auth_flow" not in st.session_state:
+        flow = get_oauth_flow()
+        st.session_state.auth_flow = flow
+        add_oauth_flow("main_auth", flow)
+        auth_url, _ = flow.authorization_url(prompt="consent")
+        st.session_state.auth_url = auth_url
 
-    if code and state:
+    query_params = st.query_params
+    if "code" in query_params:
+        code = query_params["code"]
+        flow = st.session_state.auth_flow
         try:
-            # Retrieve the exact Flow object that generated the authorization URL
-            flow = OAUTH_FLOWS.pop(state, None)
-
-            if not flow:
-                st.error("Authentication session lost. Please try logging in again.")
-                st.query_params.clear()
-                return None
-
             flow.fetch_token(code=code)
-            obtained_creds = flow.credentials
-            if isinstance(obtained_creds, Credentials):
-                save_credentials(obtained_creds)
-                st.session_state.credentials = obtained_creds
-
-                # Clean up the URL
-                st.query_params.pop("code", None)
-                st.query_params.pop("state", None)
-
-                return obtained_creds
+            creds = flow.credentials
+            save_credentials(creds)
+            st.query_params.clear()
+            st.success("Successfully authenticated!")
+            st.rerun()
         except Exception as e:
-            st.error(f"Failed to authenticate: {e}")
+            st.error(f"Authentication failed: {e}")
             return None
 
+    st.warning("Please authenticate to access your Google Drive.")
+    st.link_button("Login with Google", st.session_state.auth_url)
     return None
 
 
-@st.dialog("Overwrite existing files?")
-def bulk_overwrite_dialog(
-    creds: Credentials,
-    folder_id: str,
-    conflicts: list[tuple[Any, str, list[str]]],
-) -> None:
-    """Displays a dialog to overwrite multiple existing Google Drive PDFs.
+def init_library_state(creds, lib_id: str, papers_id: str):
+    st.session_state.current_lib_id = lib_id
+    st.session_state.current_papers_id = papers_id
+    st.session_state.local_lib_dir = PAPERS_DIR / lib_id
+    st.session_state.local_lib_dir.mkdir(parents=True, exist_ok=True)
+    st.session_state.local_index_path = (
+        st.session_state.local_lib_dir / "id-mapping.json"
+    )
+    st.session_state.index = LibraryIndex()
+    st.session_state.last_sync_time = None
+    st.session_state.selected_paper = None
 
-    Args:
-        creds: The authenticated Google credentials.
-        folder_id: The Google Drive folder ID to upload to.
-        conflicts: A list of tuples containing (UploadedFile, safe_name, existing_ids).
-    """
-    st.write("The following files already exist in your Google Drive library:")
-    for _, name, _ in conflicts:
-        st.write(f"- {name}")
-    st.write("Do you want to overwrite all of them?")
-    if st.button("Yes, overwrite all"):
-        for uf, name, existing_ids in conflicts:
-            try:
-                with st.spinner(f"Deleting old versions of {name}..."):
-                    for file_id in existing_ids:
-                        delete_pdf(creds, file_id)
-                        shutil.rmtree(
-                            st.session_state.papers_dir / file_id, ignore_errors=True
-                        )
-                with st.spinner(f"Uploading new version of {name}..."):
-                    with tempfile.NamedTemporaryFile(
-                        delete=False, suffix=".pdf"
-                    ) as tmp_file:
-                        tmp_file.write(uf.getbuffer())
-                        temp_file_path = Path(tmp_file.name)
-                    try:
-                        upload_pdf(creds, folder_id, temp_file_path, display_name=name)
-                    finally:
-                        temp_file_path.unlink(missing_ok=True)
-            except Exception as e:
-                st.error(f"Failed to overwrite {name}: {e}")
 
-        st.session_state.drive_pdfs = list_pdfs_in_library(creds, folder_id)
-        st.session_state.pending_conflicts = None
-        st.session_state.uploader_key += 1
-        st.success("Overwritten successfully!")
-        st.rerun()
-    if st.button("Cancel"):
-        st.session_state.pending_conflicts = None
-        st.session_state.uploader_key += 1
-        st.rerun()
+def sync_library_index(creds):
+    papers_id = st.session_state.current_papers_id
+    local_path = st.session_state.local_index_path
+
+    remote_info = get_library_index_file(creds, papers_id)
+    if not remote_info:
+        st.session_state.index = LibraryIndex()
+        st.session_state.last_sync_time = None
+        return
+
+    remote_time = remote_info.get("modifiedTime")
+    if not local_path.exists() or st.session_state.last_sync_time != remote_time:
+        try:
+            download_file(creds, remote_info["id"], local_path)
+            st.session_state.last_sync_time = remote_time
+        except Exception as e:
+            st.error(f"Failed to sync library index: {e}")
+            return
+
+    if local_path.exists():
+        try:
+            data = json.loads(local_path.read_text())
+            st.session_state.index = LibraryIndex(**data)
+        except Exception as e:
+            st.error(f"Failed to parse library index: {e}")
 
 
 def main() -> None:
-    """Main function to run the Streamlit app."""
-    st.set_page_config(
-        page_title="Open Paper Shelf",
-        page_icon="📚",
-        layout="wide",
-        initial_sidebar_state="expanded",
-    )
-
-    creds: Optional[Credentials] = authenticate_user()
-
+    creds = authenticate_user()
     if not creds:
-        st.title("Open Paper Shelf")
-        st.write("Welcome to your Google Drive-backed paper library!")
-        st.info("Please connect your Google account to continue.")
-        try:
-            flow = get_oauth_flow()
-            # Generate the URL the user will click to authenticate
-            auth_url, state = flow.authorization_url(
-                access_type="offline", prompt="consent"
-            )
-
-            # Save the flow so we have the PKCE code_verifier when they return
-            add_oauth_flow(state, flow)
-
-            st.link_button("Connect with Google", auth_url)
-        except FileNotFoundError as e:
-            st.error(str(e))
         return
 
-    # --- Initialization / Syncing ---
-    if "folder_id" not in st.session_state:
-        with st.spinner("Initializing library and syncing papers..."):
-            st.session_state.folder_id = get_or_create_library_folder(creds)
+    st.title("📚 Open Paper Shelf")
 
-            # Sync files
-            pdfs = list_pdfs_in_library(creds, st.session_state.folder_id)
-            st.session_state.drive_pdfs = pdfs
+    if "root_id" not in st.session_state:
+        st.session_state.root_id = get_or_create_root_folder(creds)
 
-            # Create local papers dir
-            PAPERS_DIR.mkdir(exist_ok=True)
-            st.session_state.papers_dir = PAPERS_DIR
+    root_id = st.session_state.root_id
 
-            # Do NOT download PDFs synchronously on load, to prevent blocking UI.
+    # Library Selection Screen
+    if "current_lib_id" not in st.session_state:
+        st.subheader("Select or Create a Library")
+        libraries = list_libraries(creds, root_id)
 
-            # Create local metadata dir
-            metadata_dir = PAPERS_DIR / "metadata"
-            metadata_dir.mkdir(exist_ok=True, parents=True)
-            st.session_state.metadata_dir = metadata_dir
-            st.session_state.metadata = {}
-
-            # Sync metadata
-            metadata_files = list_metadata_in_library(creds, st.session_state.folder_id)
-            with st.spinner("Syncing metadata..."):
-                for meta_file in metadata_files:
-                    name = meta_file["name"]
-                    if name.endswith("_meta.json"):
-                        paper_id = name.removesuffix("_meta.json")
-                        local_meta_path = metadata_dir / name
-                        if not local_meta_path.exists():
-                            try:
-                                download_metadata(
-                                    creds, meta_file["id"], local_meta_path
-                                )
-                            except Exception as e:
-                                st.error(
-                                    f"Failed to download metadata for {paper_id}: {e}"
-                                )
-
-                        if local_meta_path.exists():
-                            try:
-                                with open(local_meta_path, "r", encoding="utf-8") as f:
-                                    st.session_state.metadata[paper_id] = json.load(f)
-                            except Exception as e:
-                                st.error(f"Failed to load metadata for {paper_id}: {e}")
-
-    papers_dir = st.session_state.papers_dir
-    folder_id = st.session_state.folder_id
-
-    # Check for pending upload conflicts
-    if st.session_state.get("pending_conflicts"):
-        bulk_overwrite_dialog(creds, folder_id, st.session_state.pending_conflicts)
-
-    # --- UI Layout ---
-    with st.sidebar:
-        st.subheader("Papers")
-
-        # State initialization
-        if "uploader_key" not in st.session_state:
-            st.session_state.uploader_key = 0
-
-        if "selected_paper" not in st.session_state:
-            st.session_state.selected_paper = None
-
-        sorted_pdfs = sorted(
-            st.session_state.drive_pdfs, key=lambda x: x["name"].lower()
-        )
-        checked_papers = [
-            pdf
-            for pdf in sorted_pdfs
-            if st.session_state.get(f"chk_{pdf['id']}", False)
-        ]
-
-        # Upload area
-        uploaded_files = st.file_uploader(
-            "Upload PDF(s)",
-            type=["pdf"],
-            accept_multiple_files=True,
-            label_visibility="collapsed",
-            key=f"uploader_{st.session_state.uploader_key}",
-        )
-        if uploaded_files and not st.session_state.get("pending_conflicts"):
-            conflicts = []
-            new_uploads = []
-            for uf in uploaded_files:
-                safe_name = get_safe_filename(uf.name)
-                existing_ids = [
-                    p["id"]
-                    for p in st.session_state.drive_pdfs
-                    if p["name"] == safe_name
-                ]
-                if existing_ids:
-                    conflicts.append((uf, safe_name, existing_ids))
-                else:
-                    new_uploads.append((uf, safe_name))
-
-            # Process non-conflicting files immediately
-            if new_uploads:
-                for uf, safe_name in new_uploads:
-                    try:
-                        with st.spinner(f"Uploading {safe_name}..."):
-                            with tempfile.NamedTemporaryFile(
-                                delete=False, suffix=".pdf"
-                            ) as tmp_file:
-                                tmp_file.write(uf.getbuffer())
-                                temp_file_path = Path(tmp_file.name)
-                            try:
-                                upload_pdf(
-                                    creds,
-                                    folder_id,
-                                    temp_file_path,
-                                    display_name=safe_name,
-                                )
-                            finally:
-                                temp_file_path.unlink(missing_ok=True)
-                    except Exception as e:
-                        st.error(f"Failed to upload {safe_name}: {e}")
-
-            if conflicts:
-                st.session_state.pending_conflicts = conflicts
-                st.rerun()
+        col1, col2 = st.columns(2)
+        with col1:
+            if libraries:
+                lib_options = {lib["id"]: lib["name"] for lib in libraries}
+                selected_lib = st.selectbox(
+                    "Existing Libraries",
+                    options=list(lib_options.keys()),
+                    format_func=lambda x: lib_options[x],
+                )
+                if st.button("Open Library"):
+                    papers_id = get_papers_folder(creds, selected_lib)
+                    init_library_state(creds, selected_lib, papers_id)
+                    st.rerun()
             else:
-                st.session_state.drive_pdfs = list_pdfs_in_library(creds, folder_id)
-                st.session_state.uploader_key += 1
-                st.success("Uploaded successfully!")
+                st.info("No existing libraries found.")
+
+        with col2:
+            new_lib_name = st.text_input("New Library Name")
+            if st.button("Create Library") and new_lib_name:
+                lib_info = create_library(creds, root_id, new_lib_name)
+                init_library_state(creds, lib_info["lib_id"], lib_info["papers_id"])
+                upload_library_index(creds, lib_info["papers_id"], LibraryIndex())
+                st.success(f"Library '{new_lib_name}' created!")
                 st.rerun()
+        return
 
-        # Icon bar
-        if st.button(
-            "🗑️",
-            help="Delete selected papers",
-            disabled=not bool(checked_papers),
-            type="primary" if checked_papers else "secondary",
-        ):
-            for pdf in checked_papers:
-                try:
-                    with st.spinner(f"Deleting {pdf['name']}..."):
-                        delete_pdf(creds, pdf["id"])
-                        from backend.drive import delete_metadata
+    # Library View
+    if "index" not in st.session_state:
+        with st.spinner("Syncing library..."):
+            sync_library_index(creds)
 
-                        delete_metadata(creds, folder_id, pdf["id"])
-                        shutil.rmtree(
-                            st.session_state.papers_dir / pdf["id"],
-                            ignore_errors=True,
-                        )
-                        if "metadata_dir" in st.session_state:
-                            local_meta_path = (
-                                st.session_state.metadata_dir / f"{pdf['id']}_meta.json"
-                            )
-                            local_meta_path.unlink(missing_ok=True)
-                        if "metadata" in st.session_state:
-                            st.session_state.metadata.pop(pdf["id"], None)
-                    # Reset the checkbox state
-                    st.session_state[f"chk_{pdf['id']}"] = False
-                    if st.session_state.selected_paper == pdf["id"]:
-                        st.session_state.selected_paper = None
-                except Exception as e:
-                    st.error(f"Failed to delete {pdf['name']}: {e}")
+    with st.sidebar:
 
-            st.session_state.drive_pdfs = list_pdfs_in_library(creds, folder_id)
-            st.success("Deleted successfully!")
-            st.rerun()
+        def switch_lib() -> None:
+            for k in ["current_lib_id", "current_papers_id", "index", "last_sync_time"]:
+                st.session_state.pop(k, None)
 
+        st.button("🔙 Switch Library", on_click=switch_lib, use_container_width=True)
         if st.button(
             "🔄 Force Sync",
-            help="Force refresh metadata and library from Google Drive",
+            help="Force refresh metadata from Google Drive",
             use_container_width=True,
         ):
-            if "metadata_dir" in st.session_state:
-                shutil.rmtree(st.session_state.metadata_dir, ignore_errors=True)
-            st.session_state.pop("folder_id", None)
-            st.session_state.pop("drive_pdfs", None)
-            st.session_state.pop("metadata", None)
+            st.session_state.last_sync_time = None
+            sync_library_index(creds)
             st.rerun()
 
-        # Search box
-        search_query = st_keyup(
-            "Search",
-            placeholder="Search by title...",
-            label_visibility="collapsed",
-            debounce=200,
-        )
-        search_query = search_query or ""
+        st.header("Upload Paper")
+        uploaded_file = st.file_uploader("Choose a PDF file", type="pdf")
+        if uploaded_file is not None:
+            if st.button("Upload"):
+                paper_id = uuid.uuid4().hex
+                with st.spinner("Uploading to Google Drive..."):
+                    # Create local temp file
+                    with tempfile.NamedTemporaryFile(
+                        delete=False, suffix=".pdf"
+                    ) as tmp:
+                        tmp.write(uploaded_file.getvalue())
+                        tmp_path = Path(tmp.name)
 
-        # List PDFs
-        filtered_pdfs = [
-            p for p in sorted_pdfs if search_query.lower() in p["name"].lower()
-        ]
-
-        if filtered_pdfs:
-            for pdf in filtered_pdfs:
-                name = pdf["name"]
-                pdf_id = pdf["id"]
-                display_name = name[:-4] if name.lower().endswith(".pdf") else name
-                col1, col2 = st.columns([0.15, 0.85])
-                with col1:
-                    st.checkbox(
-                        "Select", key=f"chk_{pdf_id}", label_visibility="collapsed"
-                    )
-                with col2:
-                    is_selected = st.session_state.selected_paper == pdf_id
-                    if st.button(
-                        display_name,
-                        key=f"btn_{pdf_id}",
-                        use_container_width=True,
-                        type="secondary" if is_selected else "tertiary",
-                    ):
-                        st.session_state.selected_paper = pdf_id
-                        st.rerun()
-        else:
-            st.write("No papers found.")
-
-        selected_paper = st.session_state.selected_paper
-
-    with st.container():
-        if selected_paper:
-            # Find the selected paper by ID
-            selected_pdf = next(
-                (p for p in st.session_state.drive_pdfs if p["id"] == selected_paper),
-                None,
-            )
-            if selected_pdf:
-                safe_paper_name = get_safe_filename(selected_pdf["name"])
-                paper_folder = papers_dir / selected_pdf["id"]
-                local_pdf_path = paper_folder / safe_paper_name
-
-                if not local_pdf_path.exists():
-                    paper_folder.mkdir(exist_ok=True)
                     try:
-                        with st.spinner(f"Downloading {safe_paper_name} from Drive..."):
-                            download_pdf(creds, selected_pdf["id"], local_pdf_path)
-                    except Exception as e:
-                        st.error(f"Failed to download {safe_paper_name}: {e}")
-
-                meta_col, pdf_col = st.columns([1, 3])
-
-                with pdf_col:
-                    if local_pdf_path.exists():
-                        base_url = os.environ.get(
-                            "FASTAPI_URL", "http://localhost:8000"
+                        # 1. Create Folder
+                        folder_id = create_paper_folder(
+                            creds, st.session_state.current_papers_id, paper_id
                         )
-                        fastapi_url = f"{base_url.rstrip('/')}/papers/{selected_pdf['id']}/{urllib.parse.quote(safe_paper_name)}"
-                        pdf_display = f'<iframe src="{fastapi_url}" width="100%" height="750" style="border:none;" type="application/pdf"></iframe>'
-                        st.markdown(pdf_display, unsafe_allow_html=True)
-
-                with meta_col:
-                    with st.expander("Metadata", expanded=True):
-                        # Load existing or create default
-                        existing_data = st.session_state.metadata.get(
-                            selected_paper, {}
+                        # 2. Upload PDF
+                        pdf_file_id = upload_file_to_folder(
+                            creds, folder_id, tmp_path, "paper.pdf", "application/pdf"
                         )
-                        if not existing_data:
-                            existing_data = PaperMetadata(
-                                title=selected_pdf["name"]
-                            ).model_dump()
 
-                        meta = PaperMetadata(**existing_data)
+                        # 3. Upload initial Meta
+                        meta = PaperMetadata(title=uploaded_file.name)
+                        meta_tmp_path = (
+                            Path(tempfile.gettempdir()) / f"{paper_id}_meta.json"
+                        )
+                        meta_tmp_path.write_text(meta.model_dump_json(indent=2))
+                        meta_file_id = upload_file_to_folder(
+                            creds,
+                            folder_id,
+                            meta_tmp_path,
+                            "meta.json",
+                            "application/json",
+                        )
+                        meta_tmp_path.unlink()
 
-                        with st.form(key=f"meta_form_{selected_paper}"):
-                            new_title = st.text_input("Title", value=meta.title)
-                            tags_str = st.text_input(
-                                "Tags (comma separated)", value=", ".join(meta.tags)
+                        # 4. Update Index
+                        st.session_state.index.papers[paper_id] = PaperIndexEntry(
+                            title=meta.title,
+                            pdf_file_id=pdf_file_id,
+                            meta_file_id=meta_file_id,
+                            folder_id=folder_id,
+                        )
+                        upload_library_index(
+                            creds,
+                            st.session_state.current_papers_id,
+                            st.session_state.index,
+                        )
+                        st.session_state.last_sync_time = None  # Force fetch next time
+                        st.success("Uploaded successfully!")
+                        st.rerun()
+                    finally:
+                        tmp_path.unlink(missing_ok=True)
+
+        st.header("Library Papers")
+        search_query = st_keyup(
+            "Search", placeholder="Search papers...", key="search_box"
+        ).lower()
+
+        filtered_papers = []
+        for pid, p in st.session_state.index.papers.items():
+            if search_query in p.title.lower():
+                filtered_papers.append((pid, p))
+
+        for pid, p in sorted(filtered_papers, key=lambda x: x[1].title):
+            col1, col2 = st.columns([4, 1])
+            with col1:
+                display_name = f"📄 {p.title}"
+                if pid == st.session_state.selected_paper:
+                    display_name = f"**{display_name}**"
+                if st.button(display_name, key=f"btn_{pid}", use_container_width=True):
+                    st.session_state.selected_paper = pid
+                    st.rerun()
+            with col2:
+                if st.button("🗑️", key=f"del_{pid}", help="Delete paper"):
+                    with st.spinner("Deleting..."):
+                        delete_paper_folder(creds, p.folder_id)
+                        st.session_state.index.papers.pop(pid)
+                        upload_library_index(
+                            creds,
+                            st.session_state.current_papers_id,
+                            st.session_state.index,
+                        )
+                        if st.session_state.selected_paper == pid:
+                            st.session_state.selected_paper = None
+                        shutil.rmtree(
+                            st.session_state.local_lib_dir / pid, ignore_errors=True
+                        )
+                        st.rerun()
+
+    # Main area
+    if st.session_state.selected_paper:
+        pid = st.session_state.selected_paper
+        paper_info = st.session_state.index.papers[pid]
+
+        local_paper_dir = st.session_state.local_lib_dir / pid
+        local_paper_dir.mkdir(parents=True, exist_ok=True)
+        local_pdf_path = local_paper_dir / "paper.pdf"
+        local_meta_path = local_paper_dir / "meta.json"
+
+        # Download files if missing
+        with st.spinner("Loading paper..."):
+            if not local_pdf_path.exists():
+                download_file(creds, paper_info.pdf_file_id, local_pdf_path)
+
+            # Always sync metadata on load to avoid stale caches across devices
+            try:
+                download_file(creds, paper_info.meta_file_id, local_meta_path)
+            except Exception as e:
+                st.error(f"Failed to fetch metadata: {e}")
+
+        meta = PaperMetadata(title=paper_info.title)
+        if local_meta_path.exists():
+            try:
+                data = json.loads(local_meta_path.read_text())
+                meta = PaperMetadata(**data)
+            except ValidationError:
+                st.warning("Metadata invalid, using default fallback.")
+                data = json.loads(local_meta_path.read_text())
+                data["title"] = data.get("title", paper_info.title)
+                # Ignore validation for fallback rendering if possible, but Pydantic requires it
+                try:
+                    meta = PaperMetadata(**data)
+                except Exception:
+                    meta = PaperMetadata(title=paper_info.title)
+            except Exception as e:
+                st.error(f"Could not load metadata: {e}")
+
+        col_pdf, col_meta = st.columns([2, 1])
+        with col_pdf:
+            base_url = os.environ.get("FASTAPI_URL", "http://localhost:8000")
+            fastapi_url = f"{base_url.rstrip('/')}/papers/{st.session_state.current_lib_id}/{pid}/paper.pdf"
+            pdf_display = f'<iframe src="{fastapi_url}" width="100%" height="750" style="border:none;" type="application/pdf"></iframe>'
+            st.markdown(pdf_display, unsafe_allow_html=True)
+
+        with col_meta:
+            st.subheader("Metadata")
+            with st.form(key=f"meta_form_{pid}"):
+                new_title = st.text_input("Title", value=meta.title)
+                tags_str = st.text_input(
+                    "Tags (comma separated)", value=", ".join(meta.tags)
+                )
+                status = st.selectbox(
+                    "Status",
+                    options=["Unread", "Reading", "Read", "TODO"],
+                    index=["Unread", "Reading", "Read", "TODO"].index(meta.status),
+                )
+                citation = st.text_input("Citation", value=meta.citation)
+                notes = st.text_area("Notes", value=meta.notes, height=200)
+
+                if st.form_submit_button("Save Changes"):
+                    from typing import cast, Literal
+
+                    meta.title = new_title
+                    meta.tags = [t.strip() for t in tags_str.split(",") if t.strip()]
+                    meta.status = cast(
+                        Literal["Unread", "Reading", "Read", "TODO"], status
+                    )
+                    meta.citation = citation
+                    meta.notes = notes
+
+                    local_meta_path.write_text(meta.model_dump_json(indent=2))
+                    with st.spinner("Saving metadata to Drive..."):
+                        upload_file_to_folder(
+                            creds,
+                            paper_info.folder_id,
+                            local_meta_path,
+                            "meta.json",
+                            "application/json",
+                        )
+
+                        # Update index if title changed
+                        if paper_info.title != new_title:
+                            paper_info.title = new_title
+                            st.session_state.index.papers[pid] = paper_info
+                            upload_library_index(
+                                creds,
+                                st.session_state.current_papers_id,
+                                st.session_state.index,
                             )
 
-                            status_options = ["Unread", "Reading", "Read", "TODO"]
-                            current_index = (
-                                status_options.index(meta.status)
-                                if meta.status in status_options
-                                else 0
-                            )
-                            new_status = st.selectbox(
-                                "Status", options=status_options, index=current_index
-                            )
-
-                            new_citation = st.text_input(
-                                "Citation", value=meta.citation
-                            )
-                            new_notes = st.text_area(
-                                "Notes", value=meta.notes, height=200
-                            )
-
-                            if st.form_submit_button("Save Changes"):
-                                updated_tags = [
-                                    t.strip() for t in tags_str.split(",") if t.strip()
-                                ]
-                                updated_meta = PaperMetadata(
-                                    title=new_title,
-                                    tags=updated_tags,
-                                    status=new_status,  # type: ignore
-                                    citation=new_citation,
-                                    notes=new_notes,
-                                )
-
-                                # Update session state
-                                st.session_state.metadata[selected_paper] = (
-                                    updated_meta.model_dump()
-                                )
-
-                                # Save locally
-                                meta_filename = f"{selected_paper}_meta.json"
-                                local_meta_path = (
-                                    st.session_state.metadata_dir / meta_filename
-                                )
-                                with open(local_meta_path, "w", encoding="utf-8") as f:
-                                    json.dump(updated_meta.model_dump(), f, indent=2)
-
-                                # Upload to drive
-                                try:
-                                    with st.spinner("Saving metadata to Drive..."):
-                                        upload_metadata(
-                                            creds,
-                                            folder_id,
-                                            local_meta_path,
-                                            meta_filename,
-                                        )
-                                    st.success("Metadata saved!")
-                                    time.sleep(1)
-                                    st.rerun()
-                                except Exception as e:
-                                    st.error(f"Failed to save metadata to Drive: {e}")
-
-            else:
-                st.error("Selected paper not found in library data.")
-        else:
-            st.info(
-                "Select a paper from the list to view it here.",
-                icon=":material/arrow_back:",
-            )
+                    st.success("Metadata saved!")
+    else:
+        st.info("Select a paper from the sidebar to view it.")
 
 
 if __name__ == "__main__":

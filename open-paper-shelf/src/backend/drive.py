@@ -1,33 +1,22 @@
-"""Module for interacting with Google Drive.
-
-This module provides functionality to authenticate with Google Drive
-using OAuth 2.0 Web Flow and to ensure the library folder exists.
-"""
-
-from pathlib import Path
 from typing import Optional, List, Dict, Any
-
+from pathlib import Path
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import Flow
 from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
 import tempfile
+import uuid
 
-# Dictionary to cache Flow objects across Streamlit reruns.
-# Keys are the OAuth 'state' strings.
+from backend.models import LibraryIndex
+
 OAUTH_FLOWS: Dict[str, Flow] = {}
 MAX_OAUTH_FLOWS: int = 100
-
-# Scopes needed for Google Drive API
 SCOPES: List[str] = ["https://www.googleapis.com/auth/drive.file"]
 FOLDER_NAME: str = "open-paper-shelf-lib"
 FOLDER_MIME_TYPE: str = "application/vnd.google-apps.folder"
-
-# Streamlit's default port for local development
 REDIRECT_URI: str = "http://localhost:8501/"
 
-# Resolve project root to reliably find credentials and tokens
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 CREDENTIALS_PATH = PROJECT_ROOT / "credentials.json"
 TOKEN_PATH = PROJECT_ROOT / "token.json"
@@ -35,309 +24,180 @@ PAPERS_DIR = PROJECT_ROOT / "papers"
 
 
 def add_oauth_flow(state: str, flow: Flow) -> None:
-    """Adds an OAuth flow to the cache, evicting the oldest if at capacity.
-
-    Args:
-        state (str): The OAuth state string.
-        flow (Flow): The configured OAuth 2.0 flow.
-    """
     if len(OAUTH_FLOWS) >= MAX_OAUTH_FLOWS:
-        # Remove the oldest entry (Python 3.7+ dicts preserve insertion order)
         OAUTH_FLOWS.pop(next(iter(OAUTH_FLOWS)))
     OAUTH_FLOWS[state] = flow
 
 
 def get_oauth_flow() -> Flow:
-    """Gets the Google OAuth 2.0 flow for web applications.
-
-    Returns:
-        Flow: The configured OAuth 2.0 flow.
-
-    Raises:
-        FileNotFoundError: If the credentials.json file is not found.
-    """
     if not CREDENTIALS_PATH.exists():
-        raise FileNotFoundError(
-            "credentials.json not found. Please download it from "
-            "Google Cloud Console (Web application type) and place it in the project root. "
-            "Ensure the authorized redirect URI includes 'http://localhost:8501/'."
-        )
+        raise FileNotFoundError("credentials.json not found.")
     return Flow.from_client_secrets_file(
         str(CREDENTIALS_PATH), scopes=SCOPES, redirect_uri=REDIRECT_URI
     )
 
 
 def load_credentials_from_file() -> Optional[Credentials]:
-    """Attempts to load and refresh credentials from a local token.json file.
-
-    Returns:
-        Optional[Credentials]: Valid credentials if available, otherwise None.
-    """
     creds: Optional[Credentials] = None
     if TOKEN_PATH.exists():
         creds = Credentials.from_authorized_user_file(str(TOKEN_PATH), SCOPES)
-
     if creds and not creds.valid:
         if creds.expired and creds.refresh_token:
             creds.refresh(Request())
-            # Save refreshed credentials
             with open(TOKEN_PATH, "w") as token:
                 token.write(creds.to_json())
         else:
             creds = None
-
     return creds
 
 
 def save_credentials(creds: Credentials) -> None:
-    """Saves the credentials to token.json for future use.
-
-    Args:
-        creds: The authenticated Google credentials to save.
-    """
     with open(TOKEN_PATH, "w") as token:
         token.write(creds.to_json())
 
 
-def get_or_create_library_folder(creds: Credentials) -> str:
-    """Checks for the library folder in Google Drive and creates it if missing.
+def _get_or_create_folder(
+    service: Any, name: str, parent_id: Optional[str] = None
+) -> str:
+    query = f"name = '{name}' and mimeType = '{FOLDER_MIME_TYPE}' and trashed = false"
+    if parent_id:
+        query += f" and '{parent_id}' in parents"
+    results = (
+        service.files().list(q=query, spaces="drive", fields="files(id)").execute()
+    )
+    items = results.get("files", [])
+    if not items:
+        folder_metadata: Dict[str, Any] = {"name": name, "mimeType": FOLDER_MIME_TYPE}
+        if parent_id:
+            folder_metadata["parents"] = [parent_id]
+        folder = service.files().create(body=folder_metadata, fields="id").execute()
+        return str(folder.get("id"))
+    return str(items[0].get("id"))
 
-    Args:
-        creds: The authenticated Google credentials.
 
-    Returns:
-        str: The Google Drive folder ID of the library folder.
-    """
+def get_or_create_root_folder(creds: Credentials) -> str:
     service: Any = build("drive", "v3", credentials=creds)
+    return _get_or_create_folder(service, FOLDER_NAME)
 
-    query: str = f"name = '{FOLDER_NAME}' and mimeType = '{FOLDER_MIME_TYPE}' and trashed = false"
-    results: Dict[str, Any] = (
+
+def list_libraries(creds: Credentials, root_id: str) -> List[Dict[str, str]]:
+    service: Any = build("drive", "v3", credentials=creds)
+    query = f"'{root_id}' in parents and mimeType = '{FOLDER_MIME_TYPE}' and trashed = false"
+    results = (
         service.files()
         .list(q=query, spaces="drive", fields="files(id, name)")
         .execute()
     )
-    items: List[Dict[str, str]] = results.get("files", [])
-
-    if not items:
-        folder_metadata: Dict[str, str] = {
-            "name": FOLDER_NAME,
-            "mimeType": FOLDER_MIME_TYPE,
-        }
-        folder: Dict[str, Any] = (
-            service.files().create(body=folder_metadata, fields="id").execute()
-        )
-        return str(folder.get("id"))
-    else:
-        return str(items[0].get("id"))
+    return results.get("files", [])
 
 
-def list_pdfs_in_library(creds: Credentials, folder_id: str) -> List[Dict[str, str]]:
-    """Lists all PDF files in the specified Google Drive folder.
-
-    Args:
-        creds: The authenticated Google credentials.
-        folder_id: The ID of the Google Drive folder.
-
-    Returns:
-        A list of dictionaries, each containing 'id' and 'name' of a PDF file.
-    """
+def create_library(creds: Credentials, root_id: str, lib_name: str) -> Dict[str, str]:
     service: Any = build("drive", "v3", credentials=creds)
-    query: str = (
-        f"'{folder_id}' in parents and mimeType = 'application/pdf' and trashed = false"
-    )
-
-    all_files = []
-    page_token = None
-
-    while True:
-        results: Dict[str, Any] = (
-            service.files()
-            .list(
-                q=query,
-                spaces="drive",
-                fields="nextPageToken, files(id, name)",
-                pageToken=page_token,
-            )
-            .execute()
-        )
-        all_files.extend(results.get("files", []))
-        page_token = results.get("nextPageToken")
-        if not page_token:
-            break
-
-    return all_files
+    unique_name = f"{lib_name}_{uuid.uuid4().hex[:8]}"
+    lib_id = _get_or_create_folder(service, unique_name, root_id)
+    papers_id = _get_or_create_folder(service, "papers", lib_id)
+    return {"lib_id": lib_id, "lib_name": unique_name, "papers_id": papers_id}
 
 
-def download_pdf(creds: Credentials, file_id: str, dest_path: Path) -> None:
-    """Downloads a PDF file from Google Drive to the local filesystem.
-
-    Args:
-        creds: The authenticated Google credentials.
-        file_id: The Google Drive file ID.
-        dest_path: The local path where the PDF will be saved.
-    """
+def get_papers_folder(creds: Credentials, lib_id: str) -> str:
     service: Any = build("drive", "v3", credentials=creds)
-    request: Any = service.files().get_media(fileId=file_id)
-
-    with tempfile.NamedTemporaryFile(dir=dest_path.parent, delete=False) as tmp_file:
-        tmp_path = Path(tmp_file.name)
-        downloader = MediaIoBaseDownload(tmp_file, request)
-        done: bool = False
-        while not done:
-            status, done = downloader.next_chunk()
-
-    try:
-        tmp_path.rename(dest_path)
-    finally:
-        if tmp_path.exists():
-            tmp_path.unlink(missing_ok=True)
+    return _get_or_create_folder(service, "papers", lib_id)
 
 
-def delete_pdf(creds: Credentials, file_id: str) -> None:
-    """Deletes a PDF file from Google Drive.
-
-    Args:
-        creds: The authenticated Google credentials.
-        file_id: The Google Drive file ID to delete.
-    """
+def get_library_index_file(
+    creds: Credentials, papers_folder_id: str
+) -> Optional[Dict[str, Any]]:
     service: Any = build("drive", "v3", credentials=creds)
-    service.files().delete(fileId=file_id).execute()
-
-
-def upload_pdf(
-    creds: Credentials,
-    folder_id: str,
-    file_path: Path,
-    display_name: Optional[str] = None,
-) -> str:
-    """Uploads a local PDF file to the specified Google Drive folder.
-
-    Args:
-        creds: The authenticated Google credentials.
-        folder_id: The ID of the Google Drive folder.
-        file_path: The local path to the PDF file.
-        display_name: Optional custom name for the file in Google Drive. If not provided, defaults to file_path.name.
-
-    Returns:
-        The Google Drive file ID of the newly uploaded file.
-    """
-    service: Any = build("drive", "v3", credentials=creds)
-    name_to_use = display_name if display_name else file_path.name
-    file_metadata: Dict[str, Any] = {"name": name_to_use, "parents": [folder_id]}
-    media = MediaFileUpload(str(file_path), mimetype="application/pdf", resumable=True)
-    file: Dict[str, Any] = (
+    query = f"name = 'id-mapping.json' and '{papers_folder_id}' in parents and trashed = false"
+    results = (
         service.files()
-        .create(body=file_metadata, media_body=media, fields="id")
+        .list(q=query, spaces="drive", fields="files(id, modifiedTime)")
         .execute()
     )
-    return str(file.get("id"))
+    items = results.get("files", [])
+    if items:
+        return items[0]
+    return None
 
 
-def list_metadata_in_library(
-    creds: Credentials, folder_id: str
-) -> List[Dict[str, str]]:
-    """Lists all metadata JSON files in the specified Google Drive folder.
-
-    Args:
-        creds: The authenticated Google credentials.
-        folder_id: The ID of the Google Drive folder.
-
-    Returns:
-        A list of dictionaries, each containing 'id' and 'name' of a JSON file.
-    """
+def download_library_index(
+    creds: Credentials, papers_folder_id: str, dest_path: Path
+) -> Optional[str]:
+    """Downloads id-mapping.json if it exists. Returns its modifiedTime, or None if not exists."""
     service: Any = build("drive", "v3", credentials=creds)
-    query: str = (
-        f"'{folder_id}' in parents and name contains '_meta.json' and trashed = false"
-    )
+    file_info = get_library_index_file(creds, papers_folder_id)
+    if not file_info:
+        return None
 
-    all_files: List[Dict[str, str]] = []
-    page_token: Optional[str] = None
-
-    while True:
-        results: Dict[str, Any] = (
-            service.files()
-            .list(
-                q=query,
-                spaces="drive",
-                fields="nextPageToken, files(id, name)",
-                pageToken=page_token,
-                pageSize=1000,
-            )
-            .execute()
-        )
-        all_files.extend(results.get("files", []))
-        page_token = results.get("nextPageToken")
-        if not page_token:
-            break
-
-    return all_files
-
-
-def download_metadata(creds: Credentials, file_id: str, dest_path: Path) -> None:
-    """Downloads a metadata JSON file from Google Drive to local filesystem.
-
-    Args:
-        creds: The authenticated Google credentials.
-        file_id: The Google Drive file ID.
-        dest_path: The local path where the JSON will be saved.
-    """
-    service: Any = build("drive", "v3", credentials=creds)
-    request: Any = service.files().get_media(fileId=file_id)
-
-    tmp_path: Optional[Path] = None
+    request = service.files().get_media(fileId=file_info["id"])
+    tmp_path = None
     try:
         with tempfile.NamedTemporaryFile(
             dir=dest_path.parent, delete=False
         ) as tmp_file:
             tmp_path = Path(tmp_file.name)
             downloader = MediaIoBaseDownload(tmp_file, request)
-            done: bool = False
+            done = False
             while not done:
-                status, done = downloader.next_chunk()
-
+                _, done = downloader.next_chunk()
         tmp_path.rename(dest_path)
     finally:
-        if tmp_path is not None and tmp_path.exists():
+        if tmp_path and tmp_path.exists():
+            tmp_path.unlink(missing_ok=True)
+    return file_info.get("modifiedTime")
+
+
+def upload_library_index(
+    creds: Credentials, papers_folder_id: str, index: LibraryIndex
+) -> None:
+    service: Any = build("drive", "v3", credentials=creds)
+    file_info = get_library_index_file(creds, papers_folder_id)
+
+    with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".json") as tmp:
+        tmp_path = Path(tmp.name)
+        tmp.write(index.model_dump_json(indent=2))
+
+    try:
+        media = MediaFileUpload(
+            str(tmp_path), mimetype="application/json", resumable=True
+        )
+        if file_info:
+            service.files().update(fileId=file_info["id"], media_body=media).execute()
+        else:
+            file_metadata = {"name": "id-mapping.json", "parents": [papers_folder_id]}
+            service.files().create(
+                body=file_metadata, media_body=media, fields="id"
+            ).execute()
+    finally:
+        if tmp_path.exists():
             tmp_path.unlink(missing_ok=True)
 
 
-def upload_metadata(
-    creds: Credentials,
-    folder_id: str,
-    file_path: Path,
-    display_name: str,
+def create_paper_folder(
+    creds: Credentials, papers_folder_id: str, paper_id: str
 ) -> str:
-    """Uploads a local metadata JSON file to Google Drive.
-
-    Args:
-        creds: The authenticated Google credentials.
-        folder_id: The ID of the Google Drive folder.
-        file_path: The local path to the JSON file.
-        display_name: The custom name for the file in Google Drive.
-
-    Returns:
-        The Google Drive file ID of the newly uploaded file.
-    """
     service: Any = build("drive", "v3", credentials=creds)
+    return _get_or_create_folder(service, paper_id, papers_folder_id)
 
-    safe_display_name: str = display_name.replace("'", "\\'")
-    query: str = (
-        f"name = '{safe_display_name}' and '{folder_id}' in parents and trashed = false"
-    )
-    existing: Dict[str, Any] = (
+
+def upload_file_to_folder(
+    creds: Credentials, folder_id: str, file_path: Path, filename: str, mime_type: str
+) -> str:
+    service: Any = build("drive", "v3", credentials=creds)
+    query = f"name = '{filename}' and '{folder_id}' in parents and trashed = false"
+    existing = (
         service.files().list(q=query, spaces="drive", fields="files(id)").execute()
     )
-    files: List[Dict[str, Any]] = existing.get("files", [])
-
-    media = MediaFileUpload(str(file_path), mimetype="application/json", resumable=True)
+    files = existing.get("files", [])
+    media = MediaFileUpload(str(file_path), mimetype=mime_type, resumable=True)
 
     if files:
-        file_id: str = str(files[0]["id"])
+        file_id = str(files[0]["id"])
         service.files().update(fileId=file_id, media_body=media).execute()
         return file_id
     else:
-        file_metadata: Dict[str, Any] = {"name": display_name, "parents": [folder_id]}
-        file: Dict[str, Any] = (
+        file_metadata = {"name": filename, "parents": [folder_id]}
+        file = (
             service.files()
             .create(body=file_metadata, media_body=media, fields="id")
             .execute()
@@ -345,23 +205,25 @@ def upload_metadata(
         return str(file.get("id"))
 
 
-def delete_metadata(creds: Credentials, folder_id: str, paper_id: str) -> None:
-    """Deletes the metadata JSON file associated with a paper from Google Drive.
-
-    Args:
-        creds: The authenticated Google credentials.
-        folder_id: The ID of the Google Drive folder.
-        paper_id: The ID of the paper.
-    """
+def download_file(creds: Credentials, file_id: str, dest_path: Path) -> None:
     service: Any = build("drive", "v3", credentials=creds)
-    safe_display_name = f"{paper_id}_meta.json".replace("'", "\\'")
-    query = (
-        f"name = '{safe_display_name}' and '{folder_id}' in parents and trashed = false"
-    )
-    existing = (
-        service.files().list(q=query, spaces="drive", fields="files(id)").execute()
-    )
-    files = existing.get("files", [])
-    if files:
-        file_id = str(files[0]["id"])
-        service.files().delete(fileId=file_id).execute()
+    request = service.files().get_media(fileId=file_id)
+    tmp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            dir=dest_path.parent, delete=False
+        ) as tmp_file:
+            tmp_path = Path(tmp_file.name)
+            downloader = MediaIoBaseDownload(tmp_file, request)
+            done = False
+            while not done:
+                _, done = downloader.next_chunk()
+        tmp_path.rename(dest_path)
+    finally:
+        if tmp_path and tmp_path.exists():
+            tmp_path.unlink(missing_ok=True)
+
+
+def delete_paper_folder(creds: Credentials, folder_id: str) -> None:
+    service: Any = build("drive", "v3", credentials=creds)
+    service.files().delete(fileId=folder_id).execute()
