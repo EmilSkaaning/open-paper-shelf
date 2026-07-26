@@ -215,7 +215,7 @@ class TestAppMetadataSync:
         mock_list_pdfs: MagicMock,
         mock_get_folder: MagicMock,
         mock_auth: MagicMock,
-        mock_download_pdf: MagicMock,
+        _mock_download_pdf: MagicMock,
         mock_upload_metadata: MagicMock,
         tmp_path: Path,
     ) -> None:
@@ -227,7 +227,7 @@ class TestAppMetadataSync:
             mock_list_pdfs: Mock for list_pdfs_in_library.
             mock_get_folder: Mock for get_or_create_library_folder.
             mock_auth: Mock for authenticate_user.
-            mock_download_pdf: Mock for download_pdf.
+            _mock_download_pdf: Mock for download_pdf.
             mock_upload_metadata: Mock for upload_metadata.
             tmp_path: Temporary directory fixture.
         """
@@ -261,11 +261,15 @@ class TestAppMetadataSync:
 
         mock_st.session_state = session_state
         mock_st.columns.return_value = [MagicMock(), MagicMock()]
-        mock_st.text_input.side_effect = lambda label, value="": value
-        mock_st.selectbox.side_effect = lambda label, options=None, index=0: (
-            options[index] if options else ""
+        mock_st.text_input.side_effect = lambda _label, **kwargs: kwargs.get(
+            "value", ""
         )
-        mock_st.text_area.side_effect = lambda label, value="", height=200: value
+        mock_st.selectbox.side_effect = lambda _label, **kwargs: (
+            kwargs.get("options", [])[kwargs.get("index", 0)]
+            if kwargs.get("options")
+            else ""
+        )
+        mock_st.text_area.side_effect = lambda _label, **kwargs: kwargs.get("value", "")
         mock_st.form_submit_button.return_value = True
 
         with patch("frontend.app.PAPERS_DIR", tmp_path):
