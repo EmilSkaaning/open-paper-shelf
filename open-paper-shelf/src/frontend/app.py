@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Optional, Any
 
 import streamlit as st
+from st_keyup import st_keyup
 from google.oauth2.credentials import Credentials
 
 # Ensure the src directory is in the path to import backend
@@ -266,9 +267,13 @@ def main() -> None:
                 st.rerun()
 
         # Search box
-        search_query = st.text_input(
-            "Search", placeholder="Search by title...", label_visibility="collapsed"
+        search_query = st_keyup(
+            "Search",
+            placeholder="Search by title...",
+            label_visibility="collapsed",
+            debounce=200,
         )
+        search_query = search_query or ""
 
         # List PDFs
         filtered_names = [n for n in pdf_names if search_query.lower() in n.lower()]
