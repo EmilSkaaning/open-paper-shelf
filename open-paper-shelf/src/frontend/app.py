@@ -14,7 +14,7 @@ import sys
 
 src_path = Path(__file__).resolve().parent.parent
 if str(src_path) not in sys.path:
-    sys.path.append(str(src_path))
+    sys.path.insert(0, str(src_path))
 
 from backend.drive import (  # noqa: E402
     add_oauth_flow,
@@ -84,8 +84,6 @@ def init_library_state(creds, lib_id: str, papers_id: str):
     st.session_state.local_index_path = (
         st.session_state.local_lib_dir / "id-mapping.json"
     )
-    st.session_state.index = LibraryIndex()
-    st.session_state.last_sync_time = None
     st.session_state.selected_paper = None
 
 
@@ -171,14 +169,6 @@ def main() -> None:
                 st.session_state.pop(k, None)
 
         st.button("🔙 Switch Library", on_click=switch_lib, use_container_width=True)
-        if st.button(
-            "🔄 Force Sync",
-            help="Force refresh metadata from Google Drive",
-            use_container_width=True,
-        ):
-            st.session_state.last_sync_time = None
-            sync_library_index(creds)
-            st.rerun()
 
         st.header("Upload Paper")
         uploaded_files = st.file_uploader(
