@@ -231,3 +231,110 @@ def upload_pdf(
         .execute()
     )
     return str(file.get("id"))
+
+
+def list_metadata_in_library(
+    creds: Credentials, folder_id: str
+) -> List[Dict[str, str]]:
+    """Lists all metadata JSON files in the specified Google Drive folder.
+
+    Args:
+        creds: The authenticated Google credentials.
+        folder_id: The ID of the Google Drive folder.
+
+    Returns:
+        A list of dictionaries, each containing 'id' and 'name' of a JSON file.
+    """
+    service: Any = build("drive", "v3", credentials=creds)
+    query: str = (
+        f"'{folder_id}' in parents and name contains '_meta.json' and trashed = false"
+    )
+
+    all_files: List[Dict[str, str]] = []
+    page_token: Optional[str] = None
+
+    while True:
+        results: Dict[str, Any] = (
+            service.files()
+            .list(
+                q=query,
+                spaces="drive",
+                fields="nextPageToken, files(id, name)",
+                pageToken=page_token,
+            )
+            .execute()
+        )
+        all_files.extend(results.get("files", []))
+        page_token = results.get("nextPageToken")
+        if not page_token:
+            break
+
+    return all_files
+
+
+def download_metadata(creds: Credentials, file_id: str, dest_path: Path) -> None:
+    """Downloads a metadata JSON file from Google Drive to local filesystem.
+
+    Args:
+        creds: The authenticated Google credentials.
+        file_id: The Google Drive file ID.
+        dest_path: The local path where the JSON will be saved.
+    """
+    service: Any = build("drive", "v3", credentials=creds)
+    request: Any = service.files().get_media(fileId=file_id)
+
+    with tempfile.NamedTemporaryFile(dir=dest_path.parent, delete=False) as tmp_file:
+        tmp_path = Path(tmp_file.name)
+        downloader = MediaIoBaseDownload(tmp_file, request)
+        done: bool = False
+        while not done:
+            status, done = downloader.next_chunk()
+
+    try:
+        tmp_path.rename(dest_path)
+    finally:
+        if tmp_path.exists():
+            tmp_path.unlink(missing_ok=True)
+
+
+def upload_metadata(
+    creds: Credentials,
+    folder_id: str,
+    file_path: Path,
+    display_name: str,
+) -> str:
+    """Uploads a local metadata JSON file to Google Drive.
+
+    Args:
+        creds: The authenticated Google credentials.
+        folder_id: The ID of the Google Drive folder.
+        file_path: The local path to the JSON file.
+        display_name: The custom name for the file in Google Drive.
+
+    Returns:
+        The Google Drive file ID of the newly uploaded file.
+    """
+    service: Any = build("drive", "v3", credentials=creds)
+
+    query: str = (
+        f"name = '{display_name}' and '{folder_id}' in parents and trashed = false"
+    )
+    existing: Dict[str, Any] = (
+        service.files().list(q=query, spaces="drive", fields="files(id)").execute()
+    )
+    files: List[Dict[str, Any]] = existing.get("files", [])
+
+    media = MediaFileUpload(str(file_path), mimetype="application/json", resumable=True)
+
+    if files:
+        file_id: str = str(files[0]["id"])
+        service.files().update(fileId=file_id, media_body=media).execute()
+        return file_id
+    else:
+        file_metadata: Dict[str, Any] = {"name": display_name, "parents": [folder_id]}
+        file: Dict[str, Any] = (
+            service.files()
+            .create(body=file_metadata, media_body=media, fields="id")
+            .execute()
+        )
+        return str(file.get("id"))
