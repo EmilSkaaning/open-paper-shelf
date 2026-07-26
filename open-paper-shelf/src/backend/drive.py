@@ -11,6 +11,8 @@ from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import Flow
 from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
+from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
+import tempfile
 
 # Dictionary to cache Flow objects across Streamlit reruns.
 # Keys are the OAuth 'state' strings.
@@ -29,6 +31,7 @@ REDIRECT_URI: str = "http://localhost:8501/"
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 CREDENTIALS_PATH = PROJECT_ROOT / "credentials.json"
 TOKEN_PATH = PROJECT_ROOT / "token.json"
+PAPERS_DIR = PROJECT_ROOT / "papers"
 
 
 def add_oauth_flow(state: str, flow: Flow) -> None:
@@ -126,3 +129,105 @@ def get_or_create_library_folder(creds: Credentials) -> str:
         return str(folder.get("id"))
     else:
         return str(items[0].get("id"))
+
+
+def list_pdfs_in_library(creds: Credentials, folder_id: str) -> List[Dict[str, str]]:
+    """Lists all PDF files in the specified Google Drive folder.
+
+    Args:
+        creds: The authenticated Google credentials.
+        folder_id: The ID of the Google Drive folder.
+
+    Returns:
+        A list of dictionaries, each containing 'id' and 'name' of a PDF file.
+    """
+    service: Any = build("drive", "v3", credentials=creds)
+    query: str = (
+        f"'{folder_id}' in parents and mimeType = 'application/pdf' and trashed = false"
+    )
+
+    all_files = []
+    page_token = None
+
+    while True:
+        results: Dict[str, Any] = (
+            service.files()
+            .list(
+                q=query,
+                spaces="drive",
+                fields="nextPageToken, files(id, name)",
+                pageToken=page_token,
+            )
+            .execute()
+        )
+        all_files.extend(results.get("files", []))
+        page_token = results.get("nextPageToken")
+        if not page_token:
+            break
+
+    return all_files
+
+
+def download_pdf(creds: Credentials, file_id: str, dest_path: Path) -> None:
+    """Downloads a PDF file from Google Drive to the local filesystem.
+
+    Args:
+        creds: The authenticated Google credentials.
+        file_id: The Google Drive file ID.
+        dest_path: The local path where the PDF will be saved.
+    """
+    service: Any = build("drive", "v3", credentials=creds)
+    request: Any = service.files().get_media(fileId=file_id)
+
+    with tempfile.NamedTemporaryFile(dir=dest_path.parent, delete=False) as tmp_file:
+        tmp_path = Path(tmp_file.name)
+        downloader = MediaIoBaseDownload(tmp_file, request)
+        done: bool = False
+        while not done:
+            status, done = downloader.next_chunk()
+
+    try:
+        tmp_path.rename(dest_path)
+    finally:
+        if tmp_path.exists():
+            tmp_path.unlink(missing_ok=True)
+
+
+def delete_pdf(creds: Credentials, file_id: str) -> None:
+    """Deletes a PDF file from Google Drive.
+
+    Args:
+        creds: The authenticated Google credentials.
+        file_id: The Google Drive file ID to delete.
+    """
+    service: Any = build("drive", "v3", credentials=creds)
+    service.files().delete(fileId=file_id).execute()
+
+
+def upload_pdf(
+    creds: Credentials,
+    folder_id: str,
+    file_path: Path,
+    display_name: Optional[str] = None,
+) -> str:
+    """Uploads a local PDF file to the specified Google Drive folder.
+
+    Args:
+        creds: The authenticated Google credentials.
+        folder_id: The ID of the Google Drive folder.
+        file_path: The local path to the PDF file.
+        display_name: Optional custom name for the file in Google Drive. If not provided, defaults to file_path.name.
+
+    Returns:
+        The Google Drive file ID of the newly uploaded file.
+    """
+    service: Any = build("drive", "v3", credentials=creds)
+    name_to_use = display_name if display_name else file_path.name
+    file_metadata: Dict[str, Any] = {"name": name_to_use, "parents": [folder_id]}
+    media = MediaFileUpload(str(file_path), mimetype="application/pdf", resumable=True)
+    file: Dict[str, Any] = (
+        service.files()
+        .create(body=file_metadata, media_body=media, fields="id")
+        .execute()
+    )
+    return str(file.get("id"))

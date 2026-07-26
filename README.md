@@ -6,9 +6,18 @@ A front-end for papers backed by Google Drive.
 
 1. Ensure you have your `credentials.json` configured as a Web Application in the Google Cloud Console (with redirect URI `http://localhost:8501/`) and placed in the root of the project.
 2. Install the project dependencies (e.g., using `uv sync` or `pip install -e .`).
-3. Run the Streamlit frontend locally:
+3. Run the FastAPI backend server (this serves the PDFs for the Streamlit UI):
    ```bash
-   streamlit run open-paper-shelf/src/frontend/app.py
+   uv run poe fastapi
+   # or: uv run fastapi dev open-paper-shelf/src/backend/main.py --port 8000
+   ```
+
+> [!WARNING]
+> **Security Note:** The FastAPI backend serves the `PAPERS_DIR` via an unauthenticated `StaticFiles` endpoint. While acceptable for `localhost`, if deployed on a shared network or bound to `0.0.0.0`, anyone can access the downloaded PDFs. Implement endpoint authentication before a public deployment.
+4. In a separate terminal, run the Streamlit frontend locally:
+   ```bash
+   uv run poe streamlit
+   # or: uv run streamlit run open-paper-shelf/src/frontend/app.py
    ```
 
 ## Tools & Utilities

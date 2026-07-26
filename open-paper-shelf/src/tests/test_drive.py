@@ -20,6 +20,30 @@ from backend.drive import (
 )
 
 
+class TestAddOauthFlow:
+    """Test suite for add_oauth_flow."""
+
+    def test_eviction(self, mocker: MockerFixture) -> None:
+        """Test cache eviction when capacity is reached."""
+        from backend.drive import add_oauth_flow, OAUTH_FLOWS
+
+        # Clear existing flows
+        OAUTH_FLOWS.clear()
+
+        # Add max flows
+        for i in range(100):
+            add_oauth_flow(f"state_{i}", mocker.MagicMock())
+
+        assert len(OAUTH_FLOWS) == 100
+        assert "state_0" in OAUTH_FLOWS
+
+        # Add one more, should evict state_0
+        add_oauth_flow("state_100", mocker.MagicMock())
+        assert len(OAUTH_FLOWS) == 100
+        assert "state_0" not in OAUTH_FLOWS
+        assert "state_100" in OAUTH_FLOWS
+
+
 class TestGetOauthFlow:
     """Test suite for get_oauth_flow."""
 
@@ -155,3 +179,172 @@ class TestGetOrCreateLibraryFolder:
             "name": FOLDER_NAME,
             "mimeType": FOLDER_MIME_TYPE,
         }
+
+
+class TestListPdfsInLibrary:
+    """Test suite for list_pdfs_in_library."""
+
+    @pytest.fixture
+    def mock_build(self, mocker: MockerFixture) -> MagicMock:
+        return mocker.patch("backend.drive.build")
+
+    def test_pagination(self, mocker: MockerFixture, mock_build: MagicMock) -> None:
+        """Test handles pagination correctly."""
+        mock_service = mocker.MagicMock()
+        mock_build.return_value = mock_service
+
+        # Setup mock to return two pages of results
+        mock_list = mock_service.files.return_value.list.return_value
+        mock_list.execute.side_effect = [
+            {"files": [{"id": "1", "name": "f1"}], "nextPageToken": "token1"},
+            {"files": [{"id": "2", "name": "f2"}]},
+        ]
+
+        from backend.drive import list_pdfs_in_library
+
+        mock_creds = mocker.MagicMock(spec=Credentials)
+
+        results = list_pdfs_in_library(mock_creds, "folder1")
+
+        assert len(results) == 2
+        assert results[0]["id"] == "1"
+        assert results[1]["id"] == "2"
+        assert mock_service.files.return_value.list.call_count == 2
+
+
+class TestDownloadPdf:
+    """Test suite for download_pdf."""
+
+    @pytest.fixture
+    def mock_build(self, mocker: MockerFixture) -> MagicMock:
+        return mocker.patch("backend.drive.build")
+
+    def test_download_success(
+        self, mocker: MockerFixture, mock_build: MagicMock
+    ) -> None:
+        """Test file download flows correctly."""
+        mock_service = mocker.MagicMock()
+        mock_build.return_value = mock_service
+
+        mock_request = mocker.MagicMock()
+        mock_service.files.return_value.get_media.return_value = mock_request
+
+        mock_downloader = mocker.patch("backend.drive.MediaIoBaseDownload")
+        mock_downloader_instance = mocker.MagicMock()
+        mock_downloader.return_value = mock_downloader_instance
+        # Simulate download completing in 2 chunks
+        mock_downloader_instance.next_chunk.side_effect = [(None, False), (None, True)]
+
+        mock_named_temp = mocker.patch("backend.drive.tempfile.NamedTemporaryFile")
+        mock_temp_instance = mocker.MagicMock()
+        mock_named_temp.return_value.__enter__.return_value = mock_temp_instance
+        mock_temp_instance.name = "/tmp/dummy.tmp"
+
+        mock_tmp_path = mocker.MagicMock()
+
+        def mock_path_constructor(name):
+            return mock_tmp_path
+
+        mocker.patch("backend.drive.Path", side_effect=mock_path_constructor)
+
+        from backend.drive import download_pdf
+        from pathlib import Path
+
+        mock_creds = mocker.MagicMock(spec=Credentials)
+        dest_path = Path("/dummy/dest.pdf")
+
+        download_pdf(mock_creds, "file1", dest_path)
+
+        mock_service.files.return_value.get_media.assert_called_once_with(
+            fileId="file1"
+        )
+        mock_downloader.assert_called_once_with(mock_temp_instance, mock_request)
+        assert mock_downloader_instance.next_chunk.call_count == 2
+        mock_tmp_path.rename.assert_called_once_with(dest_path)
+
+
+class TestDeletePdf:
+    """Test suite for delete_pdf."""
+
+    @pytest.fixture
+    def mock_build(self, mocker: MockerFixture) -> MagicMock:
+        return mocker.patch("backend.drive.build")
+
+    def test_delete_success(self, mocker: MockerFixture, mock_build: MagicMock) -> None:
+        """Test API delete call is invoked."""
+        mock_service = mocker.MagicMock()
+        mock_build.return_value = mock_service
+
+        from backend.drive import delete_pdf
+
+        mock_creds = mocker.MagicMock(spec=Credentials)
+
+        delete_pdf(mock_creds, "file1")
+
+        mock_service.files.return_value.delete.assert_called_once_with(fileId="file1")
+        mock_service.files.return_value.delete.return_value.execute.assert_called_once()
+
+
+class TestUploadPdf:
+    """Test suite for upload_pdf."""
+
+    @pytest.fixture
+    def mock_build(self, mocker: MockerFixture) -> MagicMock:
+        return mocker.patch("backend.drive.build")
+
+    def test_upload_without_display_name(
+        self, mocker: MockerFixture, mock_build: MagicMock
+    ) -> None:
+        """Test upload uses file path name if display name not provided."""
+        mock_service = mocker.MagicMock()
+        mock_build.return_value = mock_service
+
+        mock_create = mock_service.files.return_value.create
+        mock_create.return_value.execute.return_value = {"id": "new_file_id"}
+
+        mock_media = mocker.patch("backend.drive.MediaFileUpload")
+
+        from backend.drive import upload_pdf
+        from pathlib import Path
+
+        mock_creds = mocker.MagicMock(spec=Credentials)
+
+        test_path = Path("/tmp/local_test.pdf")
+
+        file_id = upload_pdf(mock_creds, "folder1", test_path)
+
+        assert file_id == "new_file_id"
+        mock_media.assert_called_once_with(
+            str(test_path), mimetype="application/pdf", resumable=True
+        )
+
+        call_kwargs = mock_create.call_args[1]
+        assert call_kwargs["body"] == {"name": "local_test.pdf", "parents": ["folder1"]}
+
+    def test_upload_with_display_name(
+        self, mocker: MockerFixture, mock_build: MagicMock
+    ) -> None:
+        """Test upload overrides file path name with display_name."""
+        mock_service = mocker.MagicMock()
+        mock_build.return_value = mock_service
+
+        mock_create = mock_service.files.return_value.create
+        mock_create.return_value.execute.return_value = {"id": "new_file_id"}
+
+        mocker.patch("backend.drive.MediaFileUpload")
+
+        from backend.drive import upload_pdf
+        from pathlib import Path
+
+        mock_creds = mocker.MagicMock(spec=Credentials)
+
+        test_path = Path("/tmp/local_test.pdf")
+
+        file_id = upload_pdf(
+            mock_creds, "folder1", test_path, display_name="clean_name.pdf"
+        )
+
+        assert file_id == "new_file_id"
+
+        call_kwargs = mock_create.call_args[1]
+        assert call_kwargs["body"] == {"name": "clean_name.pdf", "parents": ["folder1"]}
