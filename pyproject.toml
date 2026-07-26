@@ -48,3 +48,10 @@ omit = [
     "conftest.py",
     "__init__.py"
 ]
+
+[tool.pyrefly]
+project-includes = [
+    "**/*.py*",
+    "**/*.ipynb",
+]
+search_paths = ["open-paper-shelf/src"]
