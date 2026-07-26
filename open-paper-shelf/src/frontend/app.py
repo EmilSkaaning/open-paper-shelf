@@ -124,64 +124,6 @@ def bulk_overwrite_dialog(
         st.rerun()
 
 
-@st.dialog("Upload PDF(s)")
-def upload_pdf_dialog(creds: Credentials, folder_id: str) -> None:
-    """Displays a dialog for uploading multiple PDFs.
-
-    Args:
-        creds: The authenticated Google credentials.
-        folder_id: The Google Drive folder ID to upload to.
-    """
-    uploaded_files = st.file_uploader(
-        "Choose PDF(s)",
-        type=["pdf"],
-        accept_multiple_files=True,
-        label_visibility="collapsed",
-        key=f"uploader_{st.session_state.uploader_key}",
-    )
-    if uploaded_files:
-        if st.button("Process Uploads", use_container_width=True):
-            conflicts = []
-            new_uploads = []
-            for uf in uploaded_files:
-                safe_name = Path(uf.name).name
-                existing_ids = [
-                    p["id"]
-                    for p in st.session_state.drive_pdfs
-                    if p["name"] == safe_name
-                ]
-                if existing_ids:
-                    conflicts.append((uf, safe_name, existing_ids))
-                else:
-                    new_uploads.append((uf, safe_name))
-
-            # Process non-conflicting files immediately
-            if new_uploads:
-                for uf, safe_name in new_uploads:
-                    with st.spinner(f"Uploading {safe_name}..."):
-                        with tempfile.NamedTemporaryFile(
-                            delete=False, suffix=".pdf"
-                        ) as tmp_file:
-                            tmp_file.write(uf.getbuffer())
-                            temp_file_path = Path(tmp_file.name)
-                        upload_pdf(
-                            creds,
-                            folder_id,
-                            temp_file_path,
-                            display_name=safe_name,
-                        )
-                        temp_file_path.unlink(missing_ok=True)
-
-            if conflicts:
-                st.session_state.pending_conflicts = conflicts
-                st.rerun()
-            else:
-                st.session_state.drive_pdfs = list_pdfs_in_library(creds, folder_id)
-                st.session_state.uploader_key += 1
-                st.success("Uploaded successfully!")
-                st.rerun()
-
-
 def main() -> None:
     """Main function to run the Streamlit app."""
     st.set_page_config(page_title="Open Paper Shelf", page_icon="📚", layout="wide")
@@ -225,6 +167,10 @@ def main() -> None:
     papers_dir = st.session_state.papers_dir
     folder_id = st.session_state.folder_id
 
+    # Check for pending upload conflicts
+    if st.session_state.get("pending_conflicts"):
+        bulk_overwrite_dialog(creds, folder_id, st.session_state.pending_conflicts)
+
     # --- UI Layout ---
     left_col, right_col = st.columns([1, 3])
 
@@ -243,17 +189,61 @@ def main() -> None:
             name for name in pdf_names if st.session_state.get(f"chk_{name}", False)
         ]
 
-        # Icon bar
-        icon_cols = st.columns([1.5, 1.5, 7])
-        with icon_cols[0]:
-            if st.button("📤", help="Upload PDF(s)", use_container_width=True):
-                upload_pdf_dialog(creds, folder_id)
+        # Upload area
+        uploaded_files = st.file_uploader(
+            "Upload PDF(s)",
+            type=["pdf"],
+            accept_multiple_files=True,
+            label_visibility="collapsed",
+            key=f"uploader_{st.session_state.uploader_key}",
+        )
+        if uploaded_files:
+            conflicts = []
+            new_uploads = []
+            for uf in uploaded_files:
+                safe_name = Path(uf.name).name
+                existing_ids = [
+                    p["id"]
+                    for p in st.session_state.drive_pdfs
+                    if p["name"] == safe_name
+                ]
+                if existing_ids:
+                    conflicts.append((uf, safe_name, existing_ids))
+                else:
+                    new_uploads.append((uf, safe_name))
 
-        with icon_cols[1]:
+            # Process non-conflicting files immediately
+            if new_uploads:
+                for uf, safe_name in new_uploads:
+                    with st.spinner(f"Uploading {safe_name}..."):
+                        with tempfile.NamedTemporaryFile(
+                            delete=False, suffix=".pdf"
+                        ) as tmp_file:
+                            tmp_file.write(uf.getbuffer())
+                            temp_file_path = Path(tmp_file.name)
+                        upload_pdf(
+                            creds,
+                            folder_id,
+                            temp_file_path,
+                            display_name=safe_name,
+                        )
+                        temp_file_path.unlink(missing_ok=True)
+
+            if conflicts:
+                st.session_state.pending_conflicts = conflicts
+                st.rerun()
+            else:
+                st.session_state.drive_pdfs = list_pdfs_in_library(creds, folder_id)
+                st.session_state.uploader_key += 1
+                st.success("Uploaded successfully!")
+                st.rerun()
+
+        # Icon bar
+        icon_cols = st.columns([1.5, 8.5])
+        with icon_cols[0]:
             if st.button(
                 "🗑️",
                 help="Delete selected papers",
-                use_container_width=True,
                 disabled=not bool(checked_papers),
                 type="primary" if checked_papers else "secondary",
             ):
