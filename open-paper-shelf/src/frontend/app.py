@@ -1,6 +1,9 @@
+import html
 import json
+import re
 import shutil
 import tempfile
+import urllib.parse
 import uuid
 from pathlib import Path
 from typing import Any, Optional, cast, Literal
@@ -115,6 +118,17 @@ def sync_library_index(creds):
 
 
 def main() -> None:
+    """The main entry point for the Streamlit frontend application.
+
+    Authenticates the user, displays the library selection UI, and handles
+    all interactions including paper uploads, search, and metadata editing.
+
+    Args:
+        None
+
+    Returns:
+        None
+    """
     creds = authenticate_user()
     if not creds:
         return
@@ -253,6 +267,8 @@ def main() -> None:
 
         filtered_papers = []
         for pid, p in st.session_state.index.papers.items():
+            if not re.match(r"^[a-f0-9]{32}$", pid):
+                continue
             if search_query in p.title.lower():
                 filtered_papers.append((pid, p))
 
@@ -285,6 +301,9 @@ def main() -> None:
     # Main area
     if st.session_state.selected_paper:
         pid = st.session_state.selected_paper
+        if not re.match(r"^[a-f0-9]{32}$", pid):
+            st.error("Invalid paper ID format.")
+            st.stop()
         paper_info = st.session_state.index.papers[pid]
 
         local_paper_dir = st.session_state.local_lib_dir / pid
@@ -306,11 +325,11 @@ def main() -> None:
         meta = PaperMetadata(title=paper_info.title)
         if local_meta_path.exists():
             try:
-                data = json.loads(local_meta_path.read_text())
+                data = json.loads(local_meta_path.read_text(encoding="utf-8"))
                 meta = PaperMetadata(**data)
             except ValidationError:
                 st.warning("Metadata invalid, using default fallback.")
-                data = json.loads(local_meta_path.read_text())
+                data = json.loads(local_meta_path.read_text(encoding="utf-8"))
                 data["title"] = data.get("title", paper_info.title)
                 # Ignore validation for fallback rendering if possible, but Pydantic requires it
                 try:
@@ -323,8 +342,12 @@ def main() -> None:
         col_pdf, col_meta = st.columns([2, 1])
         with col_pdf:
             base_url = os.environ.get("FASTAPI_URL", "http://localhost:8000")
-            fastapi_url = f"{base_url.rstrip('/')}/papers/{st.session_state.current_lib_id}/{pid}/paper.pdf"
-            pdf_display = f'<iframe src="{fastapi_url}" width="100%" height="750" style="border:none;" type="application/pdf"></iframe>'
+            quoted_lib_id = urllib.parse.quote(st.session_state.current_lib_id)
+            quoted_pid = urllib.parse.quote(pid)
+            fastapi_url = (
+                f"{base_url.rstrip('/')}/papers/{quoted_lib_id}/{quoted_pid}/paper.pdf"
+            )
+            pdf_display = f'<iframe src="{html.escape(fastapi_url)}" width="100%" height="750" style="border:none;" type="application/pdf"></iframe>'
             st.markdown(pdf_display, unsafe_allow_html=True)
 
         with col_meta:
@@ -351,7 +374,9 @@ def main() -> None:
                     meta.citation = citation
                     meta.notes = notes
 
-                    local_meta_path.write_text(meta.model_dump_json(indent=2))
+                    local_meta_path.write_text(
+                        meta.model_dump_json(indent=2), encoding="utf-8"
+                    )
                     with st.spinner("Saving metadata to Drive..."):
                         upload_file_to_folder(
                             creds,

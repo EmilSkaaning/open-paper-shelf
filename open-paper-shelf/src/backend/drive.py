@@ -161,10 +161,22 @@ def download_library_index(
 def upload_library_index(
     creds: Credentials, papers_folder_id: str, index: LibraryIndex
 ) -> None:
+    """Uploads the library index file (id-mapping.json) to Google Drive.
+
+    Args:
+        creds (Credentials): Google OAuth credentials.
+        papers_folder_id (str): The Google Drive folder ID where the index should be uploaded.
+        index (LibraryIndex): The library index data model to serialize and upload.
+
+    Returns:
+        None
+    """
     service: Any = build("drive", "v3", credentials=creds)
     file_info = get_library_index_file(creds, papers_folder_id)
 
-    with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".json") as tmp:
+    with tempfile.NamedTemporaryFile(
+        mode="w", delete=False, suffix=".json", encoding="utf-8"
+    ) as tmp:
         tmp_path = Path(tmp.name)
         tmp.write(index.model_dump_json(indent=2))
 
