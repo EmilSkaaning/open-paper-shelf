@@ -12,7 +12,7 @@ from google_auth_oauthlib.flow import Flow
 from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
-import io
+import tempfile
 
 # Dictionary to cache Flow objects across Streamlit reruns.
 # Keys are the OAuth 'state' strings.
@@ -179,14 +179,25 @@ def download_pdf(creds: Credentials, file_id: str, dest_path: Path) -> None:
     service: Any = build("drive", "v3", credentials=creds)
     request: Any = service.files().get_media(fileId=file_id)
 
-    tmp_path = dest_path.with_suffix(".tmp")
-    with io.FileIO(tmp_path, "wb") as fh:
-        downloader = MediaIoBaseDownload(fh, request)
+    with tempfile.NamedTemporaryFile(dir=dest_path.parent, delete=False) as tmp_file:
+        tmp_path = Path(tmp_file.name)
+        downloader = MediaIoBaseDownload(tmp_file, request)
         done: bool = False
         while not done:
             status, done = downloader.next_chunk()
 
     tmp_path.rename(dest_path)
+
+
+def delete_pdf(creds: Credentials, file_id: str) -> None:
+    """Deletes a PDF file from Google Drive.
+
+    Args:
+        creds: The authenticated Google credentials.
+        file_id: The Google Drive file ID to delete.
+    """
+    service: Any = build("drive", "v3", credentials=creds)
+    service.files().delete(fileId=file_id).execute()
 
 
 def upload_pdf(creds: Credentials, folder_id: str, file_path: Path) -> str:
