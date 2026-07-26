@@ -3,7 +3,7 @@ import shutil
 import tempfile
 import uuid
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, cast, Literal
 
 import streamlit as st
 from pydantic import ValidationError
@@ -47,11 +47,17 @@ def authenticate_user() -> Optional[Any]:
         flow = get_oauth_flow()
         st.session_state.auth_flow = flow
         add_oauth_flow("main_auth", flow)
-        auth_url, _ = flow.authorization_url(prompt="consent")
+        auth_url, state = flow.authorization_url(prompt="consent")
         st.session_state.auth_url = auth_url
+        st.session_state.oauth_state = state
 
     query_params = st.query_params
     if "code" in query_params:
+        if "state" not in query_params or query_params["state"] != st.session_state.get(
+            "oauth_state"
+        ):
+            st.error("Authentication failed: State mismatch (possible CSRF attempt).")
+            return None
         code = query_params["code"]
         flow = st.session_state.auth_flow
         try:
@@ -181,61 +187,79 @@ def main() -> None:
         if uploaded_files:
             if st.button("Upload"):
                 with st.spinner("Uploading to Google Drive..."):
-                    for uploaded_file in uploaded_files:
-                        paper_id = uuid.uuid4().hex
-                        with tempfile.NamedTemporaryFile(
-                            delete=False, suffix=".pdf"
-                        ) as tmp:
-                            tmp.write(uploaded_file.getvalue())
-                            tmp_path = Path(tmp.name)
+                    try:
+                        for uploaded_file in uploaded_files:
+                            try:
+                                paper_id = uuid.uuid4().hex
+                                with tempfile.NamedTemporaryFile(
+                                    delete=False, suffix=".pdf"
+                                ) as tmp:
+                                    tmp.write(uploaded_file.getvalue())
+                                    tmp_path = Path(tmp.name)
 
-                        try:
-                            folder_id = create_paper_folder(
-                                creds, st.session_state.current_papers_id, paper_id
-                            )
-                            pdf_file_id = upload_file_to_folder(
-                                creds,
-                                folder_id,
-                                tmp_path,
-                                "paper.pdf",
-                                "application/pdf",
-                            )
-                            meta = PaperMetadata(title=uploaded_file.name)
-                            meta_tmp_path = (
-                                Path(tempfile.gettempdir()) / f"{paper_id}_meta.json"
-                            )
-                            meta_tmp_path.write_text(meta.model_dump_json(indent=2))
-                            meta_file_id = upload_file_to_folder(
-                                creds,
-                                folder_id,
-                                meta_tmp_path,
-                                "meta.json",
-                                "application/json",
-                            )
-                            meta_tmp_path.unlink()
+                                try:
+                                    folder_id = create_paper_folder(
+                                        creds,
+                                        st.session_state.current_papers_id,
+                                        paper_id,
+                                    )
+                                    pdf_file_id = upload_file_to_folder(
+                                        creds,
+                                        folder_id,
+                                        tmp_path,
+                                        "paper.pdf",
+                                        "application/pdf",
+                                    )
+                                    meta = PaperMetadata(title=uploaded_file.name)
 
-                            st.session_state.index.papers[paper_id] = PaperIndexEntry(
-                                title=meta.title,
-                                pdf_file_id=pdf_file_id,
-                                meta_file_id=meta_file_id,
-                                folder_id=folder_id,
-                            )
-                        finally:
-                            tmp_path.unlink(missing_ok=True)
+                                    with tempfile.NamedTemporaryFile(
+                                        delete=False, suffix=".json"
+                                    ) as tmp_meta:
+                                        tmp_meta.write(
+                                            meta.model_dump_json(indent=2).encode(
+                                                "utf-8"
+                                            )
+                                        )
+                                        meta_tmp_path = Path(tmp_meta.name)
 
-                    upload_library_index(
-                        creds,
-                        st.session_state.current_papers_id,
-                        st.session_state.index,
-                    )
-                    st.session_state.last_sync_time = None
+                                    try:
+                                        meta_file_id = upload_file_to_folder(
+                                            creds,
+                                            folder_id,
+                                            meta_tmp_path,
+                                            "meta.json",
+                                            "application/json",
+                                        )
+
+                                        st.session_state.index.papers[paper_id] = (
+                                            PaperIndexEntry(
+                                                title=meta.title,
+                                                pdf_file_id=pdf_file_id,
+                                                meta_file_id=meta_file_id,
+                                                folder_id=folder_id,
+                                            )
+                                        )
+                                    finally:
+                                        meta_tmp_path.unlink(missing_ok=True)
+                                finally:
+                                    tmp_path.unlink(missing_ok=True)
+                            except Exception as e:
+                                st.error(f"Failed to upload {uploaded_file.name}: {e}")
+                    finally:
+                        upload_library_index(
+                            creds,
+                            st.session_state.current_papers_id,
+                            st.session_state.index,
+                        )
+                        st.session_state.last_sync_time = None
                     st.success("Uploaded successfully!")
                     st.rerun()
 
         st.header("Library Papers")
-        search_query = st_keyup(
+        search_box = st_keyup(
             "Search", placeholder="Search papers...", key="search_box"
-        ).lower()
+        )
+        search_query = (search_box or "").lower()
 
         filtered_papers = []
         for pid, p in st.session_state.index.papers.items():
@@ -329,8 +353,6 @@ def main() -> None:
                 notes = st.text_area("Notes", value=meta.notes, height=200)
 
                 if st.form_submit_button("Save Changes"):
-                    from typing import cast, Literal
-
                     meta.title = new_title
                     meta.tags = [t.strip() for t in tags_str.split(",") if t.strip()]
                     meta.status = cast(
