@@ -27,10 +27,12 @@ jobs:
       uses: actions/cache@v4
       with:
         path: .testmondata
-        key: testmon-${{ runner.os }}-${{ github.ref_name }}
+        key: testmon-${{ runner.os }}-${{ github.ref_name }}-${{ github.sha }}
         restore-keys: |
+          testmon-${{ runner.os }}-${{ github.ref_name }}-
           testmon-${{ runner.os }}-main
 
     - name: Run tests with coverage
       run: |
-        uv run pytest --testmon --cov=backend --cov-report=term-missing --cov-fail-under=35 | tee -a $GITHUB_STEP_SUMMARY
+        echo "Note: The test coverage provided is only taking changed files into account (using pytest-testmon)." | tee -a $GITHUB_STEP_SUMMARY
+        uv run pytest --testmon --cov=backend --cov-report=term-missing | tee -a $GITHUB_STEP_SUMMARY
