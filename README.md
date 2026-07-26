@@ -9,7 +9,7 @@ A front-end for papers backed by Google Drive.
 3. Run the FastAPI backend server (this serves the PDFs for the Streamlit UI):
    ```bash
    uv run poe fastapi
-   # or: uv run fastapi dev open-paper-shelf/src/main.py --port 8000
+   # or: uv run fastapi dev open-paper-shelf/src/backend/main.py --port 8000
    ```
 4. In a separate terminal, run the Streamlit frontend locally:
    ```bash

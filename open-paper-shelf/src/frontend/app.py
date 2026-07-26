@@ -90,6 +90,18 @@ def overwrite_dialog(
     display_name: str,
     existing_ids: list[str],
 ) -> None:
+    """Displays a dialog to overwrite an existing Google Drive PDF.
+
+    If confirmed, deletes the old versions from Google Drive and uploads
+    the new version.
+
+    Args:
+        creds: The authenticated Google credentials.
+        folder_id: The Google Drive folder ID to upload to.
+        file_path: The local path of the temporary file to upload.
+        display_name: The desired clean name for the file in Google Drive.
+        existing_ids: A list of Google Drive file IDs that will be deleted.
+    """
     st.write(f"The file {display_name} already exists in your Google Drive library.")
     st.write("Do you want to overwrite it?")
     if st.button("Yes, overwrite it"):
