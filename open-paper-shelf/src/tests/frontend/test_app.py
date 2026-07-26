@@ -70,6 +70,7 @@ class TestAppMetadataSync:
         session_state = MockSessionState()
         mock_st.session_state = session_state
         mock_st.columns.return_value = [MagicMock(), MagicMock()]
+        mock_st.button.return_value = False
 
         # When download_metadata is called, write test JSON file
         def fake_download(_creds: Any, file_id: str, dest_path: Path) -> None:
@@ -140,6 +141,7 @@ class TestAppMetadataSync:
         session_state = MockSessionState()
         mock_st.session_state = session_state
         mock_st.columns.return_value = [MagicMock(), MagicMock()]
+        mock_st.button.return_value = False
 
         with patch("frontend.app.PAPERS_DIR", tmp_path):
             from frontend.app import main
@@ -192,6 +194,7 @@ class TestAppMetadataSync:
         session_state = MockSessionState()
         mock_st.session_state = session_state
         mock_st.columns.return_value = [MagicMock(), MagicMock()]
+        mock_st.button.return_value = False
 
         with patch("frontend.app.PAPERS_DIR", tmp_path):
             from frontend.app import main
@@ -261,6 +264,7 @@ class TestAppMetadataSync:
 
         mock_st.session_state = session_state
         mock_st.columns.return_value = [MagicMock(), MagicMock()]
+        mock_st.button.return_value = False
         mock_st.text_input.side_effect = lambda _label, **kwargs: kwargs.get(
             "value", ""
         )

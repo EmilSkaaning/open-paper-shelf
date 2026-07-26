@@ -343,3 +343,25 @@ def upload_metadata(
             .execute()
         )
         return str(file.get("id"))
+
+
+def delete_metadata(creds: Credentials, folder_id: str, paper_id: str) -> None:
+    """Deletes the metadata JSON file associated with a paper from Google Drive.
+
+    Args:
+        creds: The authenticated Google credentials.
+        folder_id: The ID of the Google Drive folder.
+        paper_id: The ID of the paper.
+    """
+    service: Any = build("drive", "v3", credentials=creds)
+    safe_display_name = f"{paper_id}_meta.json".replace("'", "\\'")
+    query = (
+        f"name = '{safe_display_name}' and '{folder_id}' in parents and trashed = false"
+    )
+    existing = (
+        service.files().list(q=query, spaces="drive", fields="files(id)").execute()
+    )
+    files = existing.get("files", [])
+    if files:
+        file_id = str(files[0]["id"])
+        service.files().delete(fileId=file_id).execute()

@@ -207,7 +207,14 @@ def main() -> None:
                         paper_id = name.removesuffix("_meta.json")
                         local_meta_path = metadata_dir / name
                         if not local_meta_path.exists():
-                            download_metadata(creds, meta_file["id"], local_meta_path)
+                            try:
+                                download_metadata(
+                                    creds, meta_file["id"], local_meta_path
+                                )
+                            except Exception as e:
+                                st.error(
+                                    f"Failed to download metadata for {paper_id}: {e}"
+                                )
 
                         if local_meta_path.exists():
                             try:
@@ -308,10 +315,20 @@ def main() -> None:
                 try:
                     with st.spinner(f"Deleting {pdf['name']}..."):
                         delete_pdf(creds, pdf["id"])
+                        from backend.drive import delete_metadata
+
+                        delete_metadata(creds, folder_id, pdf["id"])
                         shutil.rmtree(
                             st.session_state.papers_dir / pdf["id"],
                             ignore_errors=True,
                         )
+                        if "metadata_dir" in st.session_state:
+                            local_meta_path = (
+                                st.session_state.metadata_dir / f"{pdf['id']}_meta.json"
+                            )
+                            local_meta_path.unlink(missing_ok=True)
+                        if "metadata" in st.session_state:
+                            st.session_state.metadata.pop(pdf["id"], None)
                     # Reset the checkbox state
                     st.session_state[f"chk_{pdf['id']}"] = False
                     if st.session_state.selected_paper == pdf["id"]:
@@ -321,6 +338,18 @@ def main() -> None:
 
             st.session_state.drive_pdfs = list_pdfs_in_library(creds, folder_id)
             st.success("Deleted successfully!")
+            st.rerun()
+
+        if st.button(
+            "🔄 Force Sync",
+            help="Force refresh metadata and library from Google Drive",
+            use_container_width=True,
+        ):
+            if "metadata_dir" in st.session_state:
+                shutil.rmtree(st.session_state.metadata_dir, ignore_errors=True)
+            st.session_state.pop("folder_id", None)
+            st.session_state.pop("drive_pdfs", None)
+            st.session_state.pop("metadata", None)
             st.rerun()
 
         # Search box

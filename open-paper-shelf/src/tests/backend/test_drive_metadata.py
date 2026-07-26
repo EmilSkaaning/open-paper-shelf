@@ -272,3 +272,56 @@ class TestUploadMetadata:
 
         call_kwargs = mock_list.call_args[1]
         assert "name = 'author\\'s_meta.json'" in call_kwargs["q"]
+
+
+class TestDeleteMetadata:
+    """Test suite for delete_metadata function."""
+
+    @patch("backend.drive.build")
+    def test_delete_metadata_existing(
+        self, mock_build: MagicMock, mock_creds: MagicMock
+    ) -> None:
+        """Test deleting metadata when it exists in Google Drive.
+
+        Args:
+            mock_build: Mock for googleapiclient.discovery.build.
+            mock_creds: Mock credentials fixture.
+        """
+        from backend.drive import delete_metadata
+
+        mock_service = MagicMock()
+        mock_build.return_value = mock_service
+
+        mock_service.files.return_value.list.return_value.execute.return_value = {
+            "files": [{"id": "meta_id_123"}]
+        }
+
+        delete_metadata(mock_creds, "folder_123", "paper_123")
+
+        mock_service.files.return_value.delete.assert_called_once_with(
+            fileId="meta_id_123"
+        )
+        mock_service.files.return_value.delete.return_value.execute.assert_called_once()
+
+    @patch("backend.drive.build")
+    def test_delete_metadata_not_found(
+        self, mock_build: MagicMock, mock_creds: MagicMock
+    ) -> None:
+        """Test deleting metadata when it does not exist in Google Drive.
+
+        Args:
+            mock_build: Mock for googleapiclient.discovery.build.
+            mock_creds: Mock credentials fixture.
+        """
+        from backend.drive import delete_metadata
+
+        mock_service = MagicMock()
+        mock_build.return_value = mock_service
+
+        mock_service.files.return_value.list.return_value.execute.return_value = {
+            "files": []
+        }
+
+        delete_metadata(mock_creds, "folder_123", "paper_123")
+
+        mock_service.files.return_value.delete.assert_not_called()

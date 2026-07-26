@@ -1,7 +1,5 @@
 # Metadata UI Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
-
 **Goal:** Implement a scalable metadata storage and UI for PDF papers in Open Paper Shelf, syncing a separate JSON file per paper to Google Drive.
 
 **Architecture:** A new Pydantic model `PaperMetadata` represents the metadata. Google Drive operations fetch, upload, and download `*_meta.json` files alongside PDFs. The Streamlit UI fetches all metadata on startup, caches it locally, and displays it in a side-pane next to the PDF for editing.
