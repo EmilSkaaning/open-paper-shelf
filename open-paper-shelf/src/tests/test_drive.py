@@ -243,11 +243,7 @@ class TestDownloadPdf:
         mock_tmp_path = mocker.MagicMock()
 
         def mock_path_constructor(name):
-            if name == "/tmp/dummy.tmp":
-                return mock_tmp_path
-            from pathlib import Path
-
-            return Path(name)
+            return mock_tmp_path
 
         mocker.patch("backend.drive.Path", side_effect=mock_path_constructor)
 
