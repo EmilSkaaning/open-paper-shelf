@@ -48,6 +48,13 @@ class TestListMetadataInLibrary:
         assert len(result) == 1
         assert result[0]["id"] == "meta1"
         assert result[0]["name"] == "123_meta.json"
+        mock_service.files().list.assert_called_with(
+            q="'folder_123' in parents and name contains '_meta.json' and trashed = false",
+            spaces="drive",
+            fields="nextPageToken, files(id, name)",
+            pageToken=None,
+            pageSize=1000,
+        )
 
     @patch("backend.drive.build")
     def test_list_metadata_pagination(

@@ -5,6 +5,7 @@ import os
 import sys
 import urllib.parse
 import tempfile
+import time
 import re
 import shutil
 from pathlib import Path
@@ -26,7 +27,7 @@ src_path = Path(__file__).parent.parent
 if str(src_path) not in sys.path:
     sys.path.append(str(src_path))
 
-from backend.models import PaperMetadata  # noqa: E402, F401
+from backend.models import PaperMetadata  # noqa: E402
 from backend.drive import (  # noqa: E402
     PAPERS_DIR,
     get_oauth_flow,
@@ -41,7 +42,7 @@ from backend.drive import (  # noqa: E402
     delete_pdf,
     list_metadata_in_library,
     download_metadata,
-    upload_metadata,  # noqa: F401
+    upload_metadata,
 )
 
 
@@ -194,20 +195,21 @@ def main() -> None:
 
             # Sync metadata
             metadata_files = list_metadata_in_library(creds, st.session_state.folder_id)
-            for meta_file in metadata_files:
-                name = meta_file["name"]
-                if name.endswith("_meta.json"):
-                    paper_id = name.replace("_meta.json", "")
-                    local_meta_path = metadata_dir / name
-                    if not local_meta_path.exists():
-                        download_metadata(creds, meta_file["id"], local_meta_path)
+            with st.spinner("Syncing metadata..."):
+                for meta_file in metadata_files:
+                    name = meta_file["name"]
+                    if name.endswith("_meta.json"):
+                        paper_id = name.removesuffix("_meta.json")
+                        local_meta_path = metadata_dir / name
+                        if not local_meta_path.exists():
+                            download_metadata(creds, meta_file["id"], local_meta_path)
 
-                    if local_meta_path.exists():
-                        try:
-                            with open(local_meta_path, "r", encoding="utf-8") as f:
-                                st.session_state.metadata[paper_id] = json.load(f)
-                        except Exception as e:
-                            st.error(f"Failed to load metadata for {paper_id}: {e}")
+                        if local_meta_path.exists():
+                            try:
+                                with open(local_meta_path, "r", encoding="utf-8") as f:
+                                    st.session_state.metadata[paper_id] = json.load(f)
+                            except Exception as e:
+                                st.error(f"Failed to load metadata for {paper_id}: {e}")
 
     papers_dir = st.session_state.papers_dir
     folder_id = st.session_state.folder_id
@@ -461,6 +463,8 @@ def main() -> None:
                                             meta_filename,
                                         )
                                     st.success("Metadata saved!")
+                                    time.sleep(1)
+                                    st.rerun()
                                 except Exception as e:
                                     st.error(f"Failed to save metadata to Drive: {e}")
 

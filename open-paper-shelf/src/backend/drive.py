@@ -261,6 +261,7 @@ def list_metadata_in_library(
                 spaces="drive",
                 fields="nextPageToken, files(id, name)",
                 pageToken=page_token,
+                pageSize=1000,
             )
             .execute()
         )
