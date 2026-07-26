@@ -31,6 +31,7 @@ REDIRECT_URI: str = "http://localhost:8501/"
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 CREDENTIALS_PATH = PROJECT_ROOT / "credentials.json"
 TOKEN_PATH = PROJECT_ROOT / "token.json"
+PAPERS_DIR = PROJECT_ROOT / "papers"
 
 
 def add_oauth_flow(state: str, flow: Flow) -> None:
@@ -144,12 +145,27 @@ def list_pdfs_in_library(creds: Credentials, folder_id: str) -> List[Dict[str, s
     query: str = (
         f"'{folder_id}' in parents and mimeType = 'application/pdf' and trashed = false"
     )
-    results: Dict[str, Any] = (
-        service.files()
-        .list(q=query, spaces="drive", fields="files(id, name)")
-        .execute()
-    )
-    return results.get("files", [])
+
+    all_files = []
+    page_token = None
+
+    while True:
+        results: Dict[str, Any] = (
+            service.files()
+            .list(
+                q=query,
+                spaces="drive",
+                fields="nextPageToken, files(id, name)",
+                pageToken=page_token,
+            )
+            .execute()
+        )
+        all_files.extend(results.get("files", []))
+        page_token = results.get("nextPageToken")
+        if not page_token:
+            break
+
+    return all_files
 
 
 def download_pdf(creds: Credentials, file_id: str, dest_path: Path) -> None:
@@ -162,11 +178,15 @@ def download_pdf(creds: Credentials, file_id: str, dest_path: Path) -> None:
     """
     service: Any = build("drive", "v3", credentials=creds)
     request: Any = service.files().get_media(fileId=file_id)
-    with io.FileIO(dest_path, "wb") as fh:
+
+    tmp_path = dest_path.with_suffix(".tmp")
+    with io.FileIO(tmp_path, "wb") as fh:
         downloader = MediaIoBaseDownload(fh, request)
         done: bool = False
         while not done:
             status, done = downloader.next_chunk()
+
+    tmp_path.rename(dest_path)
 
 
 def upload_pdf(creds: Credentials, folder_id: str, file_path: Path) -> str:
