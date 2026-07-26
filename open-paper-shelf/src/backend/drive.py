@@ -11,6 +11,8 @@ from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import Flow
 from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
+from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
+import io
 
 # Dictionary to cache Flow objects across Streamlit reruns.
 # Keys are the OAuth 'state' strings.
@@ -126,3 +128,64 @@ def get_or_create_library_folder(creds: Credentials) -> str:
         return str(folder.get("id"))
     else:
         return str(items[0].get("id"))
+
+
+def list_pdfs_in_library(creds: Credentials, folder_id: str) -> List[Dict[str, str]]:
+    """Lists all PDF files in the specified Google Drive folder.
+
+    Args:
+        creds: The authenticated Google credentials.
+        folder_id: The ID of the Google Drive folder.
+
+    Returns:
+        A list of dictionaries, each containing 'id' and 'name' of a PDF file.
+    """
+    service: Any = build("drive", "v3", credentials=creds)
+    query: str = (
+        f"'{folder_id}' in parents and mimeType = 'application/pdf' and trashed = false"
+    )
+    results: Dict[str, Any] = (
+        service.files()
+        .list(q=query, spaces="drive", fields="files(id, name)")
+        .execute()
+    )
+    return results.get("files", [])
+
+
+def download_pdf(creds: Credentials, file_id: str, dest_path: Path) -> None:
+    """Downloads a PDF file from Google Drive to the local filesystem.
+
+    Args:
+        creds: The authenticated Google credentials.
+        file_id: The Google Drive file ID.
+        dest_path: The local path where the PDF will be saved.
+    """
+    service: Any = build("drive", "v3", credentials=creds)
+    request: Any = service.files().get_media(fileId=file_id)
+    with io.FileIO(dest_path, "wb") as fh:
+        downloader = MediaIoBaseDownload(fh, request)
+        done: bool = False
+        while not done:
+            status, done = downloader.next_chunk()
+
+
+def upload_pdf(creds: Credentials, folder_id: str, file_path: Path) -> str:
+    """Uploads a local PDF file to the specified Google Drive folder.
+
+    Args:
+        creds: The authenticated Google credentials.
+        folder_id: The ID of the Google Drive folder.
+        file_path: The local path to the PDF file.
+
+    Returns:
+        The Google Drive file ID of the newly uploaded file.
+    """
+    service: Any = build("drive", "v3", credentials=creds)
+    file_metadata: Dict[str, Any] = {"name": file_path.name, "parents": [folder_id]}
+    media = MediaFileUpload(str(file_path), mimetype="application/pdf", resumable=True)
+    file: Dict[str, Any] = (
+        service.files()
+        .create(body=file_metadata, media_body=media, fields="id")
+        .execute()
+    )
+    return str(file.get("id"))
