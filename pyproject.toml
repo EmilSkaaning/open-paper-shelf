@@ -28,6 +28,10 @@ test = "pytest"
 fastapi = "fastapi dev open-paper-shelf/src/backend/main.py --port 8000"
 streamlit = "streamlit run open-paper-shelf/src/frontend/app.py"
 
+[tool.pytest.ini_options]
+pythonpath = ["open-paper-shelf/src"]
+
+
 [tool.hatch.build.targets.wheel]
 packages = ["."]
 
@@ -54,4 +58,4 @@ project-includes = [
     "**/*.py*",
     "**/*.ipynb",
 ]
-search_paths = ["open-paper-shelf/src"]
+search_path = ["open-paper-shelf/src"]
