@@ -111,8 +111,10 @@ def bulk_overwrite_dialog(
                 ) as tmp_file:
                     tmp_file.write(uf.getbuffer())
                     temp_file_path = Path(tmp_file.name)
-                upload_pdf(creds, folder_id, temp_file_path, display_name=name)
-                temp_file_path.unlink(missing_ok=True)
+                try:
+                    upload_pdf(creds, folder_id, temp_file_path, display_name=name)
+                finally:
+                    temp_file_path.unlink(missing_ok=True)
 
         st.session_state.drive_pdfs = list_pdfs_in_library(creds, folder_id)
         st.session_state.pending_conflicts = None
@@ -185,11 +187,13 @@ def main() -> None:
         if "selected_paper" not in st.session_state:
             st.session_state.selected_paper = None
 
-        pdf_names = sorted(
-            [p["name"] for p in st.session_state.drive_pdfs], key=lambda x: x.lower()
+        sorted_pdfs = sorted(
+            st.session_state.drive_pdfs, key=lambda x: x["name"].lower()
         )
         checked_papers = [
-            name for name in pdf_names if st.session_state.get(f"chk_{name}", False)
+            pdf
+            for pdf in sorted_pdfs
+            if st.session_state.get(f"chk_{pdf['id']}", False)
         ]
 
         # Upload area
@@ -224,13 +228,15 @@ def main() -> None:
                         ) as tmp_file:
                             tmp_file.write(uf.getbuffer())
                             temp_file_path = Path(tmp_file.name)
-                        upload_pdf(
-                            creds,
-                            folder_id,
-                            temp_file_path,
-                            display_name=safe_name,
-                        )
-                        temp_file_path.unlink(missing_ok=True)
+                        try:
+                            upload_pdf(
+                                creds,
+                                folder_id,
+                                temp_file_path,
+                                display_name=safe_name,
+                            )
+                        finally:
+                            temp_file_path.unlink(missing_ok=True)
 
             if conflicts:
                 st.session_state.pending_conflicts = conflicts
@@ -250,18 +256,12 @@ def main() -> None:
                 disabled=not bool(checked_papers),
                 type="primary" if checked_papers else "secondary",
             ):
-                for paper_name in checked_papers:
-                    ids = [
-                        p["id"]
-                        for p in st.session_state.drive_pdfs
-                        if p["name"] == paper_name
-                    ]
-                    for file_id in ids:
-                        with st.spinner(f"Deleting {paper_name}..."):
-                            delete_pdf(creds, file_id)
+                for pdf in checked_papers:
+                    with st.spinner(f"Deleting {pdf['name']}..."):
+                        delete_pdf(creds, pdf["id"])
                     # Reset the checkbox state
-                    st.session_state[f"chk_{paper_name}"] = False
-                    if st.session_state.selected_paper == paper_name:
+                    st.session_state[f"chk_{pdf['id']}"] = False
+                    if st.session_state.selected_paper == pdf["id"]:
                         st.session_state.selected_paper = None
 
                 st.session_state.drive_pdfs = list_pdfs_in_library(creds, folder_id)
@@ -278,24 +278,29 @@ def main() -> None:
         search_query = search_query or ""
 
         # List PDFs
-        filtered_names = [n for n in pdf_names if search_query.lower() in n.lower()]
+        filtered_pdfs = [
+            p for p in sorted_pdfs if search_query.lower() in p["name"].lower()
+        ]
 
-        if filtered_names:
-            for name in filtered_names:
+        if filtered_pdfs:
+            for pdf in filtered_pdfs:
+                name = pdf["name"]
+                pdf_id = pdf["id"]
                 display_name = name[:-4] if name.lower().endswith(".pdf") else name
                 col1, col2 = st.columns([0.15, 0.85])
                 with col1:
                     st.checkbox(
-                        "Select", key=f"chk_{name}", label_visibility="collapsed"
+                        "Select", key=f"chk_{pdf_id}", label_visibility="collapsed"
                     )
                 with col2:
-                    is_selected = st.session_state.selected_paper == name
+                    is_selected = st.session_state.selected_paper == pdf_id
                     if st.button(
                         display_name,
+                        key=f"btn_{pdf_id}",
                         use_container_width=True,
                         type="secondary" if is_selected else "tertiary",
                     ):
-                        st.session_state.selected_paper = name
+                        st.session_state.selected_paper = pdf_id
                         st.rerun()
         else:
             st.write("No papers found.")
@@ -304,13 +309,13 @@ def main() -> None:
 
     with right_col.container(border=True, height=800):
         if selected_paper:
-            # Find the ID of the selected paper
+            # Find the selected paper by ID
             selected_pdf = next(
-                (p for p in st.session_state.drive_pdfs if p["name"] == selected_paper),
+                (p for p in st.session_state.drive_pdfs if p["id"] == selected_paper),
                 None,
             )
             if selected_pdf:
-                safe_paper_name = Path(selected_paper).name
+                safe_paper_name = Path(selected_pdf["name"]).name
                 paper_folder = papers_dir / selected_pdf["id"]
                 local_pdf_path = paper_folder / safe_paper_name
 

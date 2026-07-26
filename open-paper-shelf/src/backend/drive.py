@@ -182,11 +182,14 @@ def download_pdf(creds: Credentials, file_id: str, dest_path: Path) -> None:
     with tempfile.NamedTemporaryFile(dir=dest_path.parent, delete=False) as tmp_file:
         tmp_path = Path(tmp_file.name)
         downloader = MediaIoBaseDownload(tmp_file, request)
-        done: bool = False
-        while not done:
-            status, done = downloader.next_chunk()
-
-    tmp_path.rename(dest_path)
+        try:
+            done: bool = False
+            while not done:
+                status, done = downloader.next_chunk()
+            tmp_path.rename(dest_path)
+        finally:
+            if tmp_path.exists():
+                tmp_path.unlink(missing_ok=True)
 
 
 def delete_pdf(creds: Credentials, file_id: str) -> None:
