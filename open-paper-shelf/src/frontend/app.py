@@ -185,7 +185,9 @@ def main() -> None:
         if "selected_paper" not in st.session_state:
             st.session_state.selected_paper = None
 
-        pdf_names = [p["name"] for p in st.session_state.drive_pdfs]
+        pdf_names = sorted(
+            [p["name"] for p in st.session_state.drive_pdfs], key=lambda x: x.lower()
+        )
         checked_papers = [
             name for name in pdf_names if st.session_state.get(f"chk_{name}", False)
         ]
@@ -280,6 +282,7 @@ def main() -> None:
 
         if filtered_names:
             for name in filtered_names:
+                display_name = name[:-4] if name.lower().endswith(".pdf") else name
                 col1, col2 = st.columns([0.15, 0.85])
                 with col1:
                     st.checkbox(
@@ -288,7 +291,7 @@ def main() -> None:
                 with col2:
                     is_selected = st.session_state.selected_paper == name
                     if st.button(
-                        name,
+                        display_name,
                         use_container_width=True,
                         type="secondary" if is_selected else "tertiary",
                     ):
