@@ -150,6 +150,24 @@ def upload_papers(creds, uploaded_files) -> bool:
     return all_succeeded
 
 
+def sync_paper_metadata(creds, paper_info, local_meta_path: Path) -> bool:
+    """Refreshes the local metadata cache for a paper from Drive.
+
+    Returns:
+        True if metadata is safe to edit (freshly downloaded, or a
+        pre-existing local cache survives a failed download). False if
+        there's no reliable copy of the real metadata, so editing would
+        risk overwriting it with defaults.
+    """
+    had_local_copy = local_meta_path.exists()
+    try:
+        download_file(creds, paper_info.meta_file_id, local_meta_path)
+        return True
+    except Exception as e:
+        st.error(f"Failed to fetch metadata: {e}")
+        return had_local_copy
+
+
 def init_library_state(creds, lib_id: str, papers_id: str):
     st.session_state.current_lib_id = lib_id
     st.session_state.current_papers_id = papers_id
@@ -350,10 +368,7 @@ def main() -> None:
                 download_file(creds, paper_info.pdf_file_id, local_pdf_path)
 
             # Always sync metadata on load to avoid stale caches across devices
-            try:
-                download_file(creds, paper_info.meta_file_id, local_meta_path)
-            except Exception as e:
-                st.error(f"Failed to fetch metadata: {e}")
+            metadata_available = sync_paper_metadata(creds, paper_info, local_meta_path)
 
         meta = PaperMetadata(title=paper_info.title)
         if local_meta_path.exists():
@@ -390,6 +405,11 @@ def main() -> None:
 
         with col_meta:
             st.subheader("Metadata")
+            if not metadata_available:
+                st.warning(
+                    "Could not load the latest metadata from Drive. Editing is "
+                    "disabled to avoid overwriting your saved data."
+                )
             with st.form(key=f"meta_form_{pid}"):
                 new_title = st.text_input("Title", value=meta.title)
                 tags_str = st.text_input(
@@ -403,7 +423,9 @@ def main() -> None:
                 citation = st.text_input("Citation", value=meta.citation)
                 notes = st.text_area("Notes", value=meta.notes, height=200)
 
-                if st.form_submit_button("Save Changes"):
+                if st.form_submit_button(
+                    "Save Changes", disabled=not metadata_available
+                ):
                     meta.title = new_title
                     meta.tags = [t.strip() for t in tags_str.split(",") if t.strip()]
                     meta.status = cast(

@@ -199,6 +199,51 @@ def test_upload_papers_partial_failure_reports_error_and_keeps_successful_ones(
     assert "b.pdf" in fake_st.error.call_args[0][0]
 
 
+# --- sync_paper_metadata ------------------------------------------------------
+
+
+def test_sync_paper_metadata_download_succeeds(fake_st, tmp_path):
+    local_meta_path = tmp_path / "meta.json"
+    paper_info = MagicMock(meta_file_id="meta1")
+
+    with patch.object(app, "download_file") as mock_download:
+        result = app.sync_paper_metadata(MagicMock(), paper_info, local_meta_path)
+
+    mock_download.assert_called_once()
+    assert result is True
+    fake_st.error.assert_not_called()
+
+
+def test_sync_paper_metadata_download_fails_without_local_copy_is_unsafe(
+    fake_st, tmp_path
+):
+    """Regression test: with no pre-existing local cache, a failed download
+    must be reported as unsafe to edit, so the caller doesn't let the user
+    save empty/default metadata over their real Drive data."""
+    local_meta_path = tmp_path / "meta.json"
+    paper_info = MagicMock(meta_file_id="meta1")
+
+    with patch.object(app, "download_file", side_effect=RuntimeError("network blip")):
+        result = app.sync_paper_metadata(MagicMock(), paper_info, local_meta_path)
+
+    assert result is False
+    fake_st.error.assert_called_once()
+
+
+def test_sync_paper_metadata_download_fails_with_stale_local_copy_is_safe(
+    fake_st, tmp_path
+):
+    local_meta_path = tmp_path / "meta.json"
+    local_meta_path.write_text('{"title": "cached"}')
+    paper_info = MagicMock(meta_file_id="meta1")
+
+    with patch.object(app, "download_file", side_effect=RuntimeError("network blip")):
+        result = app.sync_paper_metadata(MagicMock(), paper_info, local_meta_path)
+
+    assert result is True
+    fake_st.error.assert_called_once()
+
+
 # --- authenticate_user (OAuth return path) ----------------------------------
 
 
