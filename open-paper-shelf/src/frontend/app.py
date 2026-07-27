@@ -90,6 +90,66 @@ def authenticate_user() -> Optional[Any]:
     return None
 
 
+def upload_papers(creds, uploaded_files) -> bool:
+    """Uploads each file to Drive and records it in the in-memory index.
+
+    Returns:
+        True if every file uploaded successfully, False if any failed.
+    """
+    all_succeeded = True
+    for uploaded_file in uploaded_files:
+        try:
+            paper_id = uuid.uuid4().hex
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+                tmp.write(uploaded_file.getvalue())
+                tmp_path = Path(tmp.name)
+
+            try:
+                folder_id = create_paper_folder(
+                    creds,
+                    st.session_state.current_papers_id,
+                    paper_id,
+                )
+                pdf_file_id = upload_file_to_folder(
+                    creds,
+                    folder_id,
+                    tmp_path,
+                    "paper.pdf",
+                    "application/pdf",
+                )
+                meta = PaperMetadata(title=uploaded_file.name)
+
+                with tempfile.NamedTemporaryFile(
+                    delete=False, suffix=".json"
+                ) as tmp_meta:
+                    tmp_meta.write(meta.model_dump_json(indent=2).encode("utf-8"))
+                    meta_tmp_path = Path(tmp_meta.name)
+
+                try:
+                    meta_file_id = upload_file_to_folder(
+                        creds,
+                        folder_id,
+                        meta_tmp_path,
+                        "meta.json",
+                        "application/json",
+                    )
+
+                    st.session_state.index.papers[paper_id] = PaperIndexEntry(
+                        title=meta.title,
+                        pdf_file_id=pdf_file_id,
+                        meta_file_id=meta_file_id,
+                        folder_id=folder_id,
+                    )
+                finally:
+                    meta_tmp_path.unlink(missing_ok=True)
+            finally:
+                tmp_path.unlink(missing_ok=True)
+        except Exception as e:
+            st.error(f"Failed to upload {uploaded_file.name}: {e}")
+            all_succeeded = False
+    return all_succeeded
+
+
 def init_library_state(creds, lib_id: str, papers_id: str):
     st.session_state.current_lib_id = lib_id
     st.session_state.current_papers_id = papers_id
@@ -213,63 +273,7 @@ def main() -> None:
             if st.button("Upload"):
                 with st.spinner("Uploading to Google Drive..."):
                     try:
-                        for uploaded_file in uploaded_files:
-                            try:
-                                paper_id = uuid.uuid4().hex
-                                with tempfile.NamedTemporaryFile(
-                                    delete=False, suffix=".pdf"
-                                ) as tmp:
-                                    tmp.write(uploaded_file.getvalue())
-                                    tmp_path = Path(tmp.name)
-
-                                try:
-                                    folder_id = create_paper_folder(
-                                        creds,
-                                        st.session_state.current_papers_id,
-                                        paper_id,
-                                    )
-                                    pdf_file_id = upload_file_to_folder(
-                                        creds,
-                                        folder_id,
-                                        tmp_path,
-                                        "paper.pdf",
-                                        "application/pdf",
-                                    )
-                                    meta = PaperMetadata(title=uploaded_file.name)
-
-                                    with tempfile.NamedTemporaryFile(
-                                        delete=False, suffix=".json"
-                                    ) as tmp_meta:
-                                        tmp_meta.write(
-                                            meta.model_dump_json(indent=2).encode(
-                                                "utf-8"
-                                            )
-                                        )
-                                        meta_tmp_path = Path(tmp_meta.name)
-
-                                    try:
-                                        meta_file_id = upload_file_to_folder(
-                                            creds,
-                                            folder_id,
-                                            meta_tmp_path,
-                                            "meta.json",
-                                            "application/json",
-                                        )
-
-                                        st.session_state.index.papers[paper_id] = (
-                                            PaperIndexEntry(
-                                                title=meta.title,
-                                                pdf_file_id=pdf_file_id,
-                                                meta_file_id=meta_file_id,
-                                                folder_id=folder_id,
-                                            )
-                                        )
-                                    finally:
-                                        meta_tmp_path.unlink(missing_ok=True)
-                                finally:
-                                    tmp_path.unlink(missing_ok=True)
-                            except Exception as e:
-                                st.error(f"Failed to upload {uploaded_file.name}: {e}")
+                        all_succeeded = upload_papers(creds, uploaded_files)
                     finally:
                         upload_library_index(
                             creds,
@@ -278,8 +282,14 @@ def main() -> None:
                         )
                         st.session_state.last_sync_time = None
                     st.session_state.uploader_key += 1
-                    st.success("Uploaded successfully!")
-                    st.rerun()
+                    if all_succeeded:
+                        st.success("Uploaded successfully!")
+                        st.rerun()
+                    else:
+                        st.warning(
+                            "Some files failed to upload. See the errors above; "
+                            "re-select the failed files to retry."
+                        )
 
         st.header("Library Papers")
         search_box = st_keyup(
