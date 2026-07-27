@@ -275,7 +275,7 @@ def sync_library_index(creds: Credentials) -> None:
 
     if local_path.exists():
         try:
-            data = json.loads(local_path.read_text())
+            data = json.loads(local_path.read_text(encoding="utf-8"))
             st.session_state.index = LibraryIndex(**data)
         except Exception as e:
             st.error(f"Failed to parse library index: {e}")

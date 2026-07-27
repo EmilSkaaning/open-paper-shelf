@@ -130,6 +130,46 @@ class TestSyncLibraryIndex:
         assert fake_st.session_state.last_sync_time == "t1"
         fake_st.error.assert_not_called()
 
+    def test_reads_local_index_as_utf8(
+        self, fake_st: MagicMock, mocker: MockerFixture, tmp_path: Path
+    ) -> None:
+        """Regression test: the local index cache must be read with an
+        explicit utf-8 encoding. Path.read_text() otherwise defaults to the
+        platform encoding (e.g. cp1252 on Windows), which would raise
+        UnicodeDecodeError for titles with non-ASCII characters like smart
+        quotes, since the file is always written as utf-8."""
+        local_path = tmp_path / "id-mapping.json"
+        valid_data = {
+            "papers": {
+                "abc123": {
+                    "title": "A Paper — “Smart Quotes”",
+                    "pdf_file_id": "pdf1",
+                    "meta_file_id": "meta1",
+                    "folder_id": "folder1",
+                }
+            }
+        }
+        fake_st.session_state.current_papers_id = "papers_123"
+        fake_st.session_state.local_index_path = local_path
+        fake_st.session_state.last_sync_time = "t1"
+        mocker.patch.object(
+            app,
+            "get_library_index_file",
+            return_value={"id": "idx", "modifiedTime": "t1"},
+        )
+        mock_download = mocker.patch.object(app, "download_file")
+        mock_read_text = mocker.patch.object(
+            Path, "read_text", return_value=json.dumps(valid_data)
+        )
+        mocker.patch.object(Path, "exists", return_value=True)
+
+        app.sync_library_index(creds=MagicMock())
+
+        mock_download.assert_not_called()
+        mock_read_text.assert_called_once_with(encoding="utf-8")
+        assert fake_st.session_state.index == LibraryIndex(**valid_data)
+        fake_st.error.assert_not_called()
+
 
 class TestUploadPapers:
     """Test suite for upload_papers."""
