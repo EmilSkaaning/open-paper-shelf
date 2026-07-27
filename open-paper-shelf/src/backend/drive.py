@@ -125,7 +125,10 @@ def get_library_index_file(
 
 
 def upload_library_index(
-    creds: Credentials, papers_folder_id: str, index: LibraryIndex
+    creds: Credentials,
+    papers_folder_id: str,
+    index: LibraryIndex,
+    skip_merge: bool = False,
 ) -> None:
     """Uploads the library index file (id-mapping.json) to Google Drive.
 
@@ -133,6 +136,7 @@ def upload_library_index(
         creds (Credentials): Google OAuth credentials.
         papers_folder_id (str): The Google Drive folder ID where the index should be uploaded.
         index (LibraryIndex): The library index data model to serialize and upload.
+        skip_merge (bool): If True, skips merging with the remote index (e.g., during deletions). Defaults to False.
 
     Returns:
         None
@@ -140,7 +144,7 @@ def upload_library_index(
     service: Any = build("drive", "v3", credentials=creds)
     file_info = get_library_index_file(creds, papers_folder_id)
 
-    if file_info:
+    if file_info and not skip_merge:
         try:
             request = service.files().get_media(fileId=file_info["id"])
             remote_bytes = request.execute()

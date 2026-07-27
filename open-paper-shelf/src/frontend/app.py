@@ -303,6 +303,7 @@ def main() -> None:
                             creds,
                             st.session_state.current_papers_id,
                             st.session_state.index,
+                            skip_merge=True,
                         )
                         if st.session_state.selected_paper == pid:
                             st.session_state.selected_paper = None
@@ -340,11 +341,16 @@ def main() -> None:
             try:
                 data = json.loads(local_meta_path.read_text(encoding="utf-8"))
                 meta = PaperMetadata(**data)
-            except ValidationError:
-                st.warning("Metadata invalid, using default fallback.")
+            except ValidationError as e:
+                st.warning("Metadata invalid, recovering valid fields.")
                 data = json.loads(local_meta_path.read_text(encoding="utf-8"))
+                invalid_fields = [
+                    err.get("loc")[0] for err in e.errors() if err.get("loc")
+                ]
+                for field in invalid_fields:
+                    if field in data:
+                        del data[field]
                 data["title"] = data.get("title", paper_info.title)
-                # Ignore validation for fallback rendering if possible, but Pydantic requires it
                 try:
                     meta = PaperMetadata(**data)
                 except Exception:
