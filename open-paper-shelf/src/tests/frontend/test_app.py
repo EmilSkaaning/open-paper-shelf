@@ -710,6 +710,143 @@ class TestMainLibrarySelection:
         fake_st.rerun.assert_not_called()
 
 
+class TestDeleteSelectedPapers:
+    """Test suite for delete_selected_papers."""
+
+    def test_deletes_all_and_uploads_index_once(
+        self, fake_st: MagicMock, mocker: MockerFixture, tmp_path: Path
+    ) -> None:
+        """Test every requested paper is removed from Drive and the index,
+        with a single index upload for the whole batch."""
+        pid1, pid2 = "a" * 32, "b" * 32
+        index = LibraryIndex(
+            papers={
+                pid1: PaperIndexEntry(
+                    title="One", pdf_file_id="p1", meta_file_id="m1", folder_id="f1"
+                ),
+                pid2: PaperIndexEntry(
+                    title="Two", pdf_file_id="p2", meta_file_id="m2", folder_id="f2"
+                ),
+            }
+        )
+        fake_st.session_state.selected_paper = None
+        mock_delete_folder = mocker.patch.object(app, "delete_paper_folder")
+        mock_upload_index = mocker.patch.object(app, "upload_library_index")
+
+        app.delete_selected_papers(
+            creds=MagicMock(),
+            pids=[pid1, pid2],
+            index=index,
+            papers_id="papers_123",
+            local_lib_dir=tmp_path,
+        )
+
+        assert mock_delete_folder.call_count == 2
+        assert index.papers == {}
+        mock_upload_index.assert_called_once_with(
+            mocker.ANY, "papers_123", index, deleted_pids={pid1, pid2}
+        )
+
+    def test_drive_failure_on_one_paper_keeps_it_and_continues(
+        self, fake_st: MagicMock, mocker: MockerFixture, tmp_path: Path
+    ) -> None:
+        """Regression test: if Drive deletion fails for one paper, it must
+        stay in the index while the rest still get deleted, matching the
+        old single-paper delete's per-item error handling."""
+        pid1, pid2 = "a" * 32, "b" * 32
+        index = LibraryIndex(
+            papers={
+                pid1: PaperIndexEntry(
+                    title="One", pdf_file_id="p1", meta_file_id="m1", folder_id="f1"
+                ),
+                pid2: PaperIndexEntry(
+                    title="Two", pdf_file_id="p2", meta_file_id="m2", folder_id="f2"
+                ),
+            }
+        )
+        fake_st.session_state.selected_paper = None
+        mocker.patch.object(
+            app, "delete_paper_folder", side_effect=[RuntimeError("boom"), None]
+        )
+        mock_upload_index = mocker.patch.object(app, "upload_library_index")
+
+        app.delete_selected_papers(
+            creds=MagicMock(),
+            pids=[pid1, pid2],
+            index=index,
+            papers_id="papers_123",
+            local_lib_dir=tmp_path,
+        )
+
+        assert pid1 in index.papers
+        assert pid2 not in index.papers
+        fake_st.error.assert_called_once()
+        mock_upload_index.assert_called_once_with(
+            mocker.ANY, "papers_123", index, deleted_pids={pid2}
+        )
+
+    def test_index_upload_failure_restores_all_removed_entries(
+        self, fake_st: MagicMock, mocker: MockerFixture, tmp_path: Path
+    ) -> None:
+        """Regression test: mirrors the old single-delete behavior — if the
+        index upload fails after Drive folders were already deleted, every
+        removed entry must be restored locally so a future sync doesn't
+        merge it back in as a broken entry."""
+        pid = "a" * 32
+        entry = PaperIndexEntry(
+            title="One", pdf_file_id="p1", meta_file_id="m1", folder_id="f1"
+        )
+        index = LibraryIndex(papers={pid: entry})
+        fake_st.session_state.selected_paper = pid
+        mocker.patch.object(app, "delete_paper_folder")
+        mocker.patch.object(
+            app, "upload_library_index", side_effect=RuntimeError("network blip")
+        )
+
+        app.delete_selected_papers(
+            creds=MagicMock(),
+            pids=[pid],
+            index=index,
+            papers_id="papers_123",
+            local_lib_dir=tmp_path,
+        )
+
+        assert index.papers[pid] == entry
+        assert fake_st.session_state.selected_paper == pid
+        fake_st.error.assert_called_once()
+
+    def test_clears_selected_paper_and_removes_local_cache_when_deleted(
+        self, fake_st: MagicMock, mocker: MockerFixture, tmp_path: Path
+    ) -> None:
+        """Test the open paper is deselected and its local cache dir is
+        removed once it's actually deleted."""
+        pid = "a" * 32
+        index = LibraryIndex(
+            papers={
+                pid: PaperIndexEntry(
+                    title="One", pdf_file_id="p1", meta_file_id="m1", folder_id="f1"
+                )
+            }
+        )
+        fake_st.session_state.selected_paper = pid
+        local_paper_dir = tmp_path / pid
+        local_paper_dir.mkdir(parents=True)
+        (local_paper_dir / "paper.pdf").write_bytes(b"x")
+        mocker.patch.object(app, "delete_paper_folder")
+        mocker.patch.object(app, "upload_library_index")
+
+        app.delete_selected_papers(
+            creds=MagicMock(),
+            pids=[pid],
+            index=index,
+            papers_id="papers_123",
+            local_lib_dir=tmp_path,
+        )
+
+        assert fake_st.session_state.selected_paper is None
+        assert not local_paper_dir.exists()
+
+
 class TestMainLibraryView:
     """Test suite for main()'s library view (sidebar entry, switch, rows)."""
 
@@ -938,131 +1075,125 @@ class TestMainUploadFlow:
 
 
 class TestMainDeleteFlow:
-    """Test suite for main()'s sidebar paper delete flow."""
+    """Test suite for main()'s sidebar icon-bar delete flow."""
 
-    def test_delete_button_removes_paper_and_reruns(
+    def test_trash_with_no_checked_papers_warns(
+        self, fake_st: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """Test clicking trash with nothing checked just warns."""
+        pid = "a" * 32
+        entry = PaperIndexEntry(
+            title="Some Paper", pdf_file_id="pdf1", meta_file_id="meta1", folder_id="f1"
+        )
+        fake_st.session_state.current_lib_id = "lib_123"
+        fake_st.session_state.current_papers_id = "papers_123"
+        fake_st.session_state.root_id = "root_123"
+        fake_st.session_state.index = LibraryIndex(papers={pid: entry})
+        fake_st.session_state.selected_paper = None
+        fake_st.file_uploader.return_value = None
+        fake_st.checkbox.return_value = False
+        fake_st.button.side_effect = lambda label, **kw: kw.get("key") == "trash_icon"
+        mocker.patch.object(app, "st_keyup", return_value="")
+        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
+
+        app.main()
+
+        fake_st.warning.assert_any_call("No papers selected.")
+        assert "confirm_delete_pids" not in fake_st.session_state
+
+    def test_trash_with_checked_paper_shows_confirmation(
+        self, fake_st: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """Test clicking trash with a checked paper stages a confirmation
+        instead of deleting immediately."""
+        pid = "a" * 32
+        entry = PaperIndexEntry(
+            title="Some Paper", pdf_file_id="pdf1", meta_file_id="meta1", folder_id="f1"
+        )
+        fake_st.session_state.current_lib_id = "lib_123"
+        fake_st.session_state.current_papers_id = "papers_123"
+        fake_st.session_state.root_id = "root_123"
+        fake_st.session_state.index = LibraryIndex(papers={pid: entry})
+        fake_st.session_state.selected_paper = None
+        fake_st.file_uploader.return_value = None
+        fake_st.session_state[f"chk_{pid}"] = True
+        fake_st.button.side_effect = lambda label, **kw: kw.get("key") == "trash_icon"
+        mock_delete = mocker.patch.object(app, "delete_selected_papers")
+        mocker.patch.object(app, "st_keyup", return_value="")
+        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
+
+        app.main()
+
+        assert fake_st.session_state.confirm_delete_pids == [pid]
+        mock_delete.assert_not_called()
+
+    def test_confirming_delete_calls_delete_selected_papers_and_reruns(
         self,
         fake_st: MagicMock,
         mocker: MockerFixture,
         tmp_path: Path,
         stop_rerun: type[BaseException],
     ) -> None:
-        """Test deleting a paper removes it from Drive, the index, and disk."""
+        """Test clicking Confirm on a staged deletion actually deletes and
+        clears the confirmation state."""
         pid = "a" * 32
         entry = PaperIndexEntry(
-            title="Doomed Paper",
-            pdf_file_id="pdf1",
-            meta_file_id="meta1",
-            folder_id="folder1",
+            title="Some Paper", pdf_file_id="pdf1", meta_file_id="meta1", folder_id="f1"
         )
         fake_st.session_state.current_lib_id = "lib_123"
         fake_st.session_state.current_papers_id = "papers_123"
         fake_st.session_state.root_id = "root_123"
         fake_st.session_state.index = LibraryIndex(papers={pid: entry})
-        fake_st.session_state.selected_paper = pid
+        fake_st.session_state.selected_paper = None
         fake_st.session_state.local_lib_dir = tmp_path
+        fake_st.session_state.confirm_delete_pids = [pid]
         fake_st.file_uploader.return_value = None
-        fake_st.button.side_effect = lambda label, **kw: kw.get("key") == f"del_{pid}"
+        fake_st.button.side_effect = lambda label, **kw: (
+            kw.get("key") == "confirm_delete_btn"
+        )
+        mock_delete = mocker.patch.object(app, "delete_selected_papers")
         mocker.patch.object(app, "st_keyup", return_value="")
         mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
-        mock_delete_folder = mocker.patch.object(app, "delete_paper_folder")
-        mock_upload_index = mocker.patch.object(app, "upload_library_index")
 
         with pytest.raises(stop_rerun):
             app.main()
 
-        mock_delete_folder.assert_called_once_with(mocker.ANY, "folder1")
-        assert pid not in fake_st.session_state.index.papers
-        mock_upload_index.assert_called_once()
-        assert fake_st.session_state.selected_paper is None
+        mock_delete.assert_called_once_with(
+            mocker.ANY, [pid], fake_st.session_state.index, "papers_123", tmp_path
+        )
+        assert fake_st.session_state.confirm_delete_pids is None
 
-    def test_delete_button_restores_paper_when_index_upload_fails(
+    def test_cancelling_delete_clears_confirmation_without_deleting(
         self,
         fake_st: MagicMock,
         mocker: MockerFixture,
-        tmp_path: Path,
+        stop_rerun: type[BaseException],
     ) -> None:
-        """Regression test: if uploading the updated index fails after the
-        Drive folder was already deleted, the paper must be restored in the
-        local index rather than left popped. Leaving it popped would make
-        the next full sync merge it back in from the (unchanged) remote
-        index as a broken entry pointing at a folder that no longer
-        exists."""
+        """Test clicking Cancel on a staged deletion clears it without
+        touching Drive or the index."""
         pid = "a" * 32
         entry = PaperIndexEntry(
-            title="Doomed Paper",
-            pdf_file_id="pdf1",
-            meta_file_id="meta1",
-            folder_id="folder1",
+            title="Some Paper", pdf_file_id="pdf1", meta_file_id="meta1", folder_id="f1"
         )
         fake_st.session_state.current_lib_id = "lib_123"
         fake_st.session_state.current_papers_id = "papers_123"
         fake_st.session_state.root_id = "root_123"
         fake_st.session_state.index = LibraryIndex(papers={pid: entry})
-        fake_st.session_state.selected_paper = pid
-        fake_st.session_state.local_lib_dir = tmp_path
+        fake_st.session_state.selected_paper = None
+        fake_st.session_state.confirm_delete_pids = [pid]
         fake_st.file_uploader.return_value = None
-        fake_st.button.side_effect = lambda label, **kw: kw.get("key") == f"del_{pid}"
-        fake_st.form_submit_button.return_value = False
+        fake_st.button.side_effect = lambda label, **kw: (
+            kw.get("key") == "cancel_delete_btn"
+        )
+        mock_delete = mocker.patch.object(app, "delete_selected_papers")
         mocker.patch.object(app, "st_keyup", return_value="")
         mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
-        mocker.patch.object(app, "download_file")
-        mocker.patch.object(app, "sync_paper_metadata", return_value=True)
-        mock_delete_folder = mocker.patch.object(app, "delete_paper_folder")
-        mocker.patch.object(
-            app, "upload_library_index", side_effect=RuntimeError("network blip")
-        )
 
-        app.main()
+        with pytest.raises(stop_rerun):
+            app.main()
 
-        mock_delete_folder.assert_called_once_with(mocker.ANY, "folder1")
-        assert fake_st.session_state.index.papers[pid] == entry
-        assert fake_st.session_state.selected_paper == pid
-        fake_st.error.assert_called_once()
-        fake_st.rerun.assert_not_called()
-
-    def test_delete_button_reports_error_when_drive_deletion_fails(
-        self,
-        fake_st: MagicMock,
-        mocker: MockerFixture,
-        tmp_path: Path,
-    ) -> None:
-        """Regression test: if deleting the Drive folder itself fails, the
-        error must be caught and reported - not left to propagate and crash
-        the page - and the paper must stay in the index untouched since
-        nothing was actually deleted."""
-        pid = "a" * 32
-        entry = PaperIndexEntry(
-            title="Doomed Paper",
-            pdf_file_id="pdf1",
-            meta_file_id="meta1",
-            folder_id="folder1",
-        )
-        fake_st.session_state.current_lib_id = "lib_123"
-        fake_st.session_state.current_papers_id = "papers_123"
-        fake_st.session_state.root_id = "root_123"
-        fake_st.session_state.index = LibraryIndex(papers={pid: entry})
-        fake_st.session_state.selected_paper = pid
-        fake_st.session_state.local_lib_dir = tmp_path
-        fake_st.file_uploader.return_value = None
-        fake_st.button.side_effect = lambda label, **kw: kw.get("key") == f"del_{pid}"
-        fake_st.form_submit_button.return_value = False
-        mocker.patch.object(app, "st_keyup", return_value="")
-        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
-        mocker.patch.object(app, "download_file")
-        mocker.patch.object(app, "sync_paper_metadata", return_value=True)
-        mocker.patch.object(
-            app, "delete_paper_folder", side_effect=RuntimeError("network blip")
-        )
-        mock_upload_index = mocker.patch.object(app, "upload_library_index")
-
-        app.main()  # must not raise
-
-        mock_upload_index.assert_not_called()
-        assert fake_st.session_state.index.papers[pid] == entry
-        assert fake_st.session_state.selected_paper == pid
-        fake_st.error.assert_called_once()
-        fake_st.rerun.assert_not_called()
+        mock_delete.assert_not_called()
+        assert fake_st.session_state.confirm_delete_pids is None
 
 
 class TestMainMetadataView:

@@ -341,6 +341,61 @@ def sync_library_index(creds: Credentials) -> None:
         st.session_state.index = LibraryIndex()
 
 
+def delete_selected_papers(
+    creds: Credentials,
+    pids: Sequence[str],
+    index: LibraryIndex,
+    papers_id: str,
+    local_lib_dir: Path,
+) -> None:
+    """Deletes multiple papers from Drive, the library index, and disk.
+
+    Each paper's Drive folder is removed individually - a failure there
+    leaves that paper untouched and reports an error, but doesn't stop the
+    rest of the batch. The index is then updated once for every paper that
+    was actually deleted. If uploading the updated index fails, every
+    removed entry is restored locally so a future sync doesn't merge it
+    back in from the unchanged remote index as a broken entry.
+
+    Args:
+        creds: The Google OAuth credentials.
+        pids: The paper IDs to delete.
+        index: The current library index; mutated in place.
+        papers_id: The Google Drive folder ID of the library's papers folder.
+        local_lib_dir: The local cache directory for this library.
+
+    Returns:
+        None
+    """
+    removed: dict[str, PaperIndexEntry] = {}
+    for pid in pids:
+        entry = index.papers.get(pid)
+        if entry is None:
+            continue
+        try:
+            delete_paper_folder(creds, entry.folder_id)
+        except Exception as e:
+            st.error(f"Failed to delete paper '{entry.title}': {e}")
+            continue
+        removed[pid] = index.papers.pop(pid)
+
+    if not removed:
+        return
+
+    try:
+        upload_library_index(creds, papers_id, index, deleted_pids=set(removed))
+    except Exception as e:
+        for pid, entry in removed.items():
+            index.papers[pid] = entry
+        st.error(f"Failed to sync deletion: {e}")
+        return
+
+    for pid in removed:
+        if st.session_state.selected_paper == pid:
+            st.session_state.selected_paper = None
+        shutil.rmtree(local_lib_dir / pid, ignore_errors=True)
+
+
 def main() -> None:
     """The main entry point for the Streamlit frontend application.
 
@@ -449,49 +504,64 @@ def main() -> None:
         )
         search_query = (search_box or "").lower()
 
+        icon_col, _status_col, _tags_col = st.columns([1, 2, 2])
+
         filtered_papers = []
         for pid, p in st.session_state.index.papers.items():
             if not re.match(r"^[a-f0-9]{32}$", pid):
                 continue
             if search_query in p.title.lower():
                 filtered_papers.append((pid, p))
+        filtered_papers = sorted(filtered_papers, key=lambda x: x[1].title)
 
-        for pid, p in sorted(filtered_papers, key=lambda x: x[1].title):
-            col1, col2 = st.columns([4, 1])
-            with col1:
-                display_name = f"📄 {p.title}"
-                if pid == st.session_state.selected_paper:
-                    display_name = f"**{display_name}**"
-                if st.button(display_name, key=f"btn_{pid}", use_container_width=True):
-                    st.session_state.selected_paper = pid
+        with icon_col:
+            if st.button("🗑️", key="trash_icon", help="Delete selected papers"):
+                checked_pids = [
+                    pid
+                    for pid, _ in filtered_papers
+                    if st.session_state.get(f"chk_{pid}")
+                ]
+                if checked_pids:
+                    st.session_state.confirm_delete_pids = checked_pids
+                else:
+                    st.warning("No papers selected.")
+
+        if st.session_state.get("confirm_delete_pids"):
+            pids_to_delete = st.session_state.confirm_delete_pids
+            st.warning(f"Delete {len(pids_to_delete)} paper(s)? This cannot be undone.")
+            confirm_col, cancel_col = st.columns(2)
+            with confirm_col:
+                if st.button("Confirm", key="confirm_delete_btn"):
+                    delete_selected_papers(
+                        creds,
+                        pids_to_delete,
+                        st.session_state.index,
+                        st.session_state.current_papers_id,
+                        st.session_state.local_lib_dir,
+                    )
+                    st.session_state.confirm_delete_pids = None
                     st.rerun()
-            with col2:
-                if st.button("🗑️", key=f"del_{pid}", help="Delete paper"):
-                    with st.spinner("Deleting..."):
-                        try:
-                            delete_paper_folder(creds, p.folder_id)
-                        except Exception as e:
-                            st.error(f"Failed to delete paper: {e}")
-                        else:
-                            removed_paper = st.session_state.index.papers.pop(pid)
-                            try:
-                                upload_library_index(
-                                    creds,
-                                    st.session_state.current_papers_id,
-                                    st.session_state.index,
-                                    deleted_pids={pid},
-                                )
-                            except Exception as e:
-                                st.session_state.index.papers[pid] = removed_paper
-                                st.error(f"Failed to sync deletion: {e}")
-                            else:
-                                if st.session_state.selected_paper == pid:
-                                    st.session_state.selected_paper = None
-                                shutil.rmtree(
-                                    st.session_state.local_lib_dir / pid,
-                                    ignore_errors=True,
-                                )
-                                st.rerun()
+            with cancel_col:
+                if st.button("Cancel", key="cancel_delete_btn"):
+                    st.session_state.confirm_delete_pids = None
+                    st.rerun()
+
+        with st.container(height=400):
+            for pid, p in filtered_papers:
+                row_check, row_button = st.columns([1, 4])
+                with row_check:
+                    st.checkbox(
+                        "Select", key=f"chk_{pid}", label_visibility="collapsed"
+                    )
+                with row_button:
+                    display_name = f"📄 {p.title}"
+                    if pid == st.session_state.selected_paper:
+                        display_name = f"**{display_name}**"
+                    if st.button(
+                        display_name, key=f"btn_{pid}", use_container_width=True
+                    ):
+                        st.session_state.selected_paper = pid
+                        st.rerun()
 
     # Main area
     if st.session_state.selected_paper:
