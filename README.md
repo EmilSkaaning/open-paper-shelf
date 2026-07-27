@@ -34,4 +34,6 @@ To set up and run `prek`:
 ```bash
 uvx prek install
 uvx prek run --all-files
+
+uvx pre-commit install
 ```

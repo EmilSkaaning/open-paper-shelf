@@ -9,7 +9,7 @@ This document governs how work is done and how function/class documentation and 
 * Example: `uv run pytest` or `uv run ruff format .`
 
 ### Coding & Documentation Standards (`func-documentation` skill)
-* **Type Hints**: Add or update type hints for any new or modified functions/classes. All variables and functions must be fully type-hinted.
+* **Type Hints**: Add or update type hints for any new or modified functions/classes. All variables and functions must be fully type-hinted. Avoid `typing.Any` — use it only when no more specific type is possible (e.g. truly dynamic third-party data), and justify its use with an inline comment.
 * **Docstrings**: Provide clean docstrings describing parameters, return values, and exceptions for any new or modified functions/classes. **Use the Google docstring format strictly.**
 * **Input Verification**: Use Pydantic models for incoming data structures and API endpoint validation.
 * **Exclusions**: Skip files where the changes are purely deletions or trivial (e.g. config, constants, `__init__.py`).
