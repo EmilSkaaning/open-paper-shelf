@@ -4,6 +4,7 @@ from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import Flow
 from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
 import json
 import tempfile
@@ -153,8 +154,9 @@ def upload_library_index(
             for pid, p in remote_index.papers.items():
                 if pid not in index.papers:
                     index.papers[pid] = p
-        except Exception:
-            pass
+        except HttpError as e:
+            if e.resp.status != 404:
+                raise
 
     with tempfile.NamedTemporaryFile(
         mode="w", delete=False, suffix=".json", encoding="utf-8"

@@ -111,6 +111,7 @@ def test_upload_library_index(mock_build, mock_creds, tmp_path):
     mock_service = MagicMock()
     mock_build.return_value = mock_service
     mock_service.files().list().execute.return_value = {"files": [{"id": "idx"}]}
+    mock_service.files().get_media().execute.return_value = b'{"papers": {}}'
 
     with patch("backend.drive.MediaFileUpload"):
         upload_library_index(mock_creds, "papers_123", LibraryIndex())
