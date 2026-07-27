@@ -231,7 +231,91 @@ class TestUploadPapers:
 
         assert result is False
         assert len(fake_st.session_state.index.papers) == 0
-        fake_st.error.assert_called_once()
+
+    def test_pdf_upload_failure_cleans_up_orphaned_folder(
+        self, fake_st: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """Regression test: if the PDF upload fails after the Drive folder
+        was already created, the orphaned folder must be deleted instead of
+        leaking storage in the user's Drive."""
+        fake_st.session_state.current_papers_id = "papers_123"
+        fake_st.session_state.index = LibraryIndex()
+        files = [make_uploaded_file("a.pdf")]
+        mocker.patch.object(app, "create_paper_folder", return_value="folder1")
+        mocker.patch.object(
+            app, "upload_file_to_folder", side_effect=RuntimeError("boom")
+        )
+        mock_delete = mocker.patch.object(app, "delete_paper_folder")
+
+        result = app.upload_papers(creds=MagicMock(), uploaded_files=files)
+
+        assert result is False
+        assert len(fake_st.session_state.index.papers) == 0
+        mock_delete.assert_called_once_with(mocker.ANY, "folder1")
+
+    def test_meta_upload_failure_cleans_up_orphaned_folder(
+        self, fake_st: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """Regression test: if the meta.json upload fails after the PDF
+        already uploaded successfully, the orphaned folder (containing the
+        PDF) must still be deleted."""
+        fake_st.session_state.current_papers_id = "papers_123"
+        fake_st.session_state.index = LibraryIndex()
+        files = [make_uploaded_file("a.pdf")]
+        mocker.patch.object(app, "create_paper_folder", return_value="folder1")
+        mocker.patch.object(
+            app, "upload_file_to_folder", side_effect=["pdf1", RuntimeError("boom")]
+        )
+        mock_delete = mocker.patch.object(app, "delete_paper_folder")
+
+        result = app.upload_papers(creds=MagicMock(), uploaded_files=files)
+
+        assert result is False
+        assert len(fake_st.session_state.index.papers) == 0
+        mock_delete.assert_called_once_with(mocker.ANY, "folder1")
+
+    def test_create_folder_failure_does_not_attempt_cleanup(
+        self, fake_st: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """Regression test: if no folder was ever created on Drive, cleanup
+        must not be attempted, since there is nothing to delete."""
+        fake_st.session_state.current_papers_id = "papers_123"
+        fake_st.session_state.index = LibraryIndex()
+        files = [make_uploaded_file("a.pdf")]
+        mocker.patch.object(
+            app, "create_paper_folder", side_effect=RuntimeError("boom")
+        )
+        mock_delete = mocker.patch.object(app, "delete_paper_folder")
+
+        result = app.upload_papers(creds=MagicMock(), uploaded_files=files)
+
+        assert result is False
+        mock_delete.assert_not_called()
+
+    def test_cleanup_failure_is_reported_but_original_error_still_surfaces(
+        self, fake_st: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """Regression test: if cleaning up the orphaned folder itself fails,
+        that failure must be reported without masking the original upload
+        error or crashing the whole batch."""
+        fake_st.session_state.current_papers_id = "papers_123"
+        fake_st.session_state.index = LibraryIndex()
+        files = [make_uploaded_file("a.pdf")]
+        mocker.patch.object(app, "create_paper_folder", return_value="folder1")
+        mocker.patch.object(
+            app, "upload_file_to_folder", side_effect=RuntimeError("boom")
+        )
+        mocker.patch.object(
+            app, "delete_paper_folder", side_effect=RuntimeError("cleanup failed")
+        )
+
+        result = app.upload_papers(creds=MagicMock(), uploaded_files=files)
+
+        assert result is False
+        assert len(fake_st.session_state.index.papers) == 0
+        assert fake_st.error.call_count == 2
+        assert "cleanup failed" in fake_st.error.call_args_list[0][0][0]
+        assert "boom" in fake_st.error.call_args_list[1][0][0]
 
 
 class TestSyncPaperMetadata:

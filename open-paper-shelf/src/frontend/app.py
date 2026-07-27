@@ -157,38 +157,48 @@ def upload_papers(creds: Credentials, uploaded_files: Sequence[UploadedFile]) ->
                     st.session_state.current_papers_id,
                     paper_id,
                 )
-                pdf_file_id = upload_file_to_folder(
-                    creds,
-                    folder_id,
-                    tmp_path,
-                    "paper.pdf",
-                    "application/pdf",
-                )
-                meta = PaperMetadata(title=validated_name)
-
-                with tempfile.NamedTemporaryFile(
-                    delete=False, suffix=".json"
-                ) as tmp_meta:
-                    tmp_meta.write(meta.model_dump_json(indent=2).encode("utf-8"))
-                    meta_tmp_path = Path(tmp_meta.name)
-
                 try:
-                    meta_file_id = upload_file_to_folder(
+                    pdf_file_id = upload_file_to_folder(
                         creds,
                         folder_id,
-                        meta_tmp_path,
-                        "meta.json",
-                        "application/json",
+                        tmp_path,
+                        "paper.pdf",
+                        "application/pdf",
                     )
+                    meta = PaperMetadata(title=validated_name)
 
-                    st.session_state.index.papers[paper_id] = PaperIndexEntry(
-                        title=meta.title,
-                        pdf_file_id=pdf_file_id,
-                        meta_file_id=meta_file_id,
-                        folder_id=folder_id,
-                    )
-                finally:
-                    meta_tmp_path.unlink(missing_ok=True)
+                    with tempfile.NamedTemporaryFile(
+                        delete=False, suffix=".json"
+                    ) as tmp_meta:
+                        tmp_meta.write(meta.model_dump_json(indent=2).encode("utf-8"))
+                        meta_tmp_path = Path(tmp_meta.name)
+
+                    try:
+                        meta_file_id = upload_file_to_folder(
+                            creds,
+                            folder_id,
+                            meta_tmp_path,
+                            "meta.json",
+                            "application/json",
+                        )
+
+                        st.session_state.index.papers[paper_id] = PaperIndexEntry(
+                            title=meta.title,
+                            pdf_file_id=pdf_file_id,
+                            meta_file_id=meta_file_id,
+                            folder_id=folder_id,
+                        )
+                    finally:
+                        meta_tmp_path.unlink(missing_ok=True)
+                except Exception:
+                    try:
+                        delete_paper_folder(creds, folder_id)
+                    except Exception as cleanup_error:
+                        st.error(
+                            f"Also failed to clean up orphaned Drive folder "
+                            f"{folder_id}: {cleanup_error}"
+                        )
+                    raise
             finally:
                 tmp_path.unlink(missing_ok=True)
         except Exception as e:
