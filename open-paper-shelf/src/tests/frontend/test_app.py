@@ -48,6 +48,43 @@ class TestSyncLibraryIndex:
         assert fake_st.session_state.index == LibraryIndex()
         fake_st.error.assert_called_once()
 
+    def test_download_failure_keeps_existing_local_cache(
+        self, fake_st: MagicMock, mocker: MockerFixture, tmp_path: Path
+    ) -> None:
+        """Regression test: if a download fails but a valid local cache
+        already exists, syncing must fall back to that cache instead of
+        wiping out the user's library view. Wiping it here would make a
+        transient network error look like an empty library."""
+        local_path = tmp_path / "id-mapping.json"
+        cached_data = {
+            "papers": {
+                "abc123": {
+                    "title": "Cached Paper",
+                    "pdf_file_id": "pdf1",
+                    "meta_file_id": "meta1",
+                    "folder_id": "folder1",
+                }
+            }
+        }
+        local_path.write_text(json.dumps(cached_data), encoding="utf-8")
+        fake_st.session_state.current_papers_id = "papers_123"
+        fake_st.session_state.local_index_path = local_path
+        fake_st.session_state.last_sync_time = "t0"
+        mocker.patch.object(
+            app,
+            "get_library_index_file",
+            return_value={"id": "idx", "modifiedTime": "t1"},
+        )
+        mocker.patch.object(
+            app, "download_file", side_effect=RuntimeError("network blip")
+        )
+
+        app.sync_library_index(creds=MagicMock())
+
+        assert fake_st.session_state.index == LibraryIndex(**cached_data)
+        assert fake_st.session_state.last_sync_time == "t0"
+        fake_st.error.assert_called_once()
+
     def test_corrupted_local_file_falls_back_to_empty_index(
         self, fake_st: MagicMock, mocker: MockerFixture, tmp_path: Path
     ) -> None:

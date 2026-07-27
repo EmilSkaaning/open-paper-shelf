@@ -258,8 +258,9 @@ def sync_library_index(creds: Credentials) -> None:
 
     Downloads the remote id-mapping.json when it's missing locally or its
     modifiedTime differs from the last synced value, then loads it into
-    st.session_state.index. Falls back to an empty LibraryIndex on any
-    download or parse failure.
+    st.session_state.index. On a download failure, falls back to the
+    existing local cache if there is one, or an empty LibraryIndex
+    otherwise. Falls back to an empty LibraryIndex on a parse failure.
 
     Args:
         creds (Credentials): The Google OAuth credentials.
@@ -280,8 +281,9 @@ def sync_library_index(creds: Credentials) -> None:
             st.session_state.last_sync_time = remote_time
         except Exception as e:
             st.error(f"Failed to sync library index: {e}")
-            st.session_state.index = LibraryIndex()
-            return
+            if not local_path.exists():
+                st.session_state.index = LibraryIndex()
+                return
 
     if local_path.exists():
         try:
