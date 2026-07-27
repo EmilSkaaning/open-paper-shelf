@@ -422,19 +422,25 @@ def main() -> None:
                 if st.button("🗑️", key=f"del_{pid}", help="Delete paper"):
                     with st.spinner("Deleting..."):
                         delete_paper_folder(creds, p.folder_id)
-                        st.session_state.index.papers.pop(pid)
-                        upload_library_index(
-                            creds,
-                            st.session_state.current_papers_id,
-                            st.session_state.index,
-                            deleted_pids={pid},
-                        )
-                        if st.session_state.selected_paper == pid:
-                            st.session_state.selected_paper = None
-                        shutil.rmtree(
-                            st.session_state.local_lib_dir / pid, ignore_errors=True
-                        )
-                        st.rerun()
+                        removed_paper = st.session_state.index.papers.pop(pid)
+                        try:
+                            upload_library_index(
+                                creds,
+                                st.session_state.current_papers_id,
+                                st.session_state.index,
+                                deleted_pids={pid},
+                            )
+                        except Exception as e:
+                            st.session_state.index.papers[pid] = removed_paper
+                            st.error(f"Failed to sync deletion: {e}")
+                        else:
+                            if st.session_state.selected_paper == pid:
+                                st.session_state.selected_paper = None
+                            shutil.rmtree(
+                                st.session_state.local_lib_dir / pid,
+                                ignore_errors=True,
+                            )
+                            st.rerun()
 
     # Main area
     if st.session_state.selected_paper:

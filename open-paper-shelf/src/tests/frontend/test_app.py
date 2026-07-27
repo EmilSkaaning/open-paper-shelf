@@ -866,6 +866,52 @@ class TestMainDeleteFlow:
         mock_upload_index.assert_called_once()
         assert fake_st.session_state.selected_paper is None
 
+    def test_delete_button_restores_paper_when_index_upload_fails(
+        self,
+        fake_st: MagicMock,
+        mocker: MockerFixture,
+        tmp_path: Path,
+    ) -> None:
+        """Regression test: if uploading the updated index fails after the
+        Drive folder was already deleted, the paper must be restored in the
+        local index rather than left popped. Leaving it popped would make
+        the next full sync merge it back in from the (unchanged) remote
+        index as a broken entry pointing at a folder that no longer
+        exists."""
+        pid = "a" * 32
+        entry = PaperIndexEntry(
+            title="Doomed Paper",
+            pdf_file_id="pdf1",
+            meta_file_id="meta1",
+            folder_id="folder1",
+        )
+        fake_st.session_state.current_lib_id = "lib_123"
+        fake_st.session_state.current_papers_id = "papers_123"
+        fake_st.session_state.root_id = "root_123"
+        fake_st.session_state.index = LibraryIndex(papers={pid: entry})
+        fake_st.session_state.selected_paper = pid
+        fake_st.session_state.local_lib_dir = tmp_path
+        fake_st.file_uploader.return_value = None
+        fake_st.columns.return_value = (MagicMock(), MagicMock())
+        fake_st.button.side_effect = lambda label, **kw: kw.get("key") == f"del_{pid}"
+        fake_st.form_submit_button.return_value = False
+        mocker.patch.object(app, "st_keyup", return_value="")
+        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
+        mocker.patch.object(app, "download_file")
+        mocker.patch.object(app, "sync_paper_metadata", return_value=True)
+        mock_delete_folder = mocker.patch.object(app, "delete_paper_folder")
+        mocker.patch.object(
+            app, "upload_library_index", side_effect=RuntimeError("network blip")
+        )
+
+        app.main()
+
+        mock_delete_folder.assert_called_once_with(mocker.ANY, "folder1")
+        assert fake_st.session_state.index.papers[pid] == entry
+        assert fake_st.session_state.selected_paper == pid
+        fake_st.error.assert_called_once()
+        fake_st.rerun.assert_not_called()
+
 
 class TestMainMetadataView:
     """Test suite for main()'s paper detail / metadata editing view."""
