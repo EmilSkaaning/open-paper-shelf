@@ -20,6 +20,13 @@ repos:
         types_or: [python, pyi]
         pass_filenames: false
         require_serial: true
+      - id: vulture
+        name: vulture dead code check
+        entry: uvx vulture --min-confidence 70 --exclude .venv . vulture_whitelist.py
+        language: system
+        types_or: [python, pyi]
+        pass_filenames: false
+        require_serial: true
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v6.0.0
     hooks:
