@@ -31,12 +31,20 @@ class PaperIndexEntry(BaseModel):
         pdf_file_id: The Google Drive file ID of the paper's PDF.
         meta_file_id: The Google Drive file ID of the paper's metadata JSON.
         folder_id: The Google Drive folder ID containing the paper's files.
+        tags: List of tag strings associated with the paper, kept in sync
+            with the paper's meta.json so the sidebar can filter by tag
+            without fetching every paper's metadata.
+        status: Reading status of the paper, kept in sync with the paper's
+            meta.json so the sidebar can filter/display by status without
+            fetching every paper's metadata.
     """
 
     title: str
     pdf_file_id: str
     meta_file_id: str
     folder_id: str
+    tags: List[str] = Field(default_factory=list)
+    status: Literal["Unread", "Reading", "Read", "TODO"] = "Unread"
 
 
 class LibraryIndex(BaseModel):
