@@ -13,6 +13,14 @@ import uuid
 
 from backend.models import LibraryIndex
 
+# googleapiclient.discovery.build() returns a dynamically-generated Resource
+# object with no static type; the client library builds its API surface at
+# runtime from Google's service discovery documents.
+DriveService = Any
+# The Drive API's request/response JSON bodies (e.g. file/folder metadata)
+# are loosely-typed by the API itself, so no narrower static type applies.
+DriveMetadata = Dict[str, Any]
+
 SCOPES: List[str] = ["https://www.googleapis.com/auth/drive.file"]
 FOLDER_NAME: str = "open-paper-shelf-lib"
 FOLDER_MIME_TYPE: str = "application/vnd.google-apps.folder"
@@ -90,12 +98,12 @@ def save_credentials(creds: Credentials) -> None:
 
 
 def _get_or_create_folder(
-    service: Any, name: str, parent_id: Optional[str] = None
+    service: DriveService, name: str, parent_id: Optional[str] = None
 ) -> str:
     """Gets an existing Google Drive folder ID or creates a new folder.
 
     Args:
-        service (Any): The Google Drive API v3 resource service.
+        service (DriveService): The Google Drive API v3 resource service.
         name (str): The name of the folder to find or create.
         parent_id (Optional[str], optional): The ID of the parent folder. Defaults to None.
 
@@ -111,7 +119,7 @@ def _get_or_create_folder(
     )
     items = results.get("files", [])
     if not items:
-        folder_metadata: Dict[str, Any] = {"name": name, "mimeType": FOLDER_MIME_TYPE}
+        folder_metadata: DriveMetadata = {"name": name, "mimeType": FOLDER_MIME_TYPE}
         if parent_id:
             folder_metadata["parents"] = [parent_id]
         folder = service.files().create(body=folder_metadata, fields="id").execute()
@@ -128,7 +136,7 @@ def get_or_create_root_folder(creds: Credentials) -> str:
     Returns:
         str: The Google Drive file ID of the root folder.
     """
-    service: Any = build("drive", "v3", credentials=creds)
+    service: DriveService = build("drive", "v3", credentials=creds)
     return _get_or_create_folder(service, FOLDER_NAME)
 
 
@@ -142,7 +150,7 @@ def list_libraries(creds: Credentials, root_id: str) -> List[Dict[str, str]]:
     Returns:
         List[Dict[str, str]]: The `id`/`name` metadata of each library folder.
     """
-    service: Any = build("drive", "v3", credentials=creds)
+    service: DriveService = build("drive", "v3", credentials=creds)
     query = f"'{root_id}' in parents and mimeType = '{FOLDER_MIME_TYPE}' and trashed = false"
     libraries: List[Dict[str, str]] = []
     page_token = None
@@ -178,7 +186,7 @@ def create_library(creds: Credentials, root_id: str, lib_name: str) -> Dict[str,
         Dict[str, str]: A mapping with keys `lib_id`, `lib_name` (the unique
         name actually used), and `papers_id`.
     """
-    service: Any = build("drive", "v3", credentials=creds)
+    service: DriveService = build("drive", "v3", credentials=creds)
     unique_name = f"{lib_name}_{uuid.uuid4().hex[:8]}"
     lib_id = _get_or_create_folder(service, unique_name, root_id)
     papers_id = _get_or_create_folder(service, "papers", lib_id)
@@ -195,13 +203,13 @@ def get_papers_folder(creds: Credentials, lib_id: str) -> str:
     Returns:
         str: The Google Drive file ID of the papers folder.
     """
-    service: Any = build("drive", "v3", credentials=creds)
+    service: DriveService = build("drive", "v3", credentials=creds)
     return _get_or_create_folder(service, "papers", lib_id)
 
 
 def get_library_index_file(
     creds: Credentials, papers_folder_id: str
-) -> Optional[Dict[str, Any]]:
+) -> Optional[DriveMetadata]:
     """Looks up the id-mapping.json index file inside a papers folder.
 
     Args:
@@ -209,10 +217,10 @@ def get_library_index_file(
         papers_folder_id (str): The Google Drive file ID of the papers folder.
 
     Returns:
-        Optional[Dict[str, Any]]: The `id`/`modifiedTime` metadata of the index
+        Optional[DriveMetadata]: The `id`/`modifiedTime` metadata of the index
         file, or None if no index file exists yet.
     """
-    service: Any = build("drive", "v3", credentials=creds)
+    service: DriveService = build("drive", "v3", credentials=creds)
     query = f"name = 'id-mapping.json' and '{papers_folder_id}' in parents and trashed = false"
     results = (
         service.files()
@@ -246,7 +254,7 @@ def upload_library_index(
         HttpError: If fetching the existing remote index fails for a reason
             other than the file not existing (HTTP 404).
     """
-    service: Any = build("drive", "v3", credentials=creds)
+    service: DriveService = build("drive", "v3", credentials=creds)
     file_info = get_library_index_file(creds, papers_folder_id)
 
     if file_info:
@@ -300,7 +308,7 @@ def create_paper_folder(
     Returns:
         str: The Google Drive file ID of the paper's folder.
     """
-    service: Any = build("drive", "v3", credentials=creds)
+    service: DriveService = build("drive", "v3", credentials=creds)
     return _get_or_create_folder(service, paper_id, papers_folder_id)
 
 
@@ -321,7 +329,7 @@ def upload_file_to_folder(
     Returns:
         str: The Google Drive file ID of the uploaded file.
     """
-    service: Any = build("drive", "v3", credentials=creds)
+    service: DriveService = build("drive", "v3", credentials=creds)
     escaped_filename = filename.replace("'", "\\'")
     query = (
         f"name = '{escaped_filename}' and '{folder_id}' in parents and trashed = false"
@@ -357,7 +365,7 @@ def download_file(creds: Credentials, file_id: str, dest_path: Path) -> None:
         file_id (str): The Google Drive file ID to download.
         dest_path (Path): The local destination path for the downloaded file.
     """
-    service: Any = build("drive", "v3", credentials=creds)
+    service: DriveService = build("drive", "v3", credentials=creds)
     request = service.files().get_media(fileId=file_id)
     tmp_path = None
     try:
@@ -382,5 +390,5 @@ def delete_paper_folder(creds: Credentials, folder_id: str) -> None:
         creds (Credentials): The Google OAuth credentials.
         folder_id (str): The Google Drive file ID of the paper's folder.
     """
-    service: Any = build("drive", "v3", credentials=creds)
+    service: DriveService = build("drive", "v3", credentials=creds)
     service.files().delete(fileId=folder_id).execute()
