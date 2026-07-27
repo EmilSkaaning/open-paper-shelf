@@ -733,7 +733,7 @@ class TestDeleteSelectedPapers:
         mock_delete_folder = mocker.patch.object(app, "delete_paper_folder")
         mock_upload_index = mocker.patch.object(app, "upload_library_index")
 
-        app.delete_selected_papers(
+        result = app.delete_selected_papers(
             creds=MagicMock(),
             pids=[pid1, pid2],
             index=index,
@@ -741,6 +741,7 @@ class TestDeleteSelectedPapers:
             local_lib_dir=tmp_path,
         )
 
+        assert result is True
         assert mock_delete_folder.call_count == 2
         assert index.papers == {}
         mock_upload_index.assert_called_once_with(
@@ -770,7 +771,7 @@ class TestDeleteSelectedPapers:
         )
         mock_upload_index = mocker.patch.object(app, "upload_library_index")
 
-        app.delete_selected_papers(
+        result = app.delete_selected_papers(
             creds=MagicMock(),
             pids=[pid1, pid2],
             index=index,
@@ -778,6 +779,7 @@ class TestDeleteSelectedPapers:
             local_lib_dir=tmp_path,
         )
 
+        assert result is False
         assert pid1 in index.papers
         assert pid2 not in index.papers
         fake_st.error.assert_called_once()
@@ -803,7 +805,7 @@ class TestDeleteSelectedPapers:
             app, "upload_library_index", side_effect=RuntimeError("network blip")
         )
 
-        app.delete_selected_papers(
+        result = app.delete_selected_papers(
             creds=MagicMock(),
             pids=[pid],
             index=index,
@@ -811,6 +813,7 @@ class TestDeleteSelectedPapers:
             local_lib_dir=tmp_path,
         )
 
+        assert result is False
         assert index.papers[pid] == entry
         assert fake_st.session_state.selected_paper == pid
         fake_st.error.assert_called_once()
@@ -1193,6 +1196,46 @@ class TestMainDeleteFlow:
             app.main()
 
         mock_delete.assert_not_called()
+        assert fake_st.session_state.confirm_delete_pids is None
+
+    def test_confirming_failed_delete_skips_rerun_but_clears_confirmation(
+        self,
+        fake_st: MagicMock,
+        mocker: MockerFixture,
+        tmp_path: Path,
+    ) -> None:
+        """Regression test: if delete_selected_papers reports a failure
+        (e.g. a Drive deletion or the index upload failed and already showed
+        an st.error), Confirm must not rerun - rerunning would restart the
+        script and wipe out that error before the user ever sees it - but
+        the stale confirmation must still be cleared."""
+        pid = "a" * 32
+        entry = PaperIndexEntry(
+            title="Some Paper", pdf_file_id="pdf1", meta_file_id="meta1", folder_id="f1"
+        )
+        fake_st.session_state.current_lib_id = "lib_123"
+        fake_st.session_state.current_papers_id = "papers_123"
+        fake_st.session_state.root_id = "root_123"
+        fake_st.session_state.index = LibraryIndex(papers={pid: entry})
+        fake_st.session_state.selected_paper = None
+        fake_st.session_state.local_lib_dir = tmp_path
+        fake_st.session_state.confirm_delete_pids = [pid]
+        fake_st.file_uploader.return_value = None
+        fake_st.button.side_effect = lambda label, **kw: (
+            kw.get("key") == "confirm_delete_btn"
+        )
+        mock_delete = mocker.patch.object(
+            app, "delete_selected_papers", return_value=False
+        )
+        mocker.patch.object(app, "st_keyup", return_value="")
+        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
+
+        app.main()  # must not raise (no rerun on failure)
+
+        mock_delete.assert_called_once_with(
+            mocker.ANY, [pid], fake_st.session_state.index, "papers_123", tmp_path
+        )
+        fake_st.rerun.assert_not_called()
         assert fake_st.session_state.confirm_delete_pids is None
 
 

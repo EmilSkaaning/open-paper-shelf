@@ -347,7 +347,7 @@ def delete_selected_papers(
     index: LibraryIndex,
     papers_id: str,
     local_lib_dir: Path,
-) -> None:
+) -> bool:
     """Deletes multiple papers from Drive, the library index, and disk.
 
     Each paper's Drive folder is removed individually - a failure there
@@ -365,8 +365,12 @@ def delete_selected_papers(
         local_lib_dir: The local cache directory for this library.
 
     Returns:
-        None
+        bool: True only if every requested paper was deleted from Drive and
+        (when there was anything to upload) the index upload succeeded.
+        False if any individual paper's Drive deletion failed, or if the
+        index upload failed.
     """
+    all_succeeded = True
     removed: dict[str, PaperIndexEntry] = {}
     for pid in pids:
         entry = index.papers.get(pid)
@@ -376,11 +380,12 @@ def delete_selected_papers(
             delete_paper_folder(creds, entry.folder_id)
         except Exception as e:
             st.error(f"Failed to delete paper '{entry.title}': {e}")
+            all_succeeded = False
             continue
         removed[pid] = index.papers.pop(pid)
 
     if not removed:
-        return
+        return all_succeeded
 
     try:
         upload_library_index(creds, papers_id, index, deleted_pids=set(removed))
@@ -388,12 +393,14 @@ def delete_selected_papers(
         for pid, entry in removed.items():
             index.papers[pid] = entry
         st.error(f"Failed to sync deletion: {e}")
-        return
+        return False
 
     for pid in removed:
         if st.session_state.selected_paper == pid:
             st.session_state.selected_paper = None
         shutil.rmtree(local_lib_dir / pid, ignore_errors=True)
+
+    return all_succeeded
 
 
 def main() -> None:
@@ -532,7 +539,7 @@ def main() -> None:
             confirm_col, cancel_col = st.columns(2)
             with confirm_col:
                 if st.button("Confirm", key="confirm_delete_btn"):
-                    delete_selected_papers(
+                    delete_succeeded = delete_selected_papers(
                         creds,
                         pids_to_delete,
                         st.session_state.index,
@@ -540,7 +547,8 @@ def main() -> None:
                         st.session_state.local_lib_dir,
                     )
                     st.session_state.confirm_delete_pids = None
-                    st.rerun()
+                    if delete_succeeded:
+                        st.rerun()
             with cancel_col:
                 if st.button("Cancel", key="cancel_delete_btn"):
                     st.session_state.confirm_delete_pids = None
