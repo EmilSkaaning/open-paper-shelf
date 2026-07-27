@@ -13,6 +13,23 @@ from backend.models import LibraryIndex, PaperIndexEntry
 from tests.frontend.conftest import make_uploaded_file
 
 
+class TestFakeStColumnsFixture:
+    """Test suite for the fake_st fixture's st.columns() behavior."""
+
+    def test_columns_returns_matching_arity_for_int_and_list_specs(
+        self, fake_st: MagicMock
+    ) -> None:
+        """Test st.columns() returns a tuple sized to the requested spec,
+        whether given as an int or a list of widths."""
+        two = fake_st.columns(2)
+        three = fake_st.columns([1, 2, 2])
+
+        assert len(two) == 2
+        assert len(three) == 3
+        assert two[0] is not two[1]
+        assert three[0] is not three[1] is not three[2]
+
+
 class TestSyncLibraryIndex:
     """Test suite for sync_library_index."""
 
@@ -569,7 +586,6 @@ class TestMainLibrarySelection:
     ) -> None:
         """Test clicking "Open Library" opens the selected library and reruns."""
         fake_st.session_state.root_id = "root_123"
-        fake_st.columns.return_value = (MagicMock(), MagicMock())
         fake_st.button.side_effect = lambda label, **kw: label == "Open Library"
         fake_st.selectbox.return_value = "lib1"
         mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
@@ -592,7 +608,6 @@ class TestMainLibrarySelection:
     ) -> None:
         """Test clicking "Create Library" creates and opens a new library."""
         fake_st.session_state.root_id = "root_123"
-        fake_st.columns.return_value = (MagicMock(), MagicMock())
         fake_st.button.side_effect = lambda label, **kw: label == "Create Library"
         fake_st.text_input.return_value = "My New Lib"
         mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
@@ -629,7 +644,6 @@ class TestMainLibrarySelection:
     ) -> None:
         """Test the selection screen is shown without rerunning when no
         library is opened or created yet."""
-        fake_st.columns.return_value = (MagicMock(), MagicMock())
         mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
         mocker.patch.object(app, "get_or_create_root_folder", return_value="root_new")
         mocker.patch.object(app, "list_libraries", return_value=[])
@@ -736,7 +750,6 @@ class TestMainLibraryView:
         )
         fake_st.session_state.selected_paper = None
         fake_st.file_uploader.return_value = None
-        fake_st.columns.return_value = (MagicMock(), MagicMock())
         fake_st.button.side_effect = lambda label, **kw: kw.get("key") == f"btn_{pid}"
         mocker.patch.object(app, "st_keyup", return_value="")
         mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
@@ -851,7 +864,6 @@ class TestMainDeleteFlow:
         fake_st.session_state.selected_paper = pid
         fake_st.session_state.local_lib_dir = tmp_path
         fake_st.file_uploader.return_value = None
-        fake_st.columns.return_value = (MagicMock(), MagicMock())
         fake_st.button.side_effect = lambda label, **kw: kw.get("key") == f"del_{pid}"
         mocker.patch.object(app, "st_keyup", return_value="")
         mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
@@ -892,7 +904,6 @@ class TestMainDeleteFlow:
         fake_st.session_state.selected_paper = pid
         fake_st.session_state.local_lib_dir = tmp_path
         fake_st.file_uploader.return_value = None
-        fake_st.columns.return_value = (MagicMock(), MagicMock())
         fake_st.button.side_effect = lambda label, **kw: kw.get("key") == f"del_{pid}"
         fake_st.form_submit_button.return_value = False
         mocker.patch.object(app, "st_keyup", return_value="")
@@ -936,7 +947,6 @@ class TestMainDeleteFlow:
         fake_st.session_state.selected_paper = pid
         fake_st.session_state.local_lib_dir = tmp_path
         fake_st.file_uploader.return_value = None
-        fake_st.columns.return_value = (MagicMock(), MagicMock())
         fake_st.button.side_effect = lambda label, **kw: kw.get("key") == f"del_{pid}"
         fake_st.form_submit_button.return_value = False
         mocker.patch.object(app, "st_keyup", return_value="")
@@ -984,7 +994,6 @@ class TestMainMetadataView:
         fake_st.session_state.selected_paper = pid
         fake_st.session_state.local_lib_dir = tmp_path
         fake_st.file_uploader.return_value = None
-        fake_st.columns.return_value = (MagicMock(), MagicMock())
         mocker.patch.object(app, "st_keyup", return_value="")
         mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
         mocker.patch.object(app, "download_file")
