@@ -6,6 +6,7 @@ from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
+from pydantic import ValidationError
 import json
 import tempfile
 import uuid
@@ -177,6 +178,8 @@ def upload_library_index(
         except HttpError as e:
             if e.resp.status != 404:
                 raise
+        except (json.JSONDecodeError, ValidationError):
+            pass
 
     with tempfile.NamedTemporaryFile(
         mode="w", delete=False, suffix=".json", encoding="utf-8"

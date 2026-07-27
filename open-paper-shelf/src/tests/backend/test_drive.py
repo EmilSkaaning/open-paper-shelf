@@ -1,5 +1,6 @@
 import pytest
 from unittest.mock import MagicMock, patch
+from googleapiclient.errors import HttpError
 from backend.drive import (
     get_or_create_root_folder,
     list_libraries,
@@ -116,6 +117,33 @@ def test_upload_library_index(mock_build, mock_creds, tmp_path):
     with patch("backend.drive.MediaFileUpload"):
         upload_library_index(mock_creds, "papers_123", LibraryIndex())
     mock_service.files().update.assert_called_once()
+
+
+def test_upload_library_index_corrupted_remote_index_is_skipped(mock_build, mock_creds):
+    """Regression test: a malformed remote id-mapping.json must not crash the
+    upload (or delete, which shares this path) - the local index should still
+    be written."""
+    mock_service = MagicMock()
+    mock_build.return_value = mock_service
+    mock_service.files().list().execute.return_value = {"files": [{"id": "idx"}]}
+    mock_service.files().get_media().execute.return_value = b"not valid json"
+
+    with patch("backend.drive.MediaFileUpload"):
+        upload_library_index(mock_creds, "papers_123", LibraryIndex())
+    mock_service.files().update.assert_called_once()
+
+
+def test_upload_library_index_reraises_non_404_http_error(mock_build, mock_creds):
+    mock_service = MagicMock()
+    mock_build.return_value = mock_service
+    mock_service.files().list().execute.return_value = {"files": [{"id": "idx"}]}
+    resp = MagicMock(status=500)
+    mock_service.files().get_media().execute.side_effect = HttpError(
+        resp, b"server error"
+    )
+
+    with pytest.raises(HttpError):
+        upload_library_index(mock_creds, "papers_123", LibraryIndex())
 
 
 def test_create_paper_folder(mock_build, mock_creds):
