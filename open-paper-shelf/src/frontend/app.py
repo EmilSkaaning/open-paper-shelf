@@ -20,7 +20,6 @@ if str(src_path) not in sys.path:
     sys.path.insert(0, str(src_path))
 
 from backend.drive import (  # noqa: E402
-    add_oauth_flow,
     create_library,
     create_paper_folder,
     delete_paper_folder,
@@ -47,10 +46,17 @@ def authenticate_user() -> Optional[Any]:
         return creds
 
     if "auth_flow" not in st.session_state:
-        flow = get_oauth_flow()
+        try:
+            flow = get_oauth_flow()
+        except FileNotFoundError:
+            st.error(
+                "credentials.json not found. Please provide valid Google Drive credentials."
+            )
+            return None
         st.session_state.auth_flow = flow
-        add_oauth_flow("main_auth", flow)
-        auth_url, state = flow.authorization_url(prompt="consent")
+        auth_url, state = flow.authorization_url(
+            prompt="consent", access_type="offline"
+        )
         st.session_state.auth_url = auth_url
         st.session_state.oauth_state = state
 
@@ -184,9 +190,15 @@ def main() -> None:
 
         st.button("🔙 Switch Library", on_click=switch_lib, use_container_width=True)
 
+        if "uploader_key" not in st.session_state:
+            st.session_state.uploader_key = 0
+
         st.header("Upload Paper")
         uploaded_files = st.file_uploader(
-            "Choose PDF files", type="pdf", accept_multiple_files=True
+            "Choose PDF files",
+            type="pdf",
+            accept_multiple_files=True,
+            key=str(st.session_state.uploader_key),
         )
         if uploaded_files:
             if st.button("Upload"):
@@ -256,6 +268,7 @@ def main() -> None:
                             st.session_state.index,
                         )
                         st.session_state.last_sync_time = None
+                    st.session_state.uploader_key += 1
                     st.success("Uploaded successfully!")
                     st.rerun()
 

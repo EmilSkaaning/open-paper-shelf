@@ -6,7 +6,6 @@ from backend.drive import (
     create_library,
     get_papers_folder,
     get_library_index_file,
-    download_library_index,
     upload_library_index,
     create_paper_folder,
     upload_file_to_folder,
@@ -106,19 +105,6 @@ def test_get_library_index_file(mock_build, mock_creds):
     res = get_library_index_file(mock_creds, "papers_123")
     assert res is not None
     assert res["id"] == "idx"
-
-
-def test_download_library_index(mock_build, mock_creds, tmp_path):
-    mock_service = MagicMock()
-    mock_build.return_value = mock_service
-    mock_service.files().list().execute.return_value = {
-        "files": [{"id": "idx", "modifiedTime": "time"}]
-    }
-
-    with patch("backend.drive.MediaIoBaseDownload") as mock_downloader:
-        mock_downloader.return_value.next_chunk.return_value = (None, True)
-        res = download_library_index(mock_creds, "papers_123", tmp_path / "index.json")
-    assert res == "time"
 
 
 def test_upload_library_index(mock_build, mock_creds, tmp_path):

@@ -5,13 +5,12 @@ from google_auth_oauthlib.flow import Flow
 from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
+import json
 import tempfile
 import uuid
 
 from backend.models import LibraryIndex
 
-OAUTH_FLOWS: Dict[str, Flow] = {}
-MAX_OAUTH_FLOWS: int = 100
 SCOPES: List[str] = ["https://www.googleapis.com/auth/drive.file"]
 FOLDER_NAME: str = "open-paper-shelf-lib"
 FOLDER_MIME_TYPE: str = "application/vnd.google-apps.folder"
@@ -21,12 +20,6 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 CREDENTIALS_PATH = PROJECT_ROOT / "credentials.json"
 TOKEN_PATH = PROJECT_ROOT / "token.json"
 PAPERS_DIR = PROJECT_ROOT / "papers"
-
-
-def add_oauth_flow(state: str, flow: Flow) -> None:
-    if len(OAUTH_FLOWS) >= MAX_OAUTH_FLOWS:
-        OAUTH_FLOWS.pop(next(iter(OAUTH_FLOWS)))
-    OAUTH_FLOWS[state] = flow
 
 
 def get_oauth_flow() -> Flow:
@@ -131,33 +124,6 @@ def get_library_index_file(
     return None
 
 
-def download_library_index(
-    creds: Credentials, papers_folder_id: str, dest_path: Path
-) -> Optional[str]:
-    """Downloads id-mapping.json if it exists. Returns its modifiedTime, or None if not exists."""
-    service: Any = build("drive", "v3", credentials=creds)
-    file_info = get_library_index_file(creds, papers_folder_id)
-    if not file_info:
-        return None
-
-    request = service.files().get_media(fileId=file_info["id"])
-    tmp_path = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            dir=dest_path.parent, delete=False
-        ) as tmp_file:
-            tmp_path = Path(tmp_file.name)
-            downloader = MediaIoBaseDownload(tmp_file, request)
-            done = False
-            while not done:
-                _, done = downloader.next_chunk()
-        tmp_path.replace(dest_path)
-    finally:
-        if tmp_path and tmp_path.exists():
-            tmp_path.unlink(missing_ok=True)
-    return file_info.get("modifiedTime")
-
-
 def upload_library_index(
     creds: Credentials, papers_folder_id: str, index: LibraryIndex
 ) -> None:
@@ -173,6 +139,18 @@ def upload_library_index(
     """
     service: Any = build("drive", "v3", credentials=creds)
     file_info = get_library_index_file(creds, papers_folder_id)
+
+    if file_info:
+        try:
+            request = service.files().get_media(fileId=file_info["id"])
+            remote_bytes = request.execute()
+            remote_data = json.loads(remote_bytes.decode("utf-8"))
+            remote_index = LibraryIndex(**remote_data)
+            for pid, p in remote_index.papers.items():
+                if pid not in index.papers:
+                    index.papers[pid] = p
+        except Exception:
+            pass
 
     with tempfile.NamedTemporaryFile(
         mode="w", delete=False, suffix=".json", encoding="utf-8"
