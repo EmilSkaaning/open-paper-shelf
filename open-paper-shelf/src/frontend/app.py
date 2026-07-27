@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Optional, cast, Literal
 
 import streamlit as st
+from google.oauth2.credentials import Credentials
 from pydantic import ValidationError
 import os
 from st_keyup import st_keyup
@@ -50,14 +51,17 @@ def authenticate_user() -> Optional[Any]:
     query_params = st.query_params
     if "code" in query_params:
         state = query_params.get("state")
-        flow = OAUTH_FLOWS.get(state) if state else None
+        if not state:
+            st.error("Authentication failed: State mismatch (possible CSRF attempt).")
+            return None
+        flow = OAUTH_FLOWS.get(state)
         if flow is None:
             st.error("Authentication failed: State mismatch (possible CSRF attempt).")
             return None
         code = query_params["code"]
         try:
             flow.fetch_token(code=code)
-            creds = flow.credentials
+            creds = cast(Credentials, flow.credentials)
             save_credentials(creds)
             OAUTH_FLOWS.pop(state, None)
             st.query_params.clear()
