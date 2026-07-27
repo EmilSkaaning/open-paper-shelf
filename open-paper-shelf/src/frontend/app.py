@@ -157,6 +157,22 @@ class UploadedPaperName(BaseModel):
     name: str = Field(min_length=1, max_length=255)
 
 
+def strip_pdf_suffix(name: str) -> str:
+    """Removes a trailing .pdf extension from a paper title, if present.
+
+    Args:
+        name: The candidate title, typically derived from an uploaded
+            filename or user-edited text.
+
+    Returns:
+        str: `name` with a trailing ".pdf" (any case) suffix removed.
+        Falls back to the original `name` if stripping it would leave an
+        empty string (e.g. a file literally named ".pdf").
+    """
+    stripped = re.sub(r"\.pdf$", "", name, flags=re.IGNORECASE)
+    return stripped if stripped else name
+
+
 def upload_papers(creds: Credentials, uploaded_files: Sequence[UploadedFile]) -> bool:
     """Uploads each file to Drive and records it in the in-memory index.
 
@@ -172,6 +188,7 @@ def upload_papers(creds: Credentials, uploaded_files: Sequence[UploadedFile]) ->
     for uploaded_file in uploaded_files:
         try:
             validated_name = UploadedPaperName(name=uploaded_file.name).name
+            title = strip_pdf_suffix(validated_name)
             paper_id = uuid.uuid4().hex
             with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
                 tmp.write(uploaded_file.getvalue())
@@ -191,7 +208,7 @@ def upload_papers(creds: Credentials, uploaded_files: Sequence[UploadedFile]) ->
                         "paper.pdf",
                         "application/pdf",
                     )
-                    meta = PaperMetadata(title=validated_name)
+                    meta = PaperMetadata(title=title)
 
                     with tempfile.NamedTemporaryFile(
                         delete=False, suffix=".json"
@@ -213,6 +230,8 @@ def upload_papers(creds: Credentials, uploaded_files: Sequence[UploadedFile]) ->
                             pdf_file_id=pdf_file_id,
                             meta_file_id=meta_file_id,
                             folder_id=folder_id,
+                            tags=meta.tags,
+                            status=meta.status,
                         )
                     finally:
                         meta_tmp_path.unlink(missing_ok=True)
@@ -557,7 +576,7 @@ def main() -> None:
                 if st.form_submit_button(
                     "Save Changes", disabled=not metadata_available
                 ):
-                    meta.title = new_title
+                    meta.title = strip_pdf_suffix(new_title)
                     meta.tags = [t.strip() for t in tags_str.split(",") if t.strip()]
                     meta.status = cast(
                         Literal["Unread", "Reading", "Read", "TODO"], status

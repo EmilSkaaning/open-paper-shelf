@@ -240,6 +240,31 @@ class TestSyncLibraryIndex:
         fake_st.error.assert_not_called()
 
 
+class TestStripPdfSuffix:
+    """Test suite for strip_pdf_suffix."""
+
+    @pytest.mark.parametrize(
+        "raw,expected",
+        [
+            ("paper.pdf", "paper"),
+            ("Paper.PDF", "Paper"),
+            ("my paper.Pdf", "my paper"),
+            ("no-extension", "no-extension"),
+            ("weird.pdf.pdf", "weird.pdf"),
+        ],
+    )
+    def test_strips_trailing_pdf_suffix_case_insensitively(
+        self, raw: str, expected: str
+    ) -> None:
+        """Test a trailing .pdf suffix (any case) is removed exactly once."""
+        assert app.strip_pdf_suffix(raw) == expected
+
+    def test_falls_back_to_original_when_stripping_would_be_empty(self) -> None:
+        """Regression test: a filename that's just an extension (e.g. a
+        file literally named '.pdf') must not become an empty title."""
+        assert app.strip_pdf_suffix(".pdf") == ".pdf"
+
+
 class TestUploadPapers:
     """Test suite for upload_papers."""
 
@@ -262,6 +287,22 @@ class TestUploadPapers:
         assert result is True
         assert len(fake_st.session_state.index.papers) == 2
         fake_st.error.assert_not_called()
+
+    def test_strips_pdf_extension_from_default_title(
+        self, fake_st: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """Test an uploaded file's default title never contains '.pdf'."""
+        fake_st.session_state.current_papers_id = "papers_123"
+        fake_st.session_state.index = LibraryIndex()
+        files = [make_uploaded_file("Attention Is All You Need.pdf")]
+        mocker.patch.object(app, "create_paper_folder", return_value="folder1")
+        mocker.patch.object(app, "upload_file_to_folder", side_effect=["pdf1", "meta1"])
+
+        result = app.upload_papers(creds=MagicMock(), uploaded_files=files)
+
+        assert result is True
+        (entry,) = fake_st.session_state.index.papers.values()
+        assert entry.title == "Attention Is All You Need"
 
     def test_partial_failure_reports_error_and_keeps_successful_ones(
         self, fake_st: MagicMock, mocker: MockerFixture
@@ -1164,6 +1205,31 @@ class TestMainMetadataView:
         mock_upload_index.assert_called_once()
         assert fake_st.session_state.index.papers[pid].tags == ["urgent"]
         assert fake_st.session_state.index.papers[pid].status == "Reading"
+
+    def test_form_submit_strips_pdf_from_edited_title(
+        self, fake_st: MagicMock, mocker: MockerFixture, tmp_path: Path
+    ) -> None:
+        """Regression test: typing '.pdf' into the title field on save must
+        not let it end up in the stored title."""
+        pid = "9" * 32
+        self._select_paper(fake_st, mocker, tmp_path, pid)
+        mocker.patch.object(app, "sync_paper_metadata", return_value=True)
+        mocker.patch.object(app, "upload_file_to_folder")
+        mocker.patch.object(app, "upload_library_index")
+
+        fake_st.text_input.side_effect = lambda label, **kw: {
+            "Title": "Renamed Paper.pdf",
+        }.get(label, kw.get("value", ""))
+        fake_st.selectbox.return_value = "Unread"
+        fake_st.text_area.return_value = ""
+        fake_st.form_submit_button.return_value = True
+
+        app.main()
+
+        local_meta_path = tmp_path / pid / "meta.json"
+        saved = json.loads(local_meta_path.read_text(encoding="utf-8"))
+        assert saved["title"] == "Renamed Paper"
+        assert fake_st.session_state.index.papers[pid].title == "Renamed Paper"
 
     def test_unparseable_metadata_file_reports_generic_error(
         self, fake_st: MagicMock, mocker: MockerFixture, tmp_path: Path
