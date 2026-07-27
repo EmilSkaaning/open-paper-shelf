@@ -20,6 +20,7 @@ if str(src_path) not in sys.path:
     sys.path.insert(0, str(src_path))
 
 from backend.drive import (  # noqa: E402
+    add_oauth_flow,
     create_library,
     create_paper_folder,
     delete_paper_folder,
@@ -33,6 +34,7 @@ from backend.drive import (  # noqa: E402
     save_credentials,
     upload_file_to_folder,
     upload_library_index,
+    OAUTH_FLOWS,
     PAPERS_DIR,
 )
 from backend.models import LibraryIndex, PaperIndexEntry, PaperMetadata  # noqa: E402
@@ -44,6 +46,28 @@ def authenticate_user() -> Optional[Any]:
     creds = load_credentials_from_file()
     if creds:
         return creds
+
+    query_params = st.query_params
+    if "code" in query_params:
+        state = query_params.get("state")
+        flow = OAUTH_FLOWS.get(state) if state else None
+        if flow is None:
+            st.error("Authentication failed: State mismatch (possible CSRF attempt).")
+            return None
+        code = query_params["code"]
+        try:
+            flow.fetch_token(code=code)
+            creds = flow.credentials
+            save_credentials(creds)
+            OAUTH_FLOWS.pop(state, None)
+            st.query_params.clear()
+            st.session_state.pop("auth_flow", None)
+            st.session_state.pop("oauth_state", None)
+            st.success("Successfully authenticated!")
+            st.rerun()
+        except Exception as e:
+            st.error(f"Authentication failed: {e}")
+            return None
 
     if "auth_flow" not in st.session_state:
         try:
@@ -57,28 +81,9 @@ def authenticate_user() -> Optional[Any]:
         auth_url, state = flow.authorization_url(
             prompt="consent", access_type="offline"
         )
+        add_oauth_flow(state, flow)
         st.session_state.auth_url = auth_url
         st.session_state.oauth_state = state
-
-    query_params = st.query_params
-    if "code" in query_params:
-        if "state" not in query_params or query_params["state"] != st.session_state.get(
-            "oauth_state"
-        ):
-            st.error("Authentication failed: State mismatch (possible CSRF attempt).")
-            return None
-        code = query_params["code"]
-        flow = st.session_state.auth_flow
-        try:
-            flow.fetch_token(code=code)
-            creds = flow.credentials
-            save_credentials(creds)
-            st.query_params.clear()
-            st.success("Successfully authenticated!")
-            st.rerun()
-        except Exception as e:
-            st.error(f"Authentication failed: {e}")
-            return None
 
     st.warning("Please authenticate to access your Google Drive.")
     st.link_button("Login with Google", st.session_state.auth_url)
@@ -113,6 +118,7 @@ def sync_library_index(creds):
             st.session_state.last_sync_time = remote_time
         except Exception as e:
             st.error(f"Failed to sync library index: {e}")
+            st.session_state.index = LibraryIndex()
             return
 
     if local_path.exists():
@@ -121,6 +127,9 @@ def sync_library_index(creds):
             st.session_state.index = LibraryIndex(**data)
         except Exception as e:
             st.error(f"Failed to parse library index: {e}")
+            st.session_state.index = LibraryIndex()
+    else:
+        st.session_state.index = LibraryIndex()
 
 
 def main() -> None:

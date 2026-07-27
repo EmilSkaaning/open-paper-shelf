@@ -22,6 +22,25 @@ CREDENTIALS_PATH = PROJECT_ROOT / "credentials.json"
 TOKEN_PATH = PROJECT_ROOT / "token.json"
 PAPERS_DIR = PROJECT_ROOT / "papers"
 
+# Caches Flow objects across the OAuth redirect, keyed by the 'state' string.
+# A module-level global (rather than st.session_state) because Streamlit's
+# session state is not guaranteed to survive the cross-domain redirect to and
+# from Google's consent screen.
+OAUTH_FLOWS: Dict[str, Flow] = {}
+MAX_OAUTH_FLOWS: int = 100
+
+
+def add_oauth_flow(state: str, flow: Flow) -> None:
+    """Caches an OAuth flow keyed by its state string, evicting the oldest if full.
+
+    Args:
+        state: The OAuth state string returned by flow.authorization_url().
+        flow: The Flow object to cache.
+    """
+    if len(OAUTH_FLOWS) >= MAX_OAUTH_FLOWS:
+        OAUTH_FLOWS.pop(next(iter(OAUTH_FLOWS)))
+    OAUTH_FLOWS[state] = flow
+
 
 def get_oauth_flow() -> Flow:
     if not CREDENTIALS_PATH.exists():
