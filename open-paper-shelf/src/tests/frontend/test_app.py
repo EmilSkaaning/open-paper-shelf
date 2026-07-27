@@ -1081,6 +1081,33 @@ class TestMainMetadataView:
         mock_upload_index.assert_called_once()
         fake_st.success.assert_called_once()
 
+    def test_form_submit_syncs_index_even_without_title_change(
+        self, fake_st: MagicMock, mocker: MockerFixture, tmp_path: Path
+    ) -> None:
+        """Regression test: saving tags/status must update and re-upload
+        the index even when the title is unchanged, since the sidebar's
+        filters and status icon now read tags/status from the index
+        instead of from each paper's meta.json."""
+        pid = "f" * 32
+        self._select_paper(fake_st, mocker, tmp_path, pid)
+        mocker.patch.object(app, "sync_paper_metadata", return_value=True)
+        mocker.patch.object(app, "upload_file_to_folder")
+        mock_upload_index = mocker.patch.object(app, "upload_library_index")
+
+        fake_st.text_input.side_effect = lambda label, **kw: {
+            "Title": "A Paper",
+            "Tags (comma separated)": "urgent",
+        }.get(label, kw.get("value", ""))
+        fake_st.selectbox.return_value = "Reading"
+        fake_st.text_area.return_value = ""
+        fake_st.form_submit_button.return_value = True
+
+        app.main()
+
+        mock_upload_index.assert_called_once()
+        assert fake_st.session_state.index.papers[pid].tags == ["urgent"]
+        assert fake_st.session_state.index.papers[pid].status == "Reading"
+
     def test_unparseable_metadata_file_reports_generic_error(
         self, fake_st: MagicMock, mocker: MockerFixture, tmp_path: Path
     ) -> None:

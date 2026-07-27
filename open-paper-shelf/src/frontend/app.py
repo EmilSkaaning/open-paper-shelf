@@ -549,15 +549,15 @@ def main() -> None:
                             "application/json",
                         )
 
-                        # Update index if title changed
-                        if paper_info.title != new_title:
-                            paper_info.title = new_title
-                            st.session_state.index.papers[pid] = paper_info
-                            upload_library_index(
-                                creds,
-                                st.session_state.current_papers_id,
-                                st.session_state.index,
-                            )
+                        paper_info.title = meta.title
+                        paper_info.tags = meta.tags
+                        paper_info.status = meta.status
+                        st.session_state.index.papers[pid] = paper_info
+                        upload_library_index(
+                            creds,
+                            st.session_state.current_papers_id,
+                            st.session_state.index,
+                        )
 
                     st.success("Metadata saved!")
     else:
