@@ -11,6 +11,8 @@ from googleapiclient.errors import HttpError
 from pytest_mock import MockerFixture
 
 from backend.drive import (
+    _escape_drive_query_value,
+    _get_or_create_folder,
     add_oauth_flow,
     create_library,
     create_paper_folder,
@@ -50,6 +52,93 @@ class TestAddOauthFlow:
         assert len(OAUTH_FLOWS) == 100
         assert "state_0" not in OAUTH_FLOWS
         assert "state_100" in OAUTH_FLOWS
+
+    def test_eviction_survives_dict_emptied_concurrently(
+        self, mocker: MockerFixture
+    ) -> None:
+        """Regression test: if another thread clears/evicts the cache down to
+        empty between the capacity check and the eviction pop, add_oauth_flow
+        must not raise StopIteration."""
+        OAUTH_FLOWS.clear()
+        for i in range(100):
+            add_oauth_flow(f"state_{i}", mocker.MagicMock())
+        mocker.patch("backend.drive.next", side_effect=StopIteration)
+
+        add_oauth_flow("state_new", mocker.MagicMock())
+
+        assert "state_new" in OAUTH_FLOWS
+
+    def test_eviction_survives_concurrent_double_pop(
+        self, mocker: MockerFixture
+    ) -> None:
+        """Regression test: if two threads both decide to evict the same
+        oldest key at once, the loser's pop() of an already-removed key must
+        not raise KeyError."""
+        OAUTH_FLOWS.clear()
+        for i in range(100):
+            add_oauth_flow(f"state_{i}", mocker.MagicMock())
+        victim_key = next(iter(OAUTH_FLOWS))
+
+        def racy_next(_iterator: Any) -> str:
+            """Simulates a second thread evicting victim_key first."""
+            OAUTH_FLOWS.pop(victim_key)
+            return victim_key
+
+        mocker.patch("backend.drive.next", side_effect=racy_next)
+
+        add_oauth_flow("state_new", mocker.MagicMock())
+
+        assert "state_new" in OAUTH_FLOWS
+        assert victim_key not in OAUTH_FLOWS
+        assert len(OAUTH_FLOWS) == 100
+
+
+class TestEscapeDriveQueryValue:
+    """Test suite for _escape_drive_query_value."""
+
+    @pytest.mark.parametrize(
+        "raw, expected",
+        [
+            ("simple", "simple"),
+            ("O'Brien", "O\\'Brien"),
+            ("back\\slash", "back\\\\slash"),
+            ("trailing\\", "trailing\\\\"),
+            ("quote'then\\backslash", "quote\\'then\\\\backslash"),
+        ],
+        ids=[
+            "no_special_chars",
+            "single_quote",
+            "embedded_backslash",
+            "trailing_backslash",
+            "quote_and_backslash",
+        ],
+    )
+    def test_escapes_backslashes_before_quotes(self, raw: str, expected: str) -> None:
+        """Test backslashes are escaped before quotes, in that order.
+
+        Args:
+            raw: The unescaped input string.
+            expected: The expected escaped output.
+        """
+        assert _escape_drive_query_value(raw) == expected
+
+
+class TestGetOrCreateFolderEscaping:
+    """Test suite for _get_or_create_folder's query escaping."""
+
+    def test_trailing_backslash_does_not_unterminate_query(
+        self, mocker: MockerFixture
+    ) -> None:
+        """Regression test: a folder name ending in a backslash must not
+        leave the closing quote of the `name = '...'` clause escaped away,
+        which would produce a malformed Drive API query."""
+        mock_service = MagicMock()
+        mock_service.files().list().execute.return_value = {"files": [{"id": "f1"}]}
+
+        _get_or_create_folder(mock_service, "weird_name\\")
+
+        query = mock_service.files().list.call_args.kwargs["q"]
+        assert query.startswith("name = 'weird_name\\\\' and")
 
 
 class TestGetOauthFlow:
@@ -412,6 +501,32 @@ class TestUploadFileToFolder:
         )
 
         assert res == expected_id
+
+    def test_escapes_filename_with_backslash_and_quote(
+        self,
+        mock_build: MagicMock,
+        mock_creds: MagicMock,
+        mocker: MockerFixture,
+        tmp_path: Path,
+    ) -> None:
+        """Regression test: a filename containing a backslash and a quote
+        must have both escaped, in that order, so the lookup query isn't
+        malformed."""
+        mock_service = MagicMock()
+        mock_build.return_value = mock_service
+        mock_service.files().list().execute.return_value = {"files": []}
+        mock_service.files().create().execute.return_value = {"id": "uploaded_123"}
+
+        file_path = tmp_path / "test.pdf"
+        file_path.write_bytes(b"content")
+
+        mocker.patch("backend.drive.MediaFileUpload")
+        upload_file_to_folder(
+            mock_creds, "folder_123", file_path, "weird\\name's.pdf", "application/pdf"
+        )
+
+        query = mock_service.files().list.call_args.kwargs["q"]
+        assert "weird\\\\name\\'s.pdf" in query
 
 
 class TestDownloadFile:

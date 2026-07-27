@@ -47,7 +47,12 @@ def add_oauth_flow(state: str, flow: Flow) -> None:
         flow: The Flow object to cache.
     """
     if len(OAUTH_FLOWS) >= MAX_OAUTH_FLOWS:
-        OAUTH_FLOWS.pop(next(iter(OAUTH_FLOWS)))
+        try:
+            OAUTH_FLOWS.pop(next(iter(OAUTH_FLOWS)))
+        except (StopIteration, KeyError):
+            # Another thread already evicted the same (or the only
+            # remaining) entry between our capacity check and this pop.
+            pass
     OAUTH_FLOWS[state] = flow
 
 
@@ -97,6 +102,22 @@ def save_credentials(creds: Credentials) -> None:
         token.write(creds.to_json())
 
 
+def _escape_drive_query_value(value: str) -> str:
+    """Escapes a string for safe interpolation into a Drive API query clause.
+
+    Per the Drive API's search query syntax, both backslashes and single
+    quotes must be backslash-escaped. Backslashes are escaped first so that
+    the escaping added for a quote is not itself re-escaped.
+
+    Args:
+        value (str): The raw string to embed in a `name = '...'` clause.
+
+    Returns:
+        str: The value with backslashes and single quotes escaped.
+    """
+    return value.replace("\\", "\\\\").replace("'", "\\'")
+
+
 def _get_or_create_folder(
     service: DriveService, name: str, parent_id: Optional[str] = None
 ) -> str:
@@ -110,7 +131,7 @@ def _get_or_create_folder(
     Returns:
         str: The Google Drive file ID of the folder.
     """
-    escaped_name = name.replace("'", "\\'")
+    escaped_name = _escape_drive_query_value(name)
     query = f"name = '{escaped_name}' and mimeType = '{FOLDER_MIME_TYPE}' and trashed = false"
     if parent_id:
         query += f" and '{parent_id}' in parents"
@@ -330,7 +351,7 @@ def upload_file_to_folder(
         str: The Google Drive file ID of the uploaded file.
     """
     service: DriveService = build("drive", "v3", credentials=creds)
-    escaped_filename = filename.replace("'", "\\'")
+    escaped_filename = _escape_drive_query_value(filename)
     query = (
         f"name = '{escaped_filename}' and '{folder_id}' in parents and trashed = false"
     )
