@@ -912,6 +912,50 @@ class TestMainDeleteFlow:
         fake_st.error.assert_called_once()
         fake_st.rerun.assert_not_called()
 
+    def test_delete_button_reports_error_when_drive_deletion_fails(
+        self,
+        fake_st: MagicMock,
+        mocker: MockerFixture,
+        tmp_path: Path,
+    ) -> None:
+        """Regression test: if deleting the Drive folder itself fails, the
+        error must be caught and reported - not left to propagate and crash
+        the page - and the paper must stay in the index untouched since
+        nothing was actually deleted."""
+        pid = "a" * 32
+        entry = PaperIndexEntry(
+            title="Doomed Paper",
+            pdf_file_id="pdf1",
+            meta_file_id="meta1",
+            folder_id="folder1",
+        )
+        fake_st.session_state.current_lib_id = "lib_123"
+        fake_st.session_state.current_papers_id = "papers_123"
+        fake_st.session_state.root_id = "root_123"
+        fake_st.session_state.index = LibraryIndex(papers={pid: entry})
+        fake_st.session_state.selected_paper = pid
+        fake_st.session_state.local_lib_dir = tmp_path
+        fake_st.file_uploader.return_value = None
+        fake_st.columns.return_value = (MagicMock(), MagicMock())
+        fake_st.button.side_effect = lambda label, **kw: kw.get("key") == f"del_{pid}"
+        fake_st.form_submit_button.return_value = False
+        mocker.patch.object(app, "st_keyup", return_value="")
+        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
+        mocker.patch.object(app, "download_file")
+        mocker.patch.object(app, "sync_paper_metadata", return_value=True)
+        mocker.patch.object(
+            app, "delete_paper_folder", side_effect=RuntimeError("network blip")
+        )
+        mock_upload_index = mocker.patch.object(app, "upload_library_index")
+
+        app.main()  # must not raise
+
+        mock_upload_index.assert_not_called()
+        assert fake_st.session_state.index.papers[pid] == entry
+        assert fake_st.session_state.selected_paper == pid
+        fake_st.error.assert_called_once()
+        fake_st.rerun.assert_not_called()
+
 
 class TestMainMetadataView:
     """Test suite for main()'s paper detail / metadata editing view."""
@@ -945,6 +989,32 @@ class TestMainMetadataView:
         mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
         mocker.patch.object(app, "download_file")
         return entry
+
+    def test_pdf_download_failure_shows_warning_without_crashing(
+        self, fake_st: MagicMock, mocker: MockerFixture, tmp_path: Path
+    ) -> None:
+        """Regression test: if fetching the PDF from Drive fails, the app
+        must report the error and fall back to a warning in place of the PDF
+        viewer, instead of letting the exception propagate and crash the
+        page."""
+        pid = "a" * 32
+        self._select_paper(fake_st, mocker, tmp_path, pid)
+        mocker.patch.object(
+            app, "download_file", side_effect=RuntimeError("network blip")
+        )
+        mocker.patch.object(app, "sync_paper_metadata", return_value=True)
+        fake_st.form_submit_button.return_value = False
+
+        app.main()
+
+        assert any(
+            "Failed to load PDF" in str(call.args)
+            for call in fake_st.error.call_args_list
+        )
+        assert any(
+            "PDF could not be loaded" in str(call.args)
+            for call in fake_st.warning.call_args_list
+        )
 
     def test_recovers_valid_fields_after_validation_error(
         self, fake_st: MagicMock, mocker: MockerFixture, tmp_path: Path

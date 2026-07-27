@@ -421,26 +421,30 @@ def main() -> None:
             with col2:
                 if st.button("🗑️", key=f"del_{pid}", help="Delete paper"):
                     with st.spinner("Deleting..."):
-                        delete_paper_folder(creds, p.folder_id)
-                        removed_paper = st.session_state.index.papers.pop(pid)
                         try:
-                            upload_library_index(
-                                creds,
-                                st.session_state.current_papers_id,
-                                st.session_state.index,
-                                deleted_pids={pid},
-                            )
+                            delete_paper_folder(creds, p.folder_id)
                         except Exception as e:
-                            st.session_state.index.papers[pid] = removed_paper
-                            st.error(f"Failed to sync deletion: {e}")
+                            st.error(f"Failed to delete paper: {e}")
                         else:
-                            if st.session_state.selected_paper == pid:
-                                st.session_state.selected_paper = None
-                            shutil.rmtree(
-                                st.session_state.local_lib_dir / pid,
-                                ignore_errors=True,
-                            )
-                            st.rerun()
+                            removed_paper = st.session_state.index.papers.pop(pid)
+                            try:
+                                upload_library_index(
+                                    creds,
+                                    st.session_state.current_papers_id,
+                                    st.session_state.index,
+                                    deleted_pids={pid},
+                                )
+                            except Exception as e:
+                                st.session_state.index.papers[pid] = removed_paper
+                                st.error(f"Failed to sync deletion: {e}")
+                            else:
+                                if st.session_state.selected_paper == pid:
+                                    st.session_state.selected_paper = None
+                                shutil.rmtree(
+                                    st.session_state.local_lib_dir / pid,
+                                    ignore_errors=True,
+                                )
+                                st.rerun()
 
     # Main area
     if st.session_state.selected_paper:
@@ -456,9 +460,14 @@ def main() -> None:
         local_meta_path = local_paper_dir / "meta.json"
 
         # Download files if missing
+        pdf_available = local_pdf_path.exists()
         with st.spinner("Loading paper..."):
-            if not local_pdf_path.exists():
-                download_file(creds, paper_info.pdf_file_id, local_pdf_path)
+            if not pdf_available:
+                try:
+                    download_file(creds, paper_info.pdf_file_id, local_pdf_path)
+                    pdf_available = True
+                except Exception as e:
+                    st.error(f"Failed to load PDF: {e}")
 
             # Always sync metadata on load to avoid stale caches across devices
             metadata_available = sync_paper_metadata(creds, paper_info, local_meta_path)
@@ -487,14 +496,15 @@ def main() -> None:
 
         col_pdf, col_meta = st.columns([2, 1])
         with col_pdf:
-            base_url = os.environ.get("FASTAPI_URL", "http://localhost:8000")
-            quoted_lib_id = urllib.parse.quote(st.session_state.current_lib_id)
-            quoted_pid = urllib.parse.quote(pid)
-            fastapi_url = (
-                f"{base_url.rstrip('/')}/papers/{quoted_lib_id}/{quoted_pid}/paper.pdf"
-            )
-            pdf_display = f'<iframe src="{html.escape(fastapi_url)}" width="100%" height="750" style="border:none;" type="application/pdf"></iframe>'
-            st.markdown(pdf_display, unsafe_allow_html=True)
+            if pdf_available:
+                base_url = os.environ.get("FASTAPI_URL", "http://localhost:8000")
+                quoted_lib_id = urllib.parse.quote(st.session_state.current_lib_id)
+                quoted_pid = urllib.parse.quote(pid)
+                fastapi_url = f"{base_url.rstrip('/')}/papers/{quoted_lib_id}/{quoted_pid}/paper.pdf"
+                pdf_display = f'<iframe src="{html.escape(fastapi_url)}" width="100%" height="750" style="border:none;" type="application/pdf"></iframe>'
+                st.markdown(pdf_display, unsafe_allow_html=True)
+            else:
+                st.warning("PDF could not be loaded from Drive.")
 
         with col_meta:
             st.subheader("Metadata")
