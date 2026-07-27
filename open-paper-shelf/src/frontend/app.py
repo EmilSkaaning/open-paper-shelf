@@ -6,11 +6,12 @@ import tempfile
 import urllib.parse
 import uuid
 from pathlib import Path
-from typing import Any, Optional, cast, Literal
+from typing import Optional, Sequence, cast, Literal
 
 import streamlit as st
 from google.oauth2.credentials import Credentials
-from pydantic import ValidationError
+from pydantic import BaseModel, Field, ValidationError
+from streamlit.runtime.uploaded_file_manager import UploadedFile
 import os
 from st_keyup import st_keyup
 
@@ -43,27 +44,53 @@ from backend.models import LibraryIndex, PaperIndexEntry, PaperMetadata  # noqa:
 st.set_page_config(layout="wide", page_title="Open Paper Shelf")
 
 
-def authenticate_user() -> Optional[Any]:
+class OAuthCallbackParams(BaseModel):
+    """Validated OAuth redirect query parameters.
+
+    Attributes:
+        code: The authorization code returned by Google.
+        state: The CSRF state string echoed back by Google, used to look up
+            the matching cached OAuth flow.
+    """
+
+    code: str = Field(min_length=1)
+    state: str = Field(min_length=1)
+
+
+def authenticate_user() -> Optional[Credentials]:
+    """Handles the Google OAuth flow, returning credentials once authenticated.
+
+    On first call, redirects the user to Google's consent screen. On the
+    OAuth redirect back, validates and exchanges the authorization code for
+    credentials, caches them locally, and clears OAuth-related session state.
+
+    Returns:
+        Optional[Credentials]: The user's Google OAuth credentials, or None
+        if the user is not yet authenticated.
+    """
     creds = load_credentials_from_file()
     if creds:
         return creds
 
     query_params = st.query_params
     if "code" in query_params:
-        state = query_params.get("state")
-        if not state:
+        try:
+            callback = OAuthCallbackParams(
+                code=query_params.get("code") or "",
+                state=query_params.get("state") or "",
+            )
+        except ValidationError:
             st.error("Authentication failed: State mismatch (possible CSRF attempt).")
             return None
-        flow = OAUTH_FLOWS.get(state)
+        flow = OAUTH_FLOWS.get(callback.state)
         if flow is None:
             st.error("Authentication failed: State mismatch (possible CSRF attempt).")
             return None
-        code = query_params["code"]
         try:
-            flow.fetch_token(code=code)
+            flow.fetch_token(code=callback.code)
             creds = cast(Credentials, flow.credentials)
             save_credentials(creds)
-            OAUTH_FLOWS.pop(state, None)
+            OAUTH_FLOWS.pop(callback.state, None)
             st.query_params.clear()
             st.session_state.pop("auth_flow", None)
             st.session_state.pop("oauth_state", None)
@@ -94,8 +121,23 @@ def authenticate_user() -> Optional[Any]:
     return None
 
 
-def upload_papers(creds, uploaded_files) -> bool:
+class UploadedPaperName(BaseModel):
+    """Validates an uploaded PDF's filename before it becomes a paper title.
+
+    Attributes:
+        name: The original filename, non-empty and reasonably bounded.
+    """
+
+    name: str = Field(min_length=1, max_length=255)
+
+
+def upload_papers(creds: Credentials, uploaded_files: Sequence[UploadedFile]) -> bool:
     """Uploads each file to Drive and records it in the in-memory index.
+
+    Args:
+        creds (Credentials): The Google OAuth credentials.
+        uploaded_files (Sequence[UploadedFile]): The PDF files selected by the
+            user via Streamlit's file uploader.
 
     Returns:
         True if every file uploaded successfully, False if any failed.
@@ -103,6 +145,7 @@ def upload_papers(creds, uploaded_files) -> bool:
     all_succeeded = True
     for uploaded_file in uploaded_files:
         try:
+            validated_name = UploadedPaperName(name=uploaded_file.name).name
             paper_id = uuid.uuid4().hex
             with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
                 tmp.write(uploaded_file.getvalue())
@@ -121,7 +164,7 @@ def upload_papers(creds, uploaded_files) -> bool:
                     "paper.pdf",
                     "application/pdf",
                 )
-                meta = PaperMetadata(title=uploaded_file.name)
+                meta = PaperMetadata(title=validated_name)
 
                 with tempfile.NamedTemporaryFile(
                     delete=False, suffix=".json"
@@ -154,8 +197,17 @@ def upload_papers(creds, uploaded_files) -> bool:
     return all_succeeded
 
 
-def sync_paper_metadata(creds, paper_info, local_meta_path: Path) -> bool:
+def sync_paper_metadata(
+    creds: Credentials, paper_info: PaperIndexEntry, local_meta_path: Path
+) -> bool:
     """Refreshes the local metadata cache for a paper from Drive.
+
+    Args:
+        creds (Credentials): The Google OAuth credentials.
+        paper_info (PaperIndexEntry): The paper's index entry, used to locate
+            its metadata file on Drive.
+        local_meta_path (Path): The local path to refresh with the latest
+            metadata.
 
     Returns:
         True if metadata is safe to edit (freshly downloaded, or a
@@ -172,7 +224,15 @@ def sync_paper_metadata(creds, paper_info, local_meta_path: Path) -> bool:
         return had_local_copy
 
 
-def init_library_state(creds, lib_id: str, papers_id: str):
+def init_library_state(creds: Credentials, lib_id: str, papers_id: str) -> None:
+    """Resets session state for a newly opened or newly created library.
+
+    Args:
+        creds (Credentials): The Google OAuth credentials (unused directly,
+            kept for a consistent signature with other library-scoped calls).
+        lib_id (str): The Google Drive file ID of the library folder.
+        papers_id (str): The Google Drive file ID of the library's papers folder.
+    """
     st.session_state.current_lib_id = lib_id
     st.session_state.current_papers_id = papers_id
     st.session_state.local_lib_dir = PAPERS_DIR / lib_id
@@ -183,7 +243,17 @@ def init_library_state(creds, lib_id: str, papers_id: str):
     st.session_state.selected_paper = None
 
 
-def sync_library_index(creds):
+def sync_library_index(creds: Credentials) -> None:
+    """Syncs the local library index cache with Drive if it's out of date.
+
+    Downloads the remote id-mapping.json when it's missing locally or its
+    modifiedTime differs from the last synced value, then loads it into
+    st.session_state.index. Falls back to an empty LibraryIndex on any
+    download or parse failure.
+
+    Args:
+        creds (Credentials): The Google OAuth credentials.
+    """
     papers_id = st.session_state.current_papers_id
     local_path = st.session_state.local_index_path
 
@@ -276,6 +346,7 @@ def main() -> None:
     with st.sidebar:
 
         def switch_lib() -> None:
+            """Clears the current library's session state to return to library selection."""
             for k in ["current_lib_id", "current_papers_id", "index", "last_sync_time"]:
                 st.session_state.pop(k, None)
 
