@@ -44,6 +44,14 @@ def add_oauth_flow(state: str, flow: Flow) -> None:
 
 
 def get_oauth_flow() -> Flow:
+    """Builds a new Google OAuth Flow from the local client secrets file.
+
+    Returns:
+        Flow: A new OAuth Flow configured with this app's scopes and redirect URI.
+
+    Raises:
+        FileNotFoundError: If credentials.json does not exist at CREDENTIALS_PATH.
+    """
     if not CREDENTIALS_PATH.exists():
         raise FileNotFoundError("credentials.json not found.")
     return Flow.from_client_secrets_file(
@@ -52,6 +60,12 @@ def get_oauth_flow() -> Flow:
 
 
 def load_credentials_from_file() -> Optional[Credentials]:
+    """Loads and, if needed, refreshes cached OAuth credentials from disk.
+
+    Returns:
+        Optional[Credentials]: Valid credentials loaded from TOKEN_PATH, or None
+        if no token file exists or the token is invalid and cannot be refreshed.
+    """
     creds: Optional[Credentials] = None
     if TOKEN_PATH.exists():
         creds = Credentials.from_authorized_user_file(str(TOKEN_PATH), SCOPES)
@@ -66,6 +80,11 @@ def load_credentials_from_file() -> Optional[Credentials]:
 
 
 def save_credentials(creds: Credentials) -> None:
+    """Persists OAuth credentials to the local token file.
+
+    Args:
+        creds (Credentials): The Google OAuth credentials to save.
+    """
     with open(TOKEN_PATH, "w") as token:
         token.write(creds.to_json())
 
@@ -101,11 +120,28 @@ def _get_or_create_folder(
 
 
 def get_or_create_root_folder(creds: Credentials) -> str:
+    """Gets or creates this app's root library folder in the user's Google Drive.
+
+    Args:
+        creds (Credentials): The Google OAuth credentials.
+
+    Returns:
+        str: The Google Drive file ID of the root folder.
+    """
     service: Any = build("drive", "v3", credentials=creds)
     return _get_or_create_folder(service, FOLDER_NAME)
 
 
 def list_libraries(creds: Credentials, root_id: str) -> List[Dict[str, str]]:
+    """Lists the library folders directly under the root folder.
+
+    Args:
+        creds (Credentials): The Google OAuth credentials.
+        root_id (str): The Google Drive file ID of the root folder.
+
+    Returns:
+        List[Dict[str, str]]: The `id`/`name` metadata of each library folder.
+    """
     service: Any = build("drive", "v3", credentials=creds)
     query = f"'{root_id}' in parents and mimeType = '{FOLDER_MIME_TYPE}' and trashed = false"
     results = (
@@ -117,6 +153,19 @@ def list_libraries(creds: Credentials, root_id: str) -> List[Dict[str, str]]:
 
 
 def create_library(creds: Credentials, root_id: str, lib_name: str) -> Dict[str, str]:
+    """Creates a new library folder (with a nested papers folder) under root_id.
+
+    A short random suffix is appended to lib_name to avoid collisions.
+
+    Args:
+        creds (Credentials): The Google OAuth credentials.
+        root_id (str): The Google Drive file ID of the root folder.
+        lib_name (str): The desired display name for the new library.
+
+    Returns:
+        Dict[str, str]: A mapping with keys `lib_id`, `lib_name` (the unique
+        name actually used), and `papers_id`.
+    """
     service: Any = build("drive", "v3", credentials=creds)
     unique_name = f"{lib_name}_{uuid.uuid4().hex[:8]}"
     lib_id = _get_or_create_folder(service, unique_name, root_id)
@@ -125,6 +174,15 @@ def create_library(creds: Credentials, root_id: str, lib_name: str) -> Dict[str,
 
 
 def get_papers_folder(creds: Credentials, lib_id: str) -> str:
+    """Gets or creates the papers folder nested inside a library folder.
+
+    Args:
+        creds (Credentials): The Google OAuth credentials.
+        lib_id (str): The Google Drive file ID of the library folder.
+
+    Returns:
+        str: The Google Drive file ID of the papers folder.
+    """
     service: Any = build("drive", "v3", credentials=creds)
     return _get_or_create_folder(service, "papers", lib_id)
 
@@ -132,6 +190,16 @@ def get_papers_folder(creds: Credentials, lib_id: str) -> str:
 def get_library_index_file(
     creds: Credentials, papers_folder_id: str
 ) -> Optional[Dict[str, Any]]:
+    """Looks up the id-mapping.json index file inside a papers folder.
+
+    Args:
+        creds (Credentials): The Google OAuth credentials.
+        papers_folder_id (str): The Google Drive file ID of the papers folder.
+
+    Returns:
+        Optional[Dict[str, Any]]: The `id`/`modifiedTime` metadata of the index
+        file, or None if no index file exists yet.
+    """
     service: Any = build("drive", "v3", credentials=creds)
     query = f"name = 'id-mapping.json' and '{papers_folder_id}' in parents and trashed = false"
     results = (
@@ -161,6 +229,10 @@ def upload_library_index(
 
     Returns:
         None
+
+    Raises:
+        HttpError: If fetching the existing remote index fails for a reason
+            other than the file not existing (HTTP 404).
     """
     service: Any = build("drive", "v3", credentials=creds)
     file_info = get_library_index_file(creds, papers_folder_id)
@@ -206,6 +278,16 @@ def upload_library_index(
 def create_paper_folder(
     creds: Credentials, papers_folder_id: str, paper_id: str
 ) -> str:
+    """Gets or creates a per-paper folder nested inside the papers folder.
+
+    Args:
+        creds (Credentials): The Google OAuth credentials.
+        papers_folder_id (str): The Google Drive file ID of the papers folder.
+        paper_id (str): The unique ID of the paper, used as the folder name.
+
+    Returns:
+        str: The Google Drive file ID of the paper's folder.
+    """
     service: Any = build("drive", "v3", credentials=creds)
     return _get_or_create_folder(service, paper_id, papers_folder_id)
 
@@ -253,6 +335,16 @@ def upload_file_to_folder(
 
 
 def download_file(creds: Credentials, file_id: str, dest_path: Path) -> None:
+    """Downloads a Google Drive file to a local path atomically.
+
+    Streams the file to a temporary file in dest_path's parent directory and
+    then renames it into place, so dest_path is never left partially written.
+
+    Args:
+        creds (Credentials): The Google OAuth credentials.
+        file_id (str): The Google Drive file ID to download.
+        dest_path (Path): The local destination path for the downloaded file.
+    """
     service: Any = build("drive", "v3", credentials=creds)
     request = service.files().get_media(fileId=file_id)
     tmp_path = None
@@ -272,5 +364,11 @@ def download_file(creds: Credentials, file_id: str, dest_path: Path) -> None:
 
 
 def delete_paper_folder(creds: Credentials, folder_id: str) -> None:
+    """Deletes a paper's folder (and its contents) from Google Drive.
+
+    Args:
+        creds (Credentials): The Google OAuth credentials.
+        folder_id (str): The Google Drive file ID of the paper's folder.
+    """
     service: Any = build("drive", "v3", credentials=creds)
     service.files().delete(fileId=folder_id).execute()

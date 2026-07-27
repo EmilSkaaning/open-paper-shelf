@@ -24,7 +24,14 @@ class PaperMetadata(BaseModel):
 
 
 class PaperIndexEntry(BaseModel):
-    """Entry in the library's id-mapping.json for a single paper."""
+    """Entry in the library's id-mapping.json for a single paper.
+
+    Attributes:
+        title: The title of the paper.
+        pdf_file_id: The Google Drive file ID of the paper's PDF.
+        meta_file_id: The Google Drive file ID of the paper's metadata JSON.
+        folder_id: The Google Drive folder ID containing the paper's files.
+    """
 
     title: str
     pdf_file_id: str
@@ -33,6 +40,10 @@ class PaperIndexEntry(BaseModel):
 
 
 class LibraryIndex(BaseModel):
-    """Represents the id-mapping.json mapping unique paper IDs to their metadata."""
+    """Represents the id-mapping.json mapping unique paper IDs to their metadata.
+
+    Attributes:
+        papers: Mapping of unique paper ID to its PaperIndexEntry.
+    """
 
     papers: dict[str, PaperIndexEntry] = Field(default_factory=dict)
