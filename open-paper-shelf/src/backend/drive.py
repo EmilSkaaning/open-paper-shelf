@@ -144,12 +144,24 @@ def list_libraries(creds: Credentials, root_id: str) -> List[Dict[str, str]]:
     """
     service: Any = build("drive", "v3", credentials=creds)
     query = f"'{root_id}' in parents and mimeType = '{FOLDER_MIME_TYPE}' and trashed = false"
-    results = (
-        service.files()
-        .list(q=query, spaces="drive", fields="files(id, name)")
-        .execute()
-    )
-    return results.get("files", [])
+    libraries: List[Dict[str, str]] = []
+    page_token = None
+    while True:
+        results = (
+            service.files()
+            .list(
+                q=query,
+                spaces="drive",
+                fields="nextPageToken, files(id, name)",
+                pageToken=page_token,
+            )
+            .execute()
+        )
+        libraries.extend(results.get("files", []))
+        page_token = results.get("nextPageToken")
+        if not page_token:
+            break
+    return libraries
 
 
 def create_library(creds: Credentials, root_id: str, lib_name: str) -> Dict[str, str]:

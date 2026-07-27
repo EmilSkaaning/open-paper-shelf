@@ -206,6 +206,27 @@ class TestListLibraries:
         assert len(libs) == 1
         assert libs[0]["id"] == "lib1"
 
+    def test_paginates_beyond_first_page(
+        self, mock_build: MagicMock, mock_creds: MagicMock
+    ) -> None:
+        """Regression test: a user with more than one page of library
+        folders must have every page fetched via pageToken, not just the
+        first. Without pagination, libraries beyond the first page would be
+        silently dropped from the returned list."""
+        mock_service = MagicMock()
+        mock_build.return_value = mock_service
+        mock_list = mock_service.files.return_value.list
+        mock_list.return_value.execute.side_effect = [
+            {"files": [{"id": "lib1", "name": "Lib 1"}], "nextPageToken": "page2"},
+            {"files": [{"id": "lib2", "name": "Lib 2"}]},
+        ]
+
+        libs = list_libraries(mock_creds, "root_123")
+
+        assert [lib["id"] for lib in libs] == ["lib1", "lib2"]
+        assert mock_list.call_args_list[0].kwargs["pageToken"] is None
+        assert mock_list.call_args_list[1].kwargs["pageToken"] == "page2"
+
 
 class TestCreateLibrary:
     """Test suite for create_library."""
