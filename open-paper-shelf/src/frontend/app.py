@@ -303,7 +303,7 @@ def main() -> None:
                             creds,
                             st.session_state.current_papers_id,
                             st.session_state.index,
-                            skip_merge=True,
+                            deleted_pids={pid},
                         )
                         if st.session_state.selected_paper == pid:
                             st.session_state.selected_paper = None

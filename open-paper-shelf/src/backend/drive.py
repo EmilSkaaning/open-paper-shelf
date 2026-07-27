@@ -129,7 +129,7 @@ def upload_library_index(
     creds: Credentials,
     papers_folder_id: str,
     index: LibraryIndex,
-    skip_merge: bool = False,
+    deleted_pids: set[str] | None = None,
 ) -> None:
     """Uploads the library index file (id-mapping.json) to Google Drive.
 
@@ -137,7 +137,7 @@ def upload_library_index(
         creds (Credentials): Google OAuth credentials.
         papers_folder_id (str): The Google Drive folder ID where the index should be uploaded.
         index (LibraryIndex): The library index data model to serialize and upload.
-        skip_merge (bool): If True, skips merging with the remote index (e.g., during deletions). Defaults to False.
+        deleted_pids (set[str] | None): A set of paper IDs that were deleted locally and should not be merged back from the remote index.
 
     Returns:
         None
@@ -145,14 +145,15 @@ def upload_library_index(
     service: Any = build("drive", "v3", credentials=creds)
     file_info = get_library_index_file(creds, papers_folder_id)
 
-    if file_info and not skip_merge:
+    if file_info:
         try:
             request = service.files().get_media(fileId=file_info["id"])
             remote_bytes = request.execute()
             remote_data = json.loads(remote_bytes.decode("utf-8"))
             remote_index = LibraryIndex(**remote_data)
+            pids_to_ignore = deleted_pids or set()
             for pid, p in remote_index.papers.items():
-                if pid not in index.papers:
+                if pid not in index.papers and pid not in pids_to_ignore:
                     index.papers[pid] = p
         except HttpError as e:
             if e.resp.status != 404:
