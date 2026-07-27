@@ -821,6 +821,29 @@ class TestMainLibraryView:
 class TestMainUploadFlow:
     """Test suite for main()'s sidebar upload flow."""
 
+    def test_uploader_is_wrapped_in_expander_and_height_capped_container(
+        self, fake_st: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """Test the uploader lives inside a collapsed-by-default expander,
+        with the file list itself inside a fixed-height container so
+        selecting many files doesn't grow the sidebar unbounded."""
+        fake_st.session_state.current_lib_id = "lib_123"
+        fake_st.session_state.current_papers_id = "papers_123"
+        fake_st.session_state.root_id = "root_123"
+        fake_st.session_state.index = LibraryIndex()
+        fake_st.session_state.selected_paper = None
+        fake_st.file_uploader.return_value = None
+        mocker.patch.object(app, "st_keyup", return_value="")
+        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
+
+        app.main()
+
+        fake_st.expander.assert_any_call("📤 Upload Paper", expanded=False)
+        assert any(
+            call.kwargs.get("height") == 150
+            for call in fake_st.container.call_args_list
+        )
+
     def test_upload_button_triggers_upload_and_reruns_on_success(
         self,
         fake_st: MagicMock,

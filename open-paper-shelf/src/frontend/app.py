@@ -394,34 +394,35 @@ def main() -> None:
         if "uploader_key" not in st.session_state:
             st.session_state.uploader_key = 0
 
-        st.header("Upload Paper")
-        uploaded_files = st.file_uploader(
-            "Choose PDF files",
-            type="pdf",
-            accept_multiple_files=True,
-            key=str(st.session_state.uploader_key),
-        )
-        if uploaded_files:
-            if st.button("Upload"):
-                with st.spinner("Uploading to Google Drive..."):
-                    try:
-                        all_succeeded = upload_papers(creds, uploaded_files)
-                    finally:
-                        upload_library_index(
-                            creds,
-                            st.session_state.current_papers_id,
-                            st.session_state.index,
-                        )
-                        st.session_state.last_sync_time = None
-                    st.session_state.uploader_key += 1
-                    if all_succeeded:
-                        st.success("Uploaded successfully!")
-                        st.rerun()
-                    else:
-                        st.warning(
-                            "Some files failed to upload. See the errors above; "
-                            "re-select the failed files to retry."
-                        )
+        with st.expander("📤 Upload Paper", expanded=False):
+            with st.container(height=150):
+                uploaded_files = st.file_uploader(
+                    "Choose PDF files",
+                    type="pdf",
+                    accept_multiple_files=True,
+                    key=str(st.session_state.uploader_key),
+                )
+            if uploaded_files:
+                if st.button("Upload"):
+                    with st.spinner("Uploading to Google Drive..."):
+                        try:
+                            all_succeeded = upload_papers(creds, uploaded_files)
+                        finally:
+                            upload_library_index(
+                                creds,
+                                st.session_state.current_papers_id,
+                                st.session_state.index,
+                            )
+                            st.session_state.last_sync_time = None
+                        st.session_state.uploader_key += 1
+                        if all_succeeded:
+                            st.success("Uploaded successfully!")
+                            st.rerun()
+                        else:
+                            st.warning(
+                                "Some files failed to upload. See the errors above; "
+                                "re-select the failed files to retry."
+                            )
 
         st.header("Library Papers")
         search_box = st_keyup(
