@@ -850,6 +850,77 @@ class TestDeleteSelectedPapers:
         assert not local_paper_dir.exists()
 
 
+class TestFilterPapers:
+    """Test suite for filter_papers."""
+
+    def _papers(self) -> dict[str, PaperIndexEntry]:
+        """Builds a fixed set of index entries covering every filter axis."""
+        return {
+            "a" * 32: PaperIndexEntry(
+                title="Attention Is All You Need",
+                pdf_file_id="p1",
+                meta_file_id="m1",
+                folder_id="f1",
+                tags=["ai", "nlp"],
+                status="Read",
+            ),
+            "b" * 32: PaperIndexEntry(
+                title="Diffusion Models Beat GANs",
+                pdf_file_id="p2",
+                meta_file_id="m2",
+                folder_id="f2",
+                tags=["vision"],
+                status="Reading",
+            ),
+            "c" * 32: PaperIndexEntry(
+                title="Zebrafish Locomotion",
+                pdf_file_id="p3",
+                meta_file_id="m3",
+                folder_id="f3",
+                tags=[],
+                status="Unread",
+            ),
+            "not-a-hex-id": PaperIndexEntry(
+                title="Legacy Entry",
+                pdf_file_id="p4",
+                meta_file_id="m4",
+                folder_id="f4",
+            ),
+        }
+
+    def test_no_filters_returns_all_valid_entries_sorted_by_title(self) -> None:
+        """Test an empty search/status/tags filter returns every non-legacy
+        paper, sorted by title."""
+        result = app.filter_papers(self._papers(), "", [], [])
+        assert [pid for pid, _ in result] == ["a" * 32, "b" * 32, "c" * 32]
+
+    def test_search_query_matches_title_substring(self) -> None:
+        """Test the search query filters by a case-insensitive title match."""
+        result = app.filter_papers(self._papers(), "diffusion", [], [])
+        assert [pid for pid, _ in result] == ["b" * 32]
+
+    def test_status_filter_restricts_to_selected_statuses(self) -> None:
+        """Test selecting statuses keeps only papers with a matching status."""
+        result = app.filter_papers(self._papers(), "", ["Read", "Unread"], [])
+        assert {pid for pid, _ in result} == {"a" * 32, "c" * 32}
+
+    def test_tags_filter_matches_any_selected_tag(self) -> None:
+        """Test selecting tags keeps papers with at least one matching tag."""
+        result = app.filter_papers(self._papers(), "", [], ["nlp", "vision"])
+        assert {pid for pid, _ in result} == {"a" * 32, "b" * 32}
+
+    def test_combined_filters_are_ANDed_together(self) -> None:
+        """Test search, status, and tags filters all apply simultaneously."""
+        result = app.filter_papers(self._papers(), "attention", ["Read"], ["ai"])
+        assert [pid for pid, _ in result] == ["a" * 32]
+
+    def test_legacy_non_hex_key_is_always_skipped(self) -> None:
+        """Regression test: a malformed index key must never appear, even
+        with no filters applied."""
+        result = app.filter_papers(self._papers(), "", [], [])
+        assert "not-a-hex-id" not in [pid for pid, _ in result]
+
+
 class TestMainLibraryView:
     """Test suite for main()'s library view (sidebar entry, switch, rows)."""
 
@@ -997,6 +1068,80 @@ class TestMainLibraryView:
 
         fake_st.error.assert_called_once()
         assert "Invalid paper ID" in fake_st.error.call_args[0][0]
+
+    def test_status_filter_hides_non_matching_paper_row(
+        self, fake_st: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """Test picking a status in the filter hides papers with a
+        different status from the rendered rows."""
+        pid_read, pid_unread = "a" * 32, "b" * 32
+        fake_st.session_state.current_lib_id = "lib_123"
+        fake_st.session_state.current_papers_id = "papers_123"
+        fake_st.session_state.root_id = "root_123"
+        fake_st.session_state.index = LibraryIndex(
+            papers={
+                pid_read: PaperIndexEntry(
+                    title="Read Paper",
+                    pdf_file_id="p1",
+                    meta_file_id="m1",
+                    folder_id="f1",
+                    status="Read",
+                ),
+                pid_unread: PaperIndexEntry(
+                    title="Unread Paper",
+                    pdf_file_id="p2",
+                    meta_file_id="m2",
+                    folder_id="f2",
+                    status="Unread",
+                ),
+            }
+        )
+        fake_st.session_state.selected_paper = None
+        fake_st.file_uploader.return_value = None
+        fake_st.multiselect.side_effect = lambda label, **kw: (
+            ["Read"] if label == "Status" else []
+        )
+        mocker.patch.object(app, "st_keyup", return_value="")
+        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
+
+        app.main()
+
+        rendered_keys = {c.kwargs.get("key") for c in fake_st.button.call_args_list}
+        assert f"btn_{pid_read}" in rendered_keys
+        assert f"btn_{pid_unread}" not in rendered_keys
+
+    def test_paper_row_icon_reflects_status(
+        self, fake_st: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """Test each paper's row icon matches its status."""
+        pid = "a" * 32
+        fake_st.session_state.current_lib_id = "lib_123"
+        fake_st.session_state.current_papers_id = "papers_123"
+        fake_st.session_state.root_id = "root_123"
+        fake_st.session_state.index = LibraryIndex(
+            papers={
+                pid: PaperIndexEntry(
+                    title="Reading Paper",
+                    pdf_file_id="p1",
+                    meta_file_id="m1",
+                    folder_id="f1",
+                    status="Reading",
+                )
+            }
+        )
+        fake_st.session_state.selected_paper = None
+        fake_st.file_uploader.return_value = None
+        mocker.patch.object(app, "st_keyup", return_value="")
+        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
+
+        app.main()
+
+        row_button_call = next(
+            c
+            for c in fake_st.button.call_args_list
+            if c.kwargs.get("key") == f"btn_{pid}"
+        )
+        assert "📖" in row_button_call.args[0]
 
 
 class TestMainUploadFlow:

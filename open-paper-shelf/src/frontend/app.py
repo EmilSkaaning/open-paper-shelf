@@ -341,6 +341,43 @@ def sync_library_index(creds: Credentials) -> None:
         st.session_state.index = LibraryIndex()
 
 
+def filter_papers(
+    papers: dict[str, PaperIndexEntry],
+    search_query: str,
+    status_filter: Sequence[str],
+    tags_filter: Sequence[str],
+) -> list[tuple[str, PaperIndexEntry]]:
+    """Filters and sorts the library's papers for sidebar display.
+
+    Args:
+        papers: Mapping of paper ID to its index entry, as stored in
+            LibraryIndex.papers.
+        search_query: Lowercased search text; a paper matches if its title
+            contains this text.
+        status_filter: Statuses to restrict results to. Empty means no
+            status filtering.
+        tags_filter: Tags to restrict results to; a paper matches if it has
+            at least one of these tags. Empty means no tag filtering.
+
+    Returns:
+        list[tuple[str, PaperIndexEntry]]: Matching (paper_id, entry) pairs,
+        sorted by title. Entries whose key isn't a 32-character hex paper ID
+        (e.g. a legacy/malformed index entry) are always skipped.
+    """
+    matches: list[tuple[str, PaperIndexEntry]] = []
+    for pid, p in papers.items():
+        if not re.match(r"^[a-f0-9]{32}$", pid):
+            continue
+        if search_query not in p.title.lower():
+            continue
+        if status_filter and p.status not in status_filter:
+            continue
+        if tags_filter and not any(tag in p.tags for tag in tags_filter):
+            continue
+        matches.append((pid, p))
+    return sorted(matches, key=lambda x: x[1].title)
+
+
 def delete_selected_papers(
     creds: Credentials,
     pids: Sequence[str],
@@ -511,15 +548,23 @@ def main() -> None:
         )
         search_query = (search_box or "").lower()
 
-        icon_col, _status_col, _tags_col = st.columns([1, 2, 2])
+        icon_col, status_col, tags_col = st.columns([1, 2, 2])
 
-        filtered_papers = []
-        for pid, p in st.session_state.index.papers.items():
-            if not re.match(r"^[a-f0-9]{32}$", pid):
-                continue
-            if search_query in p.title.lower():
-                filtered_papers.append((pid, p))
-        filtered_papers = sorted(filtered_papers, key=lambda x: x[1].title)
+        with status_col:
+            status_filter = st.multiselect(
+                "Status",
+                options=["Unread", "Reading", "Read", "TODO"],
+                key="status_filter",
+            )
+        with tags_col:
+            all_tags = sorted(
+                {tag for p in st.session_state.index.papers.values() for tag in p.tags}
+            )
+            tags_filter = st.multiselect("Tags", options=all_tags, key="tags_filter")
+
+        filtered_papers = filter_papers(
+            st.session_state.index.papers, search_query, status_filter, tags_filter
+        )
 
         with icon_col:
             if st.button("🗑️", key="trash_icon", help="Delete selected papers"):
@@ -562,7 +607,7 @@ def main() -> None:
                         "Select", key=f"chk_{pid}", label_visibility="collapsed"
                     )
                 with row_button:
-                    display_name = f"📄 {p.title}"
+                    display_name = f"{STATUS_ICONS.get(p.status, '📄')} {p.title}"
                     if pid == st.session_state.selected_paper:
                         display_name = f"**{display_name}**"
                     if st.button(
