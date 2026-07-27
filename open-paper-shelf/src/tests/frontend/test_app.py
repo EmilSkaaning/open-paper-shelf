@@ -30,6 +30,21 @@ class TestFakeStColumnsFixture:
         assert three[0] is not three[1] is not three[2]
 
 
+class TestGetInitialSidebarState:
+    """Test suite for get_initial_sidebar_state."""
+
+    def test_expanded_when_library_already_open(self, fake_st: MagicMock) -> None:
+        """Test the sidebar starts expanded once a library is selected."""
+        fake_st.session_state.current_lib_id = "lib_123"
+
+        assert app.get_initial_sidebar_state() == "expanded"
+
+    def test_auto_when_no_library_selected(self, fake_st: MagicMock) -> None:
+        """Test the sidebar keeps Streamlit's default behavior before any
+        library has been opened."""
+        assert app.get_initial_sidebar_state() == "auto"
+
+
 class TestSyncLibraryIndex:
     """Test suite for sync_library_index."""
 
@@ -680,6 +695,25 @@ class TestMainLibraryView:
         app.main()
 
         mock_sync.assert_called_once()
+
+    def test_shows_library_id_caption(
+        self, fake_st: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """Test the current library's ID is displayed above Switch Library."""
+        fake_st.session_state.current_lib_id = "lib_123"
+        fake_st.session_state.current_papers_id = "papers_123"
+        fake_st.session_state.root_id = "root_123"
+        fake_st.session_state.index = LibraryIndex()
+        fake_st.session_state.selected_paper = None
+        fake_st.file_uploader.return_value = None
+        mocker.patch.object(app, "st_keyup", return_value="")
+        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
+
+        app.main()
+
+        assert any(
+            "lib_123" in str(call.args) for call in fake_st.caption.call_args_list
+        )
 
     def test_switch_lib_button_clears_library_session_state(
         self,

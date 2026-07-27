@@ -41,7 +41,33 @@ from backend.drive import (  # noqa: E402
 )
 from backend.models import LibraryIndex, PaperIndexEntry, PaperMetadata  # noqa: E402
 
-st.set_page_config(layout="wide", page_title="Open Paper Shelf")
+
+def get_initial_sidebar_state() -> Literal["auto", "expanded"]:
+    """Determines whether the sidebar should start expanded.
+
+    Returns:
+        Literal["auto", "expanded"]: "expanded" once a library is already
+        open in session state, so its controls are immediately usable
+        without an extra click; otherwise Streamlit's default "auto".
+    """
+    if st.session_state.get("current_lib_id"):
+        return "expanded"
+    return "auto"
+
+
+st.set_page_config(
+    layout="wide",
+    page_title="Open Paper Shelf",
+    initial_sidebar_state=get_initial_sidebar_state(),
+)
+
+
+STATUS_ICONS: dict[str, str] = {
+    "Unread": "📄",
+    "Reading": "📖",
+    "Read": "✅",
+    "TODO": "📌",
+}
 
 
 class OAuthCallbackParams(BaseModel):
@@ -362,6 +388,7 @@ def main() -> None:
             for k in ["current_lib_id", "current_papers_id", "index", "last_sync_time"]:
                 st.session_state.pop(k, None)
 
+        st.caption(f"📁 Library ID: {st.session_state.current_lib_id}")
         st.button("🔙 Switch Library", on_click=switch_lib, use_container_width=True)
 
         if "uploader_key" not in st.session_state:
