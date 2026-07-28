@@ -40,6 +40,13 @@ from backend.drive import (  # noqa: E402
     PAPERS_DIR,
 )
 from backend.models import LibraryIndex, PaperIndexEntry, PaperMetadata  # noqa: E402
+from backend.huggingface_client import (  # noqa: E402
+    HFTokenMissingError,
+    embed_text,
+    extract_pdf_text,
+    find_similar_papers,
+    generate_paper_metadata,
+)
 
 
 st.set_page_config(
@@ -271,6 +278,52 @@ def sync_paper_metadata(
     except Exception as e:
         st.error(f"Failed to fetch metadata: {e}")
         return had_local_copy
+
+
+def generate_metadata_for_paper(pid: str, local_pdf_path: Path) -> None:
+    """Generates a draft title/abstract/tags/embedding for a paper via Hugging Face.
+
+    Extracts text from the paper's local PDF and calls the Hugging Face
+    generation and embedding functions, staging the result (and any
+    duplicate matches found in the current library index) in
+    `st.session_state` for the metadata form to prefill. Does not write to
+    local disk, Drive, or the library index - the user must still click
+    "Save Changes" to persist the draft. Reports errors via `st.error`/
+    `st.warning` rather than raising, since this is invoked from a
+    best-effort UI action.
+
+    Args:
+        pid (str): The paper's unique ID.
+        local_pdf_path (Path): Local path to the paper's downloaded PDF.
+    """
+    pdf_text = extract_pdf_text(local_pdf_path)
+    if not pdf_text.strip():
+        st.warning(
+            "Could not extract text from this PDF (it may be scanned/"
+            "image-only); metadata generation skipped."
+        )
+        return
+
+    try:
+        generated = generate_paper_metadata(pdf_text)
+        embedding = embed_text(pdf_text)
+    except HFTokenMissingError as e:
+        st.error(str(e))
+        return
+    except Exception as e:
+        st.error(f"Metadata generation failed: {e}")
+        return
+
+    st.session_state[f"generated_{pid}"] = {
+        "title": generated.title,
+        "abstract": generated.abstract,
+        "tags": generated.tags,
+        "embedding": embedding,
+    }
+    st.session_state[f"dupes_{pid}"] = find_similar_papers(
+        embedding, st.session_state.index, exclude_pid=pid
+    )
+    st.rerun()
 
 
 def init_library_state(
@@ -741,30 +794,60 @@ def main() -> None:
                     "Could not load the latest metadata from Drive. Editing is "
                     "disabled to avoid overwriting your saved data."
                 )
+
+            if st.button(
+                "✨ Generate metadata",
+                key=f"generate_btn_{pid}",
+                disabled=not pdf_available,
+            ):
+                with st.spinner("Generating metadata with Hugging Face..."):
+                    generate_metadata_for_paper(pid, local_pdf_path)
+
+            for _, dupe_title, dupe_score in st.session_state.get(f"dupes_{pid}", []):
+                st.warning(f"Similar to '{dupe_title}' — {dupe_score:.0%} match")
+
+            draft = st.session_state.get(f"generated_{pid}", {})
             with st.form(key=f"meta_form_{pid}"):
-                new_title = st.text_input("Title", value=meta.title)
+                new_title = st.text_input(
+                    "Title", value=draft.get("title", meta.title), key=f"title_{pid}"
+                )
+                new_abstract = st.text_area(
+                    "Abstract / TL;DR",
+                    value=draft.get("abstract", meta.abstract),
+                    height=100,
+                    key=f"abstract_{pid}",
+                )
                 tags_str = st.text_input(
-                    "Tags (comma separated)", value=", ".join(meta.tags)
+                    "Tags (comma separated)",
+                    value=", ".join(draft.get("tags", meta.tags)),
+                    key=f"tags_{pid}",
                 )
                 status_label = st.selectbox(
                     "Status",
                     options=list(STATUS_LABELS.values()),
                     index=list(STATUS_LABELS.keys()).index(meta.status),
+                    key=f"status_{pid}",
                 )
                 status = LABEL_TO_STATUS.get(status_label, meta.status)
-                citation = st.text_input("Citation", value=meta.citation)
-                notes = st.text_area("Notes", value=meta.notes, height=200)
+                citation = st.text_input(
+                    "Citation", value=meta.citation, key=f"citation_{pid}"
+                )
+                notes = st.text_area(
+                    "Notes", value=meta.notes, height=200, key=f"notes_{pid}"
+                )
 
                 if st.form_submit_button(
                     "Save Changes", disabled=not metadata_available
                 ):
-                    meta.title = strip_pdf_suffix(new_title)
+                    meta.title = strip_pdf_suffix(new_title or "")
+                    meta.abstract = new_abstract or ""
                     meta.tags = [t.strip() for t in tags_str.split(",") if t.strip()]
                     meta.status = cast(
                         Literal["Unread", "Reading", "Read", "TODO"], status
                     )
                     meta.citation = citation
                     meta.notes = notes
+                    meta.embedding = draft.get("embedding", meta.embedding)
 
                     local_meta_path.write_text(
                         meta.model_dump_json(indent=2), encoding="utf-8"
@@ -781,6 +864,7 @@ def main() -> None:
                         paper_info.title = meta.title
                         paper_info.tags = meta.tags
                         paper_info.status = meta.status
+                        paper_info.embedding = meta.embedding
                         st.session_state.index.papers[pid] = paper_info
                         upload_library_index(
                             creds,
@@ -788,6 +872,8 @@ def main() -> None:
                             st.session_state.index,
                         )
 
+                    st.session_state.pop(f"generated_{pid}", None)
+                    st.session_state.pop(f"dupes_{pid}", None)
                     st.success("Metadata saved!")
                     st.rerun()
     else:

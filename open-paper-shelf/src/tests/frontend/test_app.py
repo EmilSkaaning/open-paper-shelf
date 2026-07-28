@@ -9,6 +9,7 @@ import pytest
 from pytest_mock import MockerFixture
 
 import frontend.app as app
+from backend.huggingface_client import GeneratedMetadata
 from backend.models import LibraryIndex, PaperIndexEntry
 from tests.frontend.conftest import make_uploaded_file
 
@@ -1796,3 +1797,270 @@ class TestMainMetadataView:
             "Could not load the latest metadata" in str(call.args)
             for call in fake_st.warning.call_args_list
         )
+
+    def test_generate_button_disabled_when_pdf_unavailable(
+        self, fake_st: MagicMock, mocker: MockerFixture, tmp_path: Path
+    ) -> None:
+        """Test the Generate metadata button is disabled when the PDF
+        could not be loaded, since generation needs the local PDF."""
+        pid = "1" * 32
+        self._select_paper(fake_st, mocker, tmp_path, pid)
+        mocker.patch.object(
+            app, "download_file", side_effect=RuntimeError("network blip")
+        )
+        mocker.patch.object(app, "sync_paper_metadata", return_value=True)
+        fake_st.form_submit_button.return_value = False
+
+        app.main()
+
+        generate_call = next(
+            call
+            for call in fake_st.button.call_args_list
+            if call.args and call.args[0] == "✨ Generate metadata"
+        )
+        assert generate_call.kwargs["disabled"] is True
+
+    def test_generate_button_click_stages_draft_and_reruns(
+        self,
+        fake_st: MagicMock,
+        mocker: MockerFixture,
+        tmp_path: Path,
+        stop_rerun: type[BaseException],
+    ) -> None:
+        """Test clicking Generate metadata stages a draft (and duplicate
+        matches) in session state and reruns, without touching Drive."""
+        pid = "2" * 32
+        self._select_paper(fake_st, mocker, tmp_path, pid)
+        mocker.patch.object(app, "sync_paper_metadata", return_value=True)
+        (tmp_path / pid).mkdir(parents=True, exist_ok=True)
+        (tmp_path / pid / "paper.pdf").write_bytes(b"pdf-bytes")
+        mocker.patch.object(app, "extract_pdf_text", return_value="paper text")
+        generated = GeneratedMetadata(
+            title="Gen Title", abstract="Gen Abstract", tags=["ai", "nlp"]
+        )
+        mocker.patch.object(app, "generate_paper_metadata", return_value=generated)
+        mocker.patch.object(app, "embed_text", return_value=[0.1] * 384)
+        mocker.patch.object(app, "find_similar_papers", return_value=[])
+        fake_st.button.side_effect = lambda label, **kw: label == "✨ Generate metadata"
+        fake_st.form_submit_button.return_value = False
+
+        with pytest.raises(stop_rerun):
+            app.main()
+
+        draft = fake_st.session_state[f"generated_{pid}"]
+        assert draft["title"] == "Gen Title"
+        assert draft["abstract"] == "Gen Abstract"
+        assert draft["tags"] == ["ai", "nlp"]
+        assert draft["embedding"] == [0.1] * 384
+        assert fake_st.session_state[f"dupes_{pid}"] == []
+
+    def test_generate_button_empty_pdf_text_skips_api_calls(
+        self, fake_st: MagicMock, mocker: MockerFixture, tmp_path: Path
+    ) -> None:
+        """Test that when no text can be extracted from the PDF, a warning
+        is shown and no Hugging Face calls are made."""
+        pid = "3" * 32
+        self._select_paper(fake_st, mocker, tmp_path, pid)
+        mocker.patch.object(app, "sync_paper_metadata", return_value=True)
+        (tmp_path / pid).mkdir(parents=True, exist_ok=True)
+        (tmp_path / pid / "paper.pdf").write_bytes(b"pdf-bytes")
+        mocker.patch.object(app, "extract_pdf_text", return_value="")
+        mock_generate = mocker.patch.object(app, "generate_paper_metadata")
+        mock_embed = mocker.patch.object(app, "embed_text")
+        fake_st.button.side_effect = lambda label, **kw: label == "✨ Generate metadata"
+        fake_st.form_submit_button.return_value = False
+
+        app.main()
+
+        mock_generate.assert_not_called()
+        mock_embed.assert_not_called()
+        assert any(
+            "Could not extract text" in str(call.args)
+            for call in fake_st.warning.call_args_list
+        )
+        assert f"generated_{pid}" not in fake_st.session_state
+
+    def test_generate_button_reports_hf_token_missing_error(
+        self, fake_st: MagicMock, mocker: MockerFixture, tmp_path: Path
+    ) -> None:
+        """Test a missing HF_TOKEN surfaces a specific, non-crashing error."""
+        pid = "4" * 32
+        self._select_paper(fake_st, mocker, tmp_path, pid)
+        mocker.patch.object(app, "sync_paper_metadata", return_value=True)
+        (tmp_path / pid).mkdir(parents=True, exist_ok=True)
+        (tmp_path / pid / "paper.pdf").write_bytes(b"pdf-bytes")
+        mocker.patch.object(app, "extract_pdf_text", return_value="paper text")
+        mocker.patch.object(
+            app,
+            "generate_paper_metadata",
+            side_effect=app.HFTokenMissingError("Set HF_TOKEN"),
+        )
+        fake_st.button.side_effect = lambda label, **kw: label == "✨ Generate metadata"
+        fake_st.form_submit_button.return_value = False
+
+        app.main()
+
+        assert any(
+            "Set HF_TOKEN" in str(call.args) for call in fake_st.error.call_args_list
+        )
+        assert f"generated_{pid}" not in fake_st.session_state
+
+    def test_generate_button_reports_generic_failure(
+        self, fake_st: MagicMock, mocker: MockerFixture, tmp_path: Path
+    ) -> None:
+        """Test a generic Hugging Face failure is reported without crashing."""
+        pid = "5" * 32
+        self._select_paper(fake_st, mocker, tmp_path, pid)
+        mocker.patch.object(app, "sync_paper_metadata", return_value=True)
+        (tmp_path / pid).mkdir(parents=True, exist_ok=True)
+        (tmp_path / pid / "paper.pdf").write_bytes(b"pdf-bytes")
+        mocker.patch.object(app, "extract_pdf_text", return_value="paper text")
+        mocker.patch.object(
+            app, "generate_paper_metadata", side_effect=RuntimeError("boom")
+        )
+        fake_st.button.side_effect = lambda label, **kw: label == "✨ Generate metadata"
+        fake_st.form_submit_button.return_value = False
+
+        app.main()
+
+        assert any(
+            "Metadata generation failed" in str(call.args)
+            for call in fake_st.error.call_args_list
+        )
+        assert f"generated_{pid}" not in fake_st.session_state
+
+    def test_duplicate_warning_rendered_when_dupes_present(
+        self, fake_st: MagicMock, mocker: MockerFixture, tmp_path: Path
+    ) -> None:
+        """Test staged duplicate matches render a non-blocking warning."""
+        pid = "6" * 32
+        self._select_paper(fake_st, mocker, tmp_path, pid)
+        mocker.patch.object(app, "sync_paper_metadata", return_value=True)
+        fake_st.session_state[f"dupes_{pid}"] = [("other", "Other Paper", 0.95)]
+        fake_st.form_submit_button.return_value = False
+
+        app.main()
+
+        assert any(
+            "Other Paper" in str(call.args) and "95%" in str(call.args)
+            for call in fake_st.warning.call_args_list
+        )
+
+    def test_no_duplicate_warning_when_no_dupes(
+        self, fake_st: MagicMock, mocker: MockerFixture, tmp_path: Path
+    ) -> None:
+        """Test no duplicate warning is shown when nothing was staged."""
+        pid = "7" * 32
+        self._select_paper(fake_st, mocker, tmp_path, pid)
+        mocker.patch.object(app, "sync_paper_metadata", return_value=True)
+        fake_st.form_submit_button.return_value = False
+
+        app.main()
+
+        assert not any(
+            "% match" in str(call.args) for call in fake_st.warning.call_args_list
+        )
+
+    def test_form_prefills_from_draft_when_present(
+        self, fake_st: MagicMock, mocker: MockerFixture, tmp_path: Path
+    ) -> None:
+        """Test the form fields prefill from a staged draft rather than the
+        Drive-synced meta.json, since the draft holds the latest generation."""
+        pid = "8" * 32
+        self._select_paper(fake_st, mocker, tmp_path, pid)
+        mocker.patch.object(app, "sync_paper_metadata", return_value=True)
+        fake_st.session_state[f"generated_{pid}"] = {
+            "title": "Draft Title",
+            "abstract": "Draft Abstract",
+            "tags": ["draft-tag"],
+            "embedding": [0.2] * 384,
+        }
+        fake_st.form_submit_button.return_value = False
+
+        app.main()
+
+        text_input_calls = {
+            call.args[0]: call.kwargs.get("value")
+            for call in fake_st.text_input.call_args_list
+        }
+        text_area_calls = {
+            call.args[0]: call.kwargs.get("value")
+            for call in fake_st.text_area.call_args_list
+        }
+        assert text_input_calls["Title"] == "Draft Title"
+        assert text_input_calls["Tags (comma separated)"] == "draft-tag"
+        assert text_area_calls["Abstract / TL;DR"] == "Draft Abstract"
+
+    def test_save_after_generate_persists_abstract_and_embedding_and_clears_draft(
+        self,
+        fake_st: MagicMock,
+        mocker: MockerFixture,
+        tmp_path: Path,
+        stop_rerun: type[BaseException],
+    ) -> None:
+        """Test saving after a Generate persists the drafted abstract and
+        embedding to meta.json and the index, and clears the staged draft
+        so a later plain edit isn't shadowed by a stale generation."""
+        pid = "a1" * 16
+        self._select_paper(fake_st, mocker, tmp_path, pid)
+        mocker.patch.object(app, "sync_paper_metadata", return_value=True)
+        mocker.patch.object(app, "upload_file_to_folder")
+        mocker.patch.object(app, "upload_library_index")
+        fake_st.session_state[f"generated_{pid}"] = {
+            "title": "Draft Title",
+            "abstract": "Draft Abstract",
+            "tags": ["draft-tag"],
+            "embedding": [0.3] * 384,
+        }
+
+        fake_st.text_input.side_effect = lambda label, **kw: {
+            "Title": "Draft Title",
+            "Tags (comma separated)": "draft-tag",
+        }.get(label, kw.get("value", ""))
+        fake_st.text_area.side_effect = lambda label, **kw: {
+            "Abstract / TL;DR": "Draft Abstract",
+        }.get(label, kw.get("value", ""))
+        fake_st.selectbox.return_value = "📄 Unread"
+        fake_st.form_submit_button.return_value = True
+
+        with pytest.raises(stop_rerun):
+            app.main()
+
+        local_meta_path = tmp_path / pid / "meta.json"
+        saved = json.loads(local_meta_path.read_text(encoding="utf-8"))
+        assert saved["abstract"] == "Draft Abstract"
+        assert saved["embedding"] == [0.3] * 384
+        assert fake_st.session_state.index.papers[pid].embedding == [0.3] * 384
+        assert f"generated_{pid}" not in fake_st.session_state
+        assert f"dupes_{pid}" not in fake_st.session_state
+
+    def test_save_without_generate_leaves_embedding_and_abstract_unchanged(
+        self,
+        fake_st: MagicMock,
+        mocker: MockerFixture,
+        tmp_path: Path,
+        stop_rerun: type[BaseException],
+    ) -> None:
+        """Regression test: saving without ever clicking Generate must not
+        touch abstract/embedding (no draft exists to pull from)."""
+        pid = "b2" * 16
+        self._select_paper(fake_st, mocker, tmp_path, pid)
+        mocker.patch.object(app, "sync_paper_metadata", return_value=True)
+        mocker.patch.object(app, "upload_file_to_folder")
+        mocker.patch.object(app, "upload_library_index")
+
+        fake_st.text_input.side_effect = lambda label, **kw: {
+            "Title": "A Paper",
+            "Tags (comma separated)": "",
+        }.get(label, kw.get("value", ""))
+        fake_st.text_area.return_value = ""
+        fake_st.selectbox.return_value = "📄 Unread"
+        fake_st.form_submit_button.return_value = True
+
+        with pytest.raises(stop_rerun):
+            app.main()
+
+        local_meta_path = tmp_path / pid / "meta.json"
+        saved = json.loads(local_meta_path.read_text(encoding="utf-8"))
+        assert saved["abstract"] == ""
+        assert saved["embedding"] == []
