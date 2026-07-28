@@ -515,6 +515,7 @@ def main() -> None:
                 "current_papers_id",
                 "index",
                 "last_sync_time",
+                "confirm_delete_pids",
             ]:
                 st.session_state.pop(k, None)
 
@@ -623,10 +624,6 @@ def main() -> None:
                     "Tags", options=all_tags, key="tags_filter"
                 )
 
-            filtered_papers = filter_papers(
-                st.session_state.index.papers, search_query, status_filter, tags_filter
-            )
-
             if st.session_state.get("confirm_delete_pids"):
                 pids_to_delete = st.session_state.confirm_delete_pids
                 st.warning(
@@ -650,6 +647,15 @@ def main() -> None:
                         st.session_state.confirm_delete_pids = None
                         st.rerun()
 
+            # Re-filter after the block above so a partial batch-delete
+            # failure (which skips st.rerun() to keep its error visible)
+            # never renders a now-deleted paper's row - clicking one would
+            # otherwise select a pid missing from st.session_state.index.papers
+            # and crash the main-area lookup with a KeyError.
+            filtered_papers = filter_papers(
+                st.session_state.index.papers, search_query, status_filter, tags_filter
+            )
+
             with st.container(height=400):
                 for pid, p in filtered_papers:
                     row_check, row_button = st.columns([1, 8])
@@ -665,6 +671,7 @@ def main() -> None:
                             display_name, key=f"btn_{pid}", use_container_width=True
                         ):
                             st.session_state.selected_paper = pid
+                            st.session_state.confirm_delete_pids = None
                             st.rerun()
 
     # Main area

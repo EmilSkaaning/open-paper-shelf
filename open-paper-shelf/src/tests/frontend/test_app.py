@@ -1003,6 +1003,38 @@ class TestMainLibraryView:
         assert "index" not in fake_st.session_state
         assert "last_sync_time" not in fake_st.session_state
 
+    def test_switch_lib_button_clears_confirm_delete_pids(
+        self,
+        fake_st: MagicMock,
+        mocker: MockerFixture,
+        stop_rerun: type[BaseException],
+    ) -> None:
+        """Test clicking "Switch Library" also drops a staged batch-delete
+        confirmation, so it can't bleed into the next library opened."""
+        fake_st.session_state.current_lib_id = "lib_123"
+        fake_st.session_state.current_lib_name = "ewk_b1dcfe5a"
+        fake_st.session_state.current_papers_id = "papers_123"
+        fake_st.session_state.root_id = "root_123"
+        fake_st.session_state.index = LibraryIndex()
+        fake_st.session_state.selected_paper = None
+        fake_st.session_state.confirm_delete_pids = ["a" * 32]
+        fake_st.file_uploader.return_value = None
+
+        def button_side_effect(label: str, *args: Any, **kwargs: Any) -> bool:
+            if label == "Switch Library":
+                kwargs["on_click"]()
+                raise stop_rerun
+            return False
+
+        fake_st.button.side_effect = button_side_effect
+        mocker.patch.object(app, "st_keyup", return_value="")
+        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
+
+        with pytest.raises(stop_rerun):
+            app.main()
+
+        assert "confirm_delete_pids" not in fake_st.session_state
+
     def test_selecting_paper_row_sets_selected_and_reruns(
         self,
         fake_st: MagicMock,
@@ -1040,6 +1072,36 @@ class TestMainLibraryView:
             app.main()
 
         assert fake_st.session_state.selected_paper == pid
+
+    def test_selecting_different_paper_row_clears_confirm_delete_pids(
+        self,
+        fake_st: MagicMock,
+        mocker: MockerFixture,
+        stop_rerun: type[BaseException],
+    ) -> None:
+        """Test clicking a paper's row dismisses any staged batch-delete
+        confirmation instead of letting it persist into the newly selected
+        paper's view."""
+        pid = "f" * 32
+        entry = PaperIndexEntry(
+            title="Some Paper", pdf_file_id="pdf1", meta_file_id="meta1", folder_id="f1"
+        )
+        fake_st.session_state.current_lib_id = "lib_123"
+        fake_st.session_state.current_papers_id = "papers_123"
+        fake_st.session_state.root_id = "root_123"
+        fake_st.session_state.index = LibraryIndex(papers={pid: entry})
+        fake_st.session_state.selected_paper = None
+        fake_st.session_state.confirm_delete_pids = ["a" * 32]
+        fake_st.file_uploader.return_value = None
+        fake_st.button.side_effect = lambda label, **kw: kw.get("key") == f"btn_{pid}"
+        mocker.patch.object(app, "st_keyup", return_value="")
+        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
+
+        with pytest.raises(stop_rerun):
+            app.main()
+
+        assert fake_st.session_state.selected_paper == pid
+        assert fake_st.session_state.confirm_delete_pids is None
 
     def test_invalid_selected_paper_id_shows_error_and_stops(
         self,
@@ -1452,6 +1514,68 @@ class TestMainDeleteFlow:
         )
         fake_st.rerun.assert_not_called()
         assert fake_st.session_state.confirm_delete_pids is None
+
+    def test_confirming_partial_failure_recomputes_filtered_papers(
+        self,
+        fake_st: MagicMock,
+        mocker: MockerFixture,
+        tmp_path: Path,
+    ) -> None:
+        """Regression test: a partial batch-delete failure must not leave
+        the sidebar rendering a row for a paper delete_selected_papers
+        already removed from the index. Before the fix, filtered_papers
+        was computed before the delete ran, so a stale row for the removed
+        paper stayed on screen; clicking it would set selected_paper to a
+        pid missing from index.papers and crash the main-area lookup with
+        a KeyError."""
+        deleted_pid = "a" * 32
+        kept_pid = "b" * 32
+        deleted_entry = PaperIndexEntry(
+            title="Deleted Paper",
+            pdf_file_id="pdf1",
+            meta_file_id="meta1",
+            folder_id="f1",
+        )
+        kept_entry = PaperIndexEntry(
+            title="Kept Paper", pdf_file_id="pdf2", meta_file_id="meta2", folder_id="f2"
+        )
+        index = LibraryIndex(papers={deleted_pid: deleted_entry, kept_pid: kept_entry})
+        fake_st.session_state.current_lib_id = "lib_123"
+        fake_st.session_state.current_papers_id = "papers_123"
+        fake_st.session_state.root_id = "root_123"
+        fake_st.session_state.index = index
+        fake_st.session_state.selected_paper = None
+        fake_st.session_state.local_lib_dir = tmp_path
+        fake_st.session_state.confirm_delete_pids = [deleted_pid, kept_pid]
+        fake_st.file_uploader.return_value = None
+        fake_st.button.side_effect = lambda label, **kw: (
+            kw.get("key") == "confirm_delete_btn"
+        )
+
+        def fake_delete(
+            _creds: MagicMock,
+            _pids: list[str],
+            idx: LibraryIndex,
+            _papers_id: str,
+            _local_dir: Path,
+        ) -> bool:
+            """Mimics delete_selected_papers removing one paper but
+            reporting an overall failure for the batch."""
+            idx.papers.pop(deleted_pid)
+            return False
+
+        mock_delete = mocker.patch.object(
+            app, "delete_selected_papers", side_effect=fake_delete
+        )
+        mocker.patch.object(app, "st_keyup", return_value="")
+        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
+
+        app.main()  # must not raise (no rerun on failure)
+
+        mock_delete.assert_called_once()
+        rendered_keys = {c.kwargs.get("key") for c in fake_st.button.call_args_list}
+        assert f"btn_{deleted_pid}" not in rendered_keys
+        assert f"btn_{kept_pid}" in rendered_keys
 
 
 class TestMainMetadataView:
