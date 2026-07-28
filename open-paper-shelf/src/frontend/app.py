@@ -56,6 +56,13 @@ STATUS_ICONS: dict[str, str] = {
     "TODO": "📌",
 }
 
+STATUS_LABELS: dict[str, str] = {
+    status: f"{icon} {status}" for status, icon in STATUS_ICONS.items()
+}
+LABEL_TO_STATUS: dict[str, str] = {
+    label: status for status, label in STATUS_LABELS.items()
+}
+
 
 class OAuthCallbackParams(BaseModel):
     """Validated OAuth redirect query parameters.
@@ -266,7 +273,9 @@ def sync_paper_metadata(
         return had_local_copy
 
 
-def init_library_state(creds: Credentials, lib_id: str, papers_id: str) -> None:
+def init_library_state(
+    creds: Credentials, lib_id: str, papers_id: str, lib_name: str
+) -> None:
     """Resets session state for a newly opened or newly created library.
 
     Args:
@@ -274,8 +283,11 @@ def init_library_state(creds: Credentials, lib_id: str, papers_id: str) -> None:
             kept for a consistent signature with other library-scoped calls).
         lib_id (str): The Google Drive file ID of the library folder.
         papers_id (str): The Google Drive file ID of the library's papers folder.
+        lib_name (str): The library's human-readable display name, shown in
+            the sidebar in place of the opaque Drive file ID.
     """
     st.session_state.current_lib_id = lib_id
+    st.session_state.current_lib_name = lib_name
     st.session_state.current_papers_id = papers_id
     st.session_state.local_lib_dir = PAPERS_DIR / lib_id
     st.session_state.local_lib_dir.mkdir(parents=True, exist_ok=True)
@@ -466,7 +478,9 @@ def main() -> None:
                 )
                 if st.button("Open Library"):
                     papers_id = get_papers_folder(creds, selected_lib)
-                    init_library_state(creds, selected_lib, papers_id)
+                    init_library_state(
+                        creds, selected_lib, papers_id, lib_options[selected_lib]
+                    )
                     st.rerun()
             else:
                 st.info("No existing libraries found.")
@@ -475,7 +489,12 @@ def main() -> None:
             new_lib_name = st.text_input("New Library Name")
             if st.button("Create Library") and new_lib_name:
                 lib_info = create_library(creds, root_id, new_lib_name)
-                init_library_state(creds, lib_info["lib_id"], lib_info["papers_id"])
+                init_library_state(
+                    creds,
+                    lib_info["lib_id"],
+                    lib_info["papers_id"],
+                    lib_info["lib_name"],
+                )
                 upload_library_index(creds, lib_info["papers_id"], LibraryIndex())
                 st.success(f"Library '{new_lib_name}' created!")
                 st.rerun()
@@ -490,7 +509,13 @@ def main() -> None:
 
         def switch_lib() -> None:
             """Clears the current library's session state to return to library selection."""
-            for k in ["current_lib_id", "current_papers_id", "index", "last_sync_time"]:
+            for k in [
+                "current_lib_id",
+                "current_lib_name",
+                "current_papers_id",
+                "index",
+                "last_sync_time",
+            ]:
                 st.session_state.pop(k, None)
 
         # Expander headers have no built-in alignment option, so center
@@ -501,13 +526,16 @@ def main() -> None:
             unsafe_allow_html=True,
         )
 
-        st.caption(f"📁 Library ID: {st.session_state.current_lib_id}")
-        st.button("🔙 Switch Library", on_click=switch_lib, use_container_width=True)
+        lib_name = st.session_state.get(
+            "current_lib_name", st.session_state.current_lib_id
+        )
+        st.caption(f"📁 Library: {lib_name}")
+        st.button("Switch Library", on_click=switch_lib, use_container_width=True)
 
         if "uploader_key" not in st.session_state:
             st.session_state.uploader_key = 0
 
-        with st.expander("📤 Upload Paper", expanded=False):
+        with st.expander("Upload Paper(s)", expanded=False):
             with st.container(height=150):
                 uploaded_files = st.file_uploader(
                     "Choose PDF files",
@@ -566,11 +594,14 @@ def main() -> None:
             status_col, tags_col = st.columns([1, 1])
 
             with status_col:
-                status_filter = st.multiselect(
+                status_filter_labels = st.multiselect(
                     "Status",
-                    options=["Unread", "Reading", "Read", "TODO"],
+                    options=list(STATUS_LABELS.values()),
                     key="status_filter",
                 )
+                status_filter = [
+                    LABEL_TO_STATUS[label] for label in status_filter_labels
+                ]
             with tags_col:
                 all_tags = sorted(
                     {
@@ -708,11 +739,12 @@ def main() -> None:
                 tags_str = st.text_input(
                     "Tags (comma separated)", value=", ".join(meta.tags)
                 )
-                status = st.selectbox(
+                status_label = st.selectbox(
                     "Status",
-                    options=["Unread", "Reading", "Read", "TODO"],
-                    index=["Unread", "Reading", "Read", "TODO"].index(meta.status),
+                    options=list(STATUS_LABELS.values()),
+                    index=list(STATUS_LABELS.keys()).index(meta.status),
                 )
+                status = LABEL_TO_STATUS.get(status_label, meta.status)
                 citation = st.text_input("Citation", value=meta.citation)
                 notes = st.text_area("Notes", value=meta.notes, height=200)
 

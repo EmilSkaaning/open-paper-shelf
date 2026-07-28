@@ -603,9 +603,10 @@ class TestInitLibraryState:
         """Test session state is reset and the library's local dir is created."""
         mocker.patch.object(app, "PAPERS_DIR", tmp_path)
 
-        app.init_library_state(MagicMock(), "lib_123", "papers_123")
+        app.init_library_state(MagicMock(), "lib_123", "papers_123", "My Lib")
 
         assert fake_st.session_state.current_lib_id == "lib_123"
+        assert fake_st.session_state.current_lib_name == "My Lib"
         assert fake_st.session_state.current_papers_id == "papers_123"
         assert fake_st.session_state.local_lib_dir == tmp_path / "lib_123"
         assert fake_st.session_state.local_lib_dir.exists()
@@ -639,7 +640,7 @@ class TestMainLibrarySelection:
         with pytest.raises(stop_rerun):
             app.main()
 
-        mock_init.assert_called_once_with(mocker.ANY, "lib1", "papers_1")
+        mock_init.assert_called_once_with(mocker.ANY, "lib1", "papers_1", "Lib One")
 
     def test_creates_new_library(
         self,
@@ -656,7 +657,11 @@ class TestMainLibrarySelection:
         mocker.patch.object(
             app,
             "create_library",
-            return_value={"lib_id": "new_lib", "papers_id": "new_papers"},
+            return_value={
+                "lib_id": "new_lib",
+                "papers_id": "new_papers",
+                "lib_name": "My New Lib",
+            },
         )
         mock_init = mocker.patch.object(app, "init_library_state")
         mock_upload_index = mocker.patch.object(app, "upload_library_index")
@@ -664,7 +669,9 @@ class TestMainLibrarySelection:
         with pytest.raises(stop_rerun):
             app.main()
 
-        mock_init.assert_called_once_with(mocker.ANY, "new_lib", "new_papers")
+        mock_init.assert_called_once_with(
+            mocker.ANY, "new_lib", "new_papers", "My New Lib"
+        )
         mock_upload_index.assert_called_once_with(
             mocker.ANY, "new_papers", LibraryIndex()
         )
@@ -933,11 +940,13 @@ class TestMainLibraryView:
 
         mock_sync.assert_called_once()
 
-    def test_shows_library_id_caption(
+    def test_shows_library_name_caption(
         self, fake_st: MagicMock, mocker: MockerFixture
     ) -> None:
-        """Test the current library's ID is displayed above Switch Library."""
+        """Test the current library's friendly name is displayed above
+        Switch Library, not the opaque Drive file ID."""
         fake_st.session_state.current_lib_id = "lib_123"
+        fake_st.session_state.current_lib_name = "ewk_b1dcfe5a"
         fake_st.session_state.current_papers_id = "papers_123"
         fake_st.session_state.root_id = "root_123"
         fake_st.session_state.index = LibraryIndex()
@@ -949,7 +958,7 @@ class TestMainLibraryView:
         app.main()
 
         assert any(
-            "lib_123" in str(call.args) for call in fake_st.caption.call_args_list
+            "ewk_b1dcfe5a" in str(call.args) for call in fake_st.caption.call_args_list
         )
 
     def test_switch_lib_button_clears_library_session_state(
@@ -967,6 +976,7 @@ class TestMainLibraryView:
         stop_rerun right after invoking the callback.
         """
         fake_st.session_state.current_lib_id = "lib_123"
+        fake_st.session_state.current_lib_name = "ewk_b1dcfe5a"
         fake_st.session_state.current_papers_id = "papers_123"
         fake_st.session_state.root_id = "root_123"
         fake_st.session_state.index = LibraryIndex()
@@ -975,7 +985,7 @@ class TestMainLibraryView:
         fake_st.file_uploader.return_value = None
 
         def button_side_effect(label: str, *args: Any, **kwargs: Any) -> bool:
-            if label == "🔙 Switch Library":
+            if label == "Switch Library":
                 kwargs["on_click"]()
                 raise stop_rerun
             return False
@@ -988,6 +998,7 @@ class TestMainLibraryView:
             app.main()
 
         assert "current_lib_id" not in fake_st.session_state
+        assert "current_lib_name" not in fake_st.session_state
         assert "current_papers_id" not in fake_st.session_state
         assert "index" not in fake_st.session_state
         assert "last_sync_time" not in fake_st.session_state
@@ -1084,7 +1095,7 @@ class TestMainLibraryView:
         fake_st.session_state.selected_paper = None
         fake_st.file_uploader.return_value = None
         fake_st.multiselect.side_effect = lambda label, **kw: (
-            ["Read"] if label == "Status" else []
+            ["✅ Read"] if label == "Status" else []
         )
         mocker.patch.object(app, "st_keyup", return_value="")
         mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
@@ -1185,7 +1196,7 @@ class TestMainUploadFlow:
 
         app.main()
 
-        fake_st.expander.assert_any_call("📤 Upload Paper", expanded=False)
+        fake_st.expander.assert_any_call("Upload Paper(s)", expanded=False)
         fake_st.expander.assert_any_call("Library Papers", expanded=True)
         assert any(
             call.kwargs.get("height") == 150
@@ -1546,7 +1557,7 @@ class TestMainMetadataView:
             "Tags (comma separated)": "tag1, tag2",
             "Citation": "Cite X",
         }.get(label, kw.get("value", ""))
-        fake_st.selectbox.return_value = "Read"
+        fake_st.selectbox.return_value = "✅ Read"
         fake_st.text_area.return_value = "Some notes"
         fake_st.form_submit_button.return_value = True
 
@@ -1584,7 +1595,7 @@ class TestMainMetadataView:
             "Title": "A Paper",
             "Tags (comma separated)": "urgent",
         }.get(label, kw.get("value", ""))
-        fake_st.selectbox.return_value = "Reading"
+        fake_st.selectbox.return_value = "📖 Reading"
         fake_st.text_area.return_value = ""
         fake_st.form_submit_button.return_value = True
 
@@ -1613,7 +1624,7 @@ class TestMainMetadataView:
         fake_st.text_input.side_effect = lambda label, **kw: {
             "Title": "Renamed Paper.pdf",
         }.get(label, kw.get("value", ""))
-        fake_st.selectbox.return_value = "Unread"
+        fake_st.selectbox.return_value = "📄 Unread"
         fake_st.text_area.return_value = ""
         fake_st.form_submit_button.return_value = True
 
