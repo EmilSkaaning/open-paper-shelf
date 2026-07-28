@@ -14,6 +14,7 @@ from backend.huggingface_client import (
     HFTokenMissingError,
     _build_prompt_messages,
     _call_with_retry,
+    _clean_extracted_text,
     cosine_similarity,
     embed_text,
     extract_pdf_text,
@@ -105,6 +106,69 @@ class TestExtractPdfText:
         )
         with pytest.raises(ValueError, match="Could not read PDF"):
             extract_pdf_text(pdf_path)
+
+    def test_cleans_before_truncating(
+        self, mocker: MockerFixture, tmp_path: Path
+    ) -> None:
+        """Test cleanup runs before max_chars truncation, so noise removed
+        by cleaning doesn't eat into the content budget."""
+        pdf_path = tmp_path / "paper.pdf"
+        pdf_path.write_bytes(b"%PDF-1.4 fake")
+        page = MagicMock()
+        page.extract_text.return_value = "infor-\nmation   here" + " " * 20 + "tail"
+        mocker.patch(
+            "backend.huggingface_client.PdfReader",
+            return_value=MagicMock(pages=[page]),
+        )
+        result = extract_pdf_text(pdf_path, max_chars=100)
+        assert result == "information here tail"
+
+
+class TestCleanExtractedText:
+    """Test suite for _clean_extracted_text."""
+
+    def test_rejoins_hyphenated_line_wraps(self) -> None:
+        """Test a word split across a line-wrap hyphen is rejoined."""
+        assert _clean_extracted_text("infor-\nmation") == "information"
+
+    def test_does_not_join_a_real_trailing_hyphen(self) -> None:
+        """Test a hyphen followed by whitespace/punctuation is left alone."""
+        assert _clean_extracted_text("well-\n\nknown") == "well-\n\nknown"
+
+    def test_strips_references_section(self) -> None:
+        """Test a References section heading and everything after it is
+        removed, while earlier body text survives."""
+        body = "Introduction text. " * 30
+        text = f"{body}\nReferences\n[1] Some citation.\n[2] Another one."
+        result = _clean_extracted_text(text)
+        assert "Introduction text." in result
+        assert "References" not in result
+        assert "Some citation" not in result
+
+    def test_strips_bibliography_section_case_insensitively(self) -> None:
+        """Test a Bibliography heading is matched regardless of case."""
+        body = "Body content. " * 40
+        text = f"{body}\nBIBLIOGRAPHY\n[1] Citation."
+        result = _clean_extracted_text(text)
+        assert "Body content." in result
+        assert "Citation" not in result
+
+    def test_does_not_strip_references_mentioned_early_in_body(self) -> None:
+        """Test the word 'references' near the very start of the text
+        (e.g. in an abstract) doesn't trigger a false-positive truncation."""
+        text = "This paper cross-references prior work.\nMore content follows."
+        result = _clean_extracted_text(text)
+        assert "More content follows" in result
+
+    def test_collapses_excess_whitespace(self) -> None:
+        """Test runs of spaces/tabs and blank lines are collapsed."""
+        text = "Para one.\n\n\n\n\nPara   two.\t\tend."
+        result = _clean_extracted_text(text)
+        assert result == "Para one.\n\nPara two. end."
+
+    def test_strips_leading_and_trailing_whitespace(self) -> None:
+        """Test the cleaned result has no leading/trailing whitespace."""
+        assert _clean_extracted_text("  \n padded text \n  ") == "padded text"
 
 
 class TestGetInferenceClient:

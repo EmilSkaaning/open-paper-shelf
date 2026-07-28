@@ -1,6 +1,7 @@
 """Hugging Face Inference Providers client for on-demand paper metadata generation."""
 
 import os
+import re
 import time
 from pathlib import Path
 from typing import Callable, List, Literal, Optional, Sequence, TypeVar
@@ -45,6 +46,30 @@ class GeneratedMetadata(BaseModel):
     tags: List[str] = Field(default_factory=list)
 
 
+def _clean_extracted_text(text: str) -> str:
+    """Removes common PDF-extraction noise before it's sent to the model.
+
+    Rejoins hyphenated line-wraps, drops any trailing References/
+    Bibliography section (rarely useful for title/abstract/tag generation
+    and often the single largest consumer of the truncation budget), and
+    collapses excess whitespace - all to reclaim more of `max_chars` for
+    actual paper content instead of layout artifacts.
+
+    Args:
+        text: Raw text joined from a PDF's pages.
+
+    Returns:
+        The cleaned text, stripped of leading/trailing whitespace.
+    """
+    text = re.sub(r"-\n(?=\w)", "", text)
+    match = re.search(r"\n\s*(references|bibliography)\s*\n", text[500:], re.IGNORECASE)
+    if match:
+        text = text[: 500 + match.start()]
+    text = re.sub(r"[ \t]{2,}", " ", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
 def extract_pdf_text(pdf_path: Path, max_chars: int = MAX_EXTRACTED_CHARS) -> str:
     """Extracts text from a PDF file for use as model input.
 
@@ -54,7 +79,8 @@ def extract_pdf_text(pdf_path: Path, max_chars: int = MAX_EXTRACTED_CHARS) -> st
             excess so requests stay within model context limits.
 
     Returns:
-        The concatenated text of every page, truncated to `max_chars`.
+        The concatenated text of every page, cleaned of common extraction
+        noise (see `_clean_extracted_text`) and truncated to `max_chars`.
         Returns an empty string if the PDF has no extractable text (e.g. a
         scanned/image-only document) rather than raising.
 
@@ -66,7 +92,7 @@ def extract_pdf_text(pdf_path: Path, max_chars: int = MAX_EXTRACTED_CHARS) -> st
         text = "\n".join(page.extract_text() or "" for page in reader.pages)
     except Exception as e:
         raise ValueError(f"Could not read PDF: {e}") from e
-    return text[:max_chars]
+    return _clean_extracted_text(text)[:max_chars]
 
 
 def get_inference_client(token: Optional[str] = None) -> InferenceClient:
