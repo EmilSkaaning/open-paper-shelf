@@ -1,5 +1,6 @@
 """Unit tests for backend.huggingface_client."""
 
+import json
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -12,9 +13,10 @@ import backend.huggingface_client as huggingface_client
 from backend.huggingface_client import (
     EMBEDDING_DIM,
     HFTokenMissingError,
-    _build_prompt_messages,
+    _build_combined_prompt_messages,
     _call_with_retry,
     _clean_extracted_text,
+    _extract_json_object,
     cosine_similarity,
     embed_text,
     extract_pdf_text,
@@ -234,85 +236,131 @@ class TestCallWithRetry:
         sleep_fn.assert_not_called()
 
 
-class TestBuildPromptMessages:
-    """Test suite for _build_prompt_messages."""
+class TestBuildCombinedPromptMessages:
+    """Test suite for _build_combined_prompt_messages."""
 
-    @pytest.mark.parametrize("kind", ["title", "abstract", "tags"])
-    def test_builds_system_and_user_messages(self, kind: str) -> None:
-        """Test each kind produces a system+user message pair with the text."""
-        messages = _build_prompt_messages(kind, "paper body text")  # type: ignore[arg-type]
+    def test_builds_system_and_user_messages(self) -> None:
+        """Test a system+user message pair is produced with the paper text."""
+        messages = _build_combined_prompt_messages("paper body text")
         assert [m["role"] for m in messages] == ["system", "user"]
         assert messages[1]["content"] == "paper body text"
         assert messages[0]["content"]
 
-    def test_tags_prompt_lists_existing_tags_when_given(self) -> None:
-        """Test the tags instruction names existing tags to bias reuse."""
-        messages = _build_prompt_messages(
-            "tags", "paper body text", existing_tags=["nlp", "vision"]
+    def test_instruction_asks_for_title_abstract_tags_json(self) -> None:
+        """Test the instruction names all three JSON keys to produce."""
+        messages = _build_combined_prompt_messages("paper body text")
+        content = messages[0]["content"]
+        assert '"title"' in content
+        assert '"abstract"' in content
+        assert '"tags"' in content
+
+    def test_lists_existing_tags_when_given(self) -> None:
+        """Test the instruction names existing tags to bias reuse."""
+        messages = _build_combined_prompt_messages(
+            "paper body text", existing_tags=["nlp", "vision"]
         )
         assert "nlp, vision" in messages[0]["content"]
 
-    def test_tags_prompt_omits_existing_tags_when_empty(self) -> None:
+    def test_omits_existing_tags_clause_when_empty(self) -> None:
         """Test no existing-tags clause is added when none are given."""
-        messages = _build_prompt_messages("tags", "paper body text")
+        messages = _build_combined_prompt_messages("paper body text")
         assert "Prefer reusing" not in messages[0]["content"]
 
-    @pytest.mark.parametrize("kind", ["title", "abstract"])
-    def test_existing_tags_ignored_for_non_tags_kinds(self, kind: str) -> None:
-        """Test existing_tags only affects the tags instruction."""
-        messages = _build_prompt_messages(
-            kind,  # type: ignore[arg-type]
-            "paper body text",
-            existing_tags=["nlp", "vision"],
-        )
-        assert "nlp, vision" not in messages[0]["content"]
+
+class TestExtractJsonObject:
+    """Test suite for _extract_json_object."""
+
+    def test_returns_plain_json_unchanged(self) -> None:
+        """Test a bare JSON object is returned as-is."""
+        assert _extract_json_object('{"title": "T"}') == '{"title": "T"}'
+
+    def test_strips_json_code_fence(self) -> None:
+        """Test a ```json fenced object has the fence stripped."""
+        content = '```json\n{"title": "T"}\n```'
+        assert _extract_json_object(content) == '{"title": "T"}'
+
+    def test_strips_plain_code_fence(self) -> None:
+        """Test a fence with no language tag is also stripped."""
+        content = '```\n{"title": "T"}\n```'
+        assert _extract_json_object(content) == '{"title": "T"}'
+
+    def test_narrows_to_braces_despite_stray_preamble(self) -> None:
+        """Test text before/after the JSON object is discarded."""
+        content = 'Sure, here you go:\n{"title": "T"}\nHope that helps!'
+        assert _extract_json_object(content) == '{"title": "T"}'
+
+    def test_returns_stripped_input_when_no_braces_found(self) -> None:
+        """Test non-JSON input is returned stripped, not raising here."""
+        assert _extract_json_object("  not json at all  ") == "not json at all"
 
 
 class TestGeneratePaperMetadata:
     """Test suite for generate_paper_metadata."""
 
-    def test_returns_generated_metadata_from_three_chat_calls(self) -> None:
-        """Test title/abstract/tags are each sourced from their own call."""
+    def test_returns_generated_metadata_from_single_json_call(self) -> None:
+        """Test title/abstract/tags are all sourced from one JSON response."""
         client = MagicMock()
-        client.chat_completion.side_effect = [
-            _make_chat_response("Attention Is All You Need"),
-            _make_chat_response("Introduces the Transformer architecture."),
-            _make_chat_response("nlp, transformers, attention"),
-        ]
+        client.chat_completion.return_value = _make_chat_response(
+            '{"title": "Attention Is All You Need", '
+            '"abstract": "Introduces the Transformer architecture.", '
+            '"tags": ["nlp", "transformers", "attention"]}'
+        )
         result = generate_paper_metadata(
             "paper text", client=client, sleep_fn=MagicMock()
         )
         assert result.title == "Attention Is All You Need"
         assert result.abstract == "Introduces the Transformer architecture."
         assert result.tags == ["nlp", "transformers", "attention"]
-        assert client.chat_completion.call_count == 3
+        assert client.chat_completion.call_count == 1
 
-    def test_parses_comma_separated_tags_deduped_and_capped(self) -> None:
+    def test_calls_with_temperature_zero(self) -> None:
+        """Test the chat call is made with temperature=0 for determinism."""
+        client = MagicMock()
+        client.chat_completion.return_value = _make_chat_response(
+            '{"title": "T", "abstract": "A", "tags": []}'
+        )
+        generate_paper_metadata("paper text", client=client, sleep_fn=MagicMock())
+        assert client.chat_completion.call_args.kwargs["temperature"] == 0
+
+    def test_parses_json_array_tags_deduped_and_capped(self) -> None:
         """Test tags are stripped, deduped case-insensitively, and capped at 8."""
         client = MagicMock()
-        many_tags = ", ".join([f"tag{i}" for i in range(10)] + ["Tag0", " tag1 "])
-        client.chat_completion.side_effect = [
-            _make_chat_response("Title"),
-            _make_chat_response("Abstract"),
-            _make_chat_response(many_tags),
-        ]
+        many_tags = [f"tag{i}" for i in range(10)] + ["Tag0", " tag1 "]
+        client.chat_completion.return_value = _make_chat_response(
+            json.dumps({"title": "Title", "abstract": "Abstract", "tags": many_tags})
+        )
         result = generate_paper_metadata(
             "paper text", client=client, sleep_fn=MagicMock()
         )
         assert result.tags == [f"tag{i}" for i in range(8)]
 
-    def test_passes_existing_tags_through_to_build_prompt_messages(
+    def test_tolerates_non_list_tags_field(self) -> None:
+        """Test a malformed (non-list) tags field is treated as empty."""
+        client = MagicMock()
+        client.chat_completion.return_value = _make_chat_response(
+            '{"title": "T", "abstract": "A", "tags": "not a list"}'
+        )
+        result = generate_paper_metadata(
+            "paper text", client=client, sleep_fn=MagicMock()
+        )
+        assert result.tags == []
+
+    def test_raises_value_error_on_malformed_json(self) -> None:
+        """Test a non-JSON response raises ValueError with the content."""
+        client = MagicMock()
+        client.chat_completion.return_value = _make_chat_response("not json at all")
+        with pytest.raises(ValueError, match="non-JSON response"):
+            generate_paper_metadata("paper text", client=client, sleep_fn=MagicMock())
+
+    def test_passes_existing_tags_through_to_build_combined_prompt_messages(
         self, mocker: MockerFixture
     ) -> None:
-        """Test existing_tags reaches _build_prompt_messages for every
-        subtask call (it's simply ignored there for non-tags kinds)."""
+        """Test existing_tags reaches the prompt builder for the single call."""
         client = MagicMock()
-        client.chat_completion.side_effect = [
-            _make_chat_response("Title"),
-            _make_chat_response("Abstract"),
-            _make_chat_response("nlp"),
-        ]
-        build_spy = mocker.spy(huggingface_client, "_build_prompt_messages")
+        client.chat_completion.return_value = _make_chat_response(
+            '{"title": "T", "abstract": "A", "tags": ["nlp"]}'
+        )
+        build_spy = mocker.spy(huggingface_client, "_build_combined_prompt_messages")
 
         generate_paper_metadata(
             "paper text",
@@ -321,8 +369,7 @@ class TestGeneratePaperMetadata:
             existing_tags=["nlp", "vision"],
         )
 
-        existing_tags_per_call = [c.args[2] for c in build_spy.call_args_list]
-        assert existing_tags_per_call == [["nlp", "vision"]] * 3
+        assert build_spy.call_args.args[1] == ["nlp", "vision"]
 
     def test_propagates_hf_token_missing_error(self, mocker: MockerFixture) -> None:
         """Test the error from get_inference_client() propagates when no client given."""

@@ -1,10 +1,11 @@
 """Hugging Face Inference Providers client for on-demand paper metadata generation."""
 
+import json
 import os
 import re
 import time
 from pathlib import Path
-from typing import Callable, List, Literal, Optional, Sequence, TypeVar
+from typing import Callable, List, Optional, Sequence, TypeVar
 
 from huggingface_hub import InferenceClient
 from huggingface_hub.errors import HfHubHTTPError
@@ -156,52 +157,70 @@ def _call_with_retry(
     raise last_error
 
 
-def _build_prompt_messages(
-    kind: Literal["title", "abstract", "tags"],
+def _build_combined_prompt_messages(
     pdf_text: str,
     existing_tags: Sequence[str] = (),
 ) -> List[dict]:
-    """Builds the chat messages for one metadata-generation subtask.
+    """Builds the chat messages for the single metadata-generation call.
+
+    Asks the model to produce the title, abstract, and tags together as one
+    JSON object, instead of one call per field, to cut the number of
+    Hugging Face requests per paper.
 
     Args:
-        kind: Which field to generate.
         pdf_text: Extracted paper text to generate from.
-        existing_tags: Tags already used elsewhere in the library. Only
-            consulted when `kind` is "tags", to bias generation toward
-            reusing them instead of inventing near-duplicate new tags.
+        existing_tags: Tags already used elsewhere in the library, to bias
+            generation toward reusing them instead of inventing
+            near-duplicate new tags.
 
     Returns:
         A list of `{"role": ..., "content": ...}` messages suitable for
         `InferenceClient.chat_completion`.
     """
-    tags_instruction = (
-        "You are a scientific paper assistant. Respond with only a "
-        "comma-separated list of up to 8 short topical tags for the "
-        "paper below - no preamble, no numbering."
+    instruction = (
+        "You are a scientific paper assistant. Read the paper text below "
+        "and respond with ONLY a single JSON object - no markdown code "
+        "fences, no preamble, no commentary - with exactly these keys: "
+        '"title" (a short, accurate title, no quotes), "abstract" (a '
+        'concise 2-4 sentence summary/TL;DR), and "tags" (an array of up '
+        "to 8 short topical tag strings)."
     )
-    if kind == "tags" and existing_tags:
-        tags_instruction += (
+    if existing_tags:
+        instruction += (
             " Prefer reusing tags from this existing set when they fit: "
             + ", ".join(existing_tags)
             + ". Only introduce a new tag if none of these apply."
         )
-    instructions = {
-        "title": (
-            "You are a scientific paper assistant. Respond with only a "
-            "short, accurate title for the paper below - no quotes, no "
-            "preamble, no extra commentary."
-        ),
-        "abstract": (
-            "You are a scientific paper assistant. Write a concise "
-            "abstract/TL;DR (2-4 sentences) summarizing the paper below. "
-            "Respond with only the summary - no preamble."
-        ),
-        "tags": tags_instruction,
-    }
     return [
-        {"role": "system", "content": instructions[kind]},
+        {"role": "system", "content": instruction},
         {"role": "user", "content": pdf_text},
     ]
+
+
+def _extract_json_object(content: str) -> str:
+    """Isolates a JSON object from a chat model's raw response text.
+
+    Strips a ```` ```json ... ``` ```` code fence if present, then narrows
+    to the substring between the first `{` and the last `}` - some models
+    add stray preamble/postamble around the JSON despite instructions not
+    to.
+
+    Args:
+        content: The raw response content.
+
+    Returns:
+        The best-guess JSON substring, or the stripped input unchanged if
+        no `{`/`}` pair is found (so the caller's `json.loads` raises a
+        clear error instead of silently misbehaving).
+    """
+    stripped = content.strip()
+    fence_match = re.match(r"^```(?:json)?\s*(.*?)\s*```$", stripped, re.DOTALL)
+    if fence_match:
+        stripped = fence_match.group(1)
+    start, end = stripped.find("{"), stripped.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        return stripped[start : end + 1]
+    return stripped
 
 
 def generate_paper_metadata(
@@ -228,28 +247,36 @@ def generate_paper_metadata(
 
     Raises:
         HFTokenMissingError: If no client is given and no HF token is set.
+        ValueError: If the model's response is not valid JSON.
         Exception: Propagates any Hugging Face API error surviving retries.
     """
     active_client = client or get_inference_client()
+    response = _call_with_retry(
+        lambda: active_client.chat_completion(
+            model=model,
+            messages=_build_combined_prompt_messages(pdf_text, existing_tags),
+            temperature=0,
+        ),
+        sleep_fn=sleep_fn,
+    )
+    content = (response.choices[0].message.content or "").strip()
+    try:
+        payload = json.loads(_extract_json_object(content))
+    except json.JSONDecodeError as e:
+        raise ValueError(
+            f"Hugging Face returned a non-JSON response: {content!r}"
+        ) from e
 
-    def call(kind: Literal["title", "abstract", "tags"]) -> str:
-        response = _call_with_retry(
-            lambda: active_client.chat_completion(
-                model=model,
-                messages=_build_prompt_messages(kind, pdf_text, existing_tags),
-            ),
-            sleep_fn=sleep_fn,
-        )
-        return (response.choices[0].message.content or "").strip()
-
-    title = call("title")
-    abstract = call("abstract")
-    tags_raw = call("tags")
+    title = str(payload.get("title", "")).strip()
+    abstract = str(payload.get("abstract", "")).strip()
+    raw_tags = payload.get("tags", [])
+    if not isinstance(raw_tags, list):
+        raw_tags = []
 
     seen: set[str] = set()
     tags: List[str] = []
-    for tag in tags_raw.split(","):
-        stripped = tag.strip()
+    for tag in raw_tags:
+        stripped = str(tag).strip()
         if stripped and stripped.lower() not in seen:
             seen.add(stripped.lower())
             tags.append(stripped)
