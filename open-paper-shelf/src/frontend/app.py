@@ -3,13 +3,15 @@ import json
 import re
 import shutil
 import tempfile
+import time
 import urllib.parse
 import uuid
 from pathlib import Path
-from typing import Optional, Sequence, cast, Literal
+from typing import Callable, Optional, Sequence, cast, Literal
 
 import streamlit as st
 from google.oauth2.credentials import Credentials
+from huggingface_hub.errors import HfHubHTTPError
 from pydantic import BaseModel, Field, ValidationError
 from streamlit.runtime.uploaded_file_manager import UploadedFile
 import os
@@ -61,6 +63,8 @@ GENERATE_METADATA_HELP = (
     f"Generates a title, abstract, and tags with {DEFAULT_GENERATION_MODEL}, "
     f"and a similarity-detection embedding with {DEFAULT_EMBEDDING_MODEL}."
 )
+
+BULK_GENERATE_DELAY_SECONDS: float = 1.5
 
 
 STATUS_ICONS: dict[str, str] = {
@@ -307,6 +311,14 @@ def generate_metadata_for_paper(pid: str, local_pdf_path: Path) -> bool:
     Returns:
         bool: True if a draft was staged, False if generation was skipped or
         failed (in which case an error/warning has already been shown).
+
+    Sets:
+        `st.session_state["hf_quota_exceeded"]`: True if this call failed
+        because Hugging Face returned 402 Payment Required (monthly
+        included credits used up), False otherwise. Callers that generate
+        for multiple papers in a loop should check this after each call and
+        stop the batch rather than retrying more calls doomed to fail the
+        same way.
     """
     pdf_text = extract_pdf_text(local_pdf_path)
     if not pdf_text.strip():
@@ -316,12 +328,24 @@ def generate_metadata_for_paper(pid: str, local_pdf_path: Path) -> bool:
         )
         return False
 
+    st.session_state["hf_quota_exceeded"] = False
     try:
         existing_tags = get_all_tags(st.session_state.index)
         generated = generate_paper_metadata(pdf_text, existing_tags=existing_tags)
         embedding = embed_text(pdf_text)
     except HFTokenMissingError as e:
         st.error(str(e))
+        return False
+    except HfHubHTTPError as e:
+        if getattr(e.response, "status_code", None) == 402:
+            st.session_state["hf_quota_exceeded"] = True
+            st.error(
+                "Hugging Face returned 402 Payment Required — your monthly "
+                "included credits are used up. Purchase pre-paid credits or "
+                "upgrade to PRO, then try again."
+            )
+        else:
+            st.error(f"Metadata generation failed: {e}")
         return False
     except Exception as e:
         st.error(f"Metadata generation failed: {e}")
@@ -351,13 +375,18 @@ def generate_metadata_for_selected(
     pids: Sequence[str],
     index: LibraryIndex,
     local_lib_dir: Path,
+    sleep_fn: Callable[[float], None] = time.sleep,
 ) -> None:
     """Generates draft metadata for multiple papers, downloading PDFs as needed.
 
     Shows a progress bar across the batch. Each paper's local PDF is
     downloaded first if it isn't already cached (e.g. because the paper was
     never opened), mirroring the single-paper view's lazy download. A
-    per-paper failure is reported and the batch continues with the rest.
+    per-paper failure is reported and the batch continues with the rest, a
+    small delay is inserted between papers to avoid bursting Hugging Face's
+    inference API, and the batch stops immediately (rather than continuing
+    to burn through guaranteed failures) if a paper fails with a 402 Payment
+    Required quota error.
 
     Args:
         creds (Credentials): The Google OAuth credentials.
@@ -366,6 +395,8 @@ def generate_metadata_for_selected(
             each paper's Drive file IDs.
         local_lib_dir (Path): The local cache directory for the current
             library.
+        sleep_fn (Callable[[float], None]): Called between papers to pace
+            requests. Injected so tests never sleep for real.
     """
     total = len(pids)
     progress = st.progress(0.0, text=f"Generating metadata (0/{total})...")
@@ -386,9 +417,18 @@ def generate_metadata_for_selected(
                 )
                 continue
         generate_metadata_for_paper(pid, local_pdf_path)
+        if st.session_state.get("hf_quota_exceeded"):
+            st.warning(
+                f"Stopped after {i + 1}/{total} paper(s): Hugging Face "
+                "credits are exhausted for now. Wait a bit, or generate one "
+                "paper at a time."
+            )
+            break
         progress.progress(
             (i + 1) / total, text=f"Generating metadata ({i + 1}/{total})..."
         )
+        if i + 1 < total:
+            sleep_fn(BULK_GENERATE_DELAY_SECONDS)
     progress.empty()
 
 

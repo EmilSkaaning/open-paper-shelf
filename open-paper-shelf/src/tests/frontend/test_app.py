@@ -5,13 +5,23 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
 
+import httpx
 import pytest
+from huggingface_hub.errors import HfHubHTTPError
 from pytest_mock import MockerFixture
 
 import frontend.app as app
 from backend.huggingface_client import GeneratedMetadata
 from backend.models import LibraryIndex, PaperIndexEntry
 from tests.frontend.conftest import make_uploaded_file
+
+
+def _make_402_error() -> HfHubHTTPError:
+    """Builds an HfHubHTTPError shaped like an HF 402 Payment Required response."""
+    response = httpx.Response(
+        status_code=402, request=httpx.Request("POST", "https://example.com")
+    )
+    return HfHubHTTPError("Payment Required", response=response)
 
 
 class TestFakeStColumnsFixture:
@@ -1685,7 +1695,11 @@ class TestGenerateMetadataForSelected:
         )
 
         app.generate_metadata_for_selected(
-            creds=MagicMock(), pids=[pid1, pid2], index=index, local_lib_dir=tmp_path
+            creds=MagicMock(),
+            pids=[pid1, pid2],
+            index=index,
+            local_lib_dir=tmp_path,
+            sleep_fn=lambda _: None,
         )
 
         assert mock_download.call_count == 2
@@ -1741,7 +1755,11 @@ class TestGenerateMetadataForSelected:
         )
 
         app.generate_metadata_for_selected(
-            creds=MagicMock(), pids=[pid1, pid2], index=index, local_lib_dir=tmp_path
+            creds=MagicMock(),
+            pids=[pid1, pid2],
+            index=index,
+            local_lib_dir=tmp_path,
+            sleep_fn=lambda _: None,
         )
 
         fake_st.error.assert_called_once()
@@ -1761,6 +1779,81 @@ class TestGenerateMetadataForSelected:
         )
 
         mock_generate.assert_not_called()
+
+    def test_paces_between_papers_but_not_after_the_last(
+        self, fake_st: MagicMock, mocker: MockerFixture, tmp_path: Path
+    ) -> None:
+        """Test sleep_fn is called between papers, but not once after the
+        final paper in the batch."""
+        pids = ["a" * 32, "b" * 32, "c" * 32]
+        index = LibraryIndex(
+            papers={
+                pid: PaperIndexEntry(
+                    title=pid, pdf_file_id=pid, meta_file_id=pid, folder_id=pid
+                )
+                for pid in pids
+            }
+        )
+        for pid in pids:
+            (tmp_path / pid).mkdir(parents=True)
+            (tmp_path / pid / "paper.pdf").write_bytes(b"pdf-bytes")
+        mocker.patch.object(app, "generate_metadata_for_paper", return_value=True)
+        mock_sleep = mocker.Mock()
+
+        app.generate_metadata_for_selected(
+            creds=MagicMock(),
+            pids=pids,
+            index=index,
+            local_lib_dir=tmp_path,
+            sleep_fn=mock_sleep,
+        )
+
+        assert mock_sleep.call_count == 2
+        mock_sleep.assert_called_with(app.BULK_GENERATE_DELAY_SECONDS)
+
+    def test_stops_batch_when_hf_quota_exceeded(
+        self, fake_st: MagicMock, mocker: MockerFixture, tmp_path: Path
+    ) -> None:
+        """Test the batch stops immediately after a paper flags
+        hf_quota_exceeded, instead of retrying guaranteed-to-fail papers."""
+        pid1, pid2 = "a" * 32, "b" * 32
+        index = LibraryIndex(
+            papers={
+                pid1: PaperIndexEntry(
+                    title="One", pdf_file_id="p1", meta_file_id="m1", folder_id="f1"
+                ),
+                pid2: PaperIndexEntry(
+                    title="Two", pdf_file_id="p2", meta_file_id="m2", folder_id="f2"
+                ),
+            }
+        )
+        for pid in (pid1, pid2):
+            (tmp_path / pid).mkdir(parents=True)
+            (tmp_path / pid / "paper.pdf").write_bytes(b"pdf-bytes")
+
+        def fake_generate(pid: str, _local_pdf_path: Path) -> bool:
+            fake_st.session_state["hf_quota_exceeded"] = True
+            return False
+
+        mock_generate = mocker.patch.object(
+            app, "generate_metadata_for_paper", side_effect=fake_generate
+        )
+        mock_sleep = mocker.Mock()
+
+        app.generate_metadata_for_selected(
+            creds=MagicMock(),
+            pids=[pid1, pid2],
+            index=index,
+            local_lib_dir=tmp_path,
+            sleep_fn=mock_sleep,
+        )
+
+        mock_generate.assert_called_once_with(pid1, tmp_path / pid1 / "paper.pdf")
+        mock_sleep.assert_not_called()
+        assert any(
+            "Stopped after 1/2 paper(s)" in str(call.args)
+            for call in fake_st.warning.call_args_list
+        )
 
 
 class TestMainBulkGenerateFlow:
@@ -2454,6 +2547,63 @@ class TestMainMetadataView:
             for call in fake_st.error.call_args_list
         )
         assert f"generated_{pid}" not in fake_st.session_state
+        assert fake_st.session_state["hf_quota_exceeded"] is False
+
+    def test_generate_button_reports_hf_quota_exceeded_error(
+        self, fake_st: MagicMock, mocker: MockerFixture, tmp_path: Path
+    ) -> None:
+        """Test a 402 Payment Required error surfaces a quota-specific
+        message and flags hf_quota_exceeded for bulk-loop callers."""
+        pid = "6" * 32
+        self._select_paper(fake_st, mocker, tmp_path, pid)
+        mocker.patch.object(app, "sync_paper_metadata", return_value=True)
+        (tmp_path / pid).mkdir(parents=True, exist_ok=True)
+        (tmp_path / pid / "paper.pdf").write_bytes(b"pdf-bytes")
+        mocker.patch.object(app, "extract_pdf_text", return_value="paper text")
+        mocker.patch.object(
+            app, "generate_paper_metadata", side_effect=_make_402_error()
+        )
+        fake_st.button.side_effect = lambda label, **kw: label == "✨ Generate metadata"
+        fake_st.form_submit_button.return_value = False
+
+        app.main()
+
+        assert any(
+            "402 Payment Required" in str(call.args)
+            for call in fake_st.error.call_args_list
+        )
+        assert f"generated_{pid}" not in fake_st.session_state
+        assert fake_st.session_state["hf_quota_exceeded"] is True
+
+    def test_generate_button_reports_non_quota_http_error(
+        self, fake_st: MagicMock, mocker: MockerFixture, tmp_path: Path
+    ) -> None:
+        """Test a non-402 HfHubHTTPError falls through to the generic
+        failure message and does not set hf_quota_exceeded."""
+        pid = "7" * 32
+        self._select_paper(fake_st, mocker, tmp_path, pid)
+        mocker.patch.object(app, "sync_paper_metadata", return_value=True)
+        (tmp_path / pid).mkdir(parents=True, exist_ok=True)
+        (tmp_path / pid / "paper.pdf").write_bytes(b"pdf-bytes")
+        mocker.patch.object(app, "extract_pdf_text", return_value="paper text")
+        response = httpx.Response(
+            status_code=500, request=httpx.Request("POST", "https://example.com")
+        )
+        mocker.patch.object(
+            app,
+            "generate_paper_metadata",
+            side_effect=HfHubHTTPError("Internal error", response=response),
+        )
+        fake_st.button.side_effect = lambda label, **kw: label == "✨ Generate metadata"
+        fake_st.form_submit_button.return_value = False
+
+        app.main()
+
+        assert any(
+            "Metadata generation failed" in str(call.args)
+            for call in fake_st.error.call_args_list
+        )
+        assert fake_st.session_state["hf_quota_exceeded"] is False
 
     def test_duplicate_warning_rendered_when_dupes_present(
         self, fake_st: MagicMock, mocker: MockerFixture, tmp_path: Path
