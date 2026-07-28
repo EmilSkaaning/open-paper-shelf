@@ -934,6 +934,74 @@ class TestGetAllTags:
         assert app.get_all_tags(LibraryIndex()) == []
 
 
+class TestGetDuplicatePids:
+    """Test suite for get_duplicate_pids."""
+
+    def test_papers_with_matching_embeddings_are_flagged(self) -> None:
+        """Test two papers with near-identical embeddings both appear in
+        the result."""
+        pid1, pid2 = "a" * 32, "b" * 32
+        index = LibraryIndex(
+            papers={
+                pid1: PaperIndexEntry(
+                    title="One",
+                    pdf_file_id="p1",
+                    meta_file_id="m1",
+                    folder_id="f1",
+                    embedding=[1.0, 0.0, 0.0],
+                ),
+                pid2: PaperIndexEntry(
+                    title="Two",
+                    pdf_file_id="p2",
+                    meta_file_id="m2",
+                    folder_id="f2",
+                    embedding=[1.0, 0.0, 0.0],
+                ),
+            }
+        )
+        assert app.get_duplicate_pids(index) == {pid1, pid2}
+
+    def test_paper_with_no_embedding_is_excluded(self) -> None:
+        """Test a paper with an empty embedding is never flagged, even if
+        another paper's embedding happens to be empty too."""
+        pid1, pid2 = "a" * 32, "b" * 32
+        index = LibraryIndex(
+            papers={
+                pid1: PaperIndexEntry(
+                    title="One", pdf_file_id="p1", meta_file_id="m1", folder_id="f1"
+                ),
+                pid2: PaperIndexEntry(
+                    title="Two", pdf_file_id="p2", meta_file_id="m2", folder_id="f2"
+                ),
+            }
+        )
+        assert app.get_duplicate_pids(index) == set()
+
+    def test_below_threshold_match_is_excluded(self) -> None:
+        """Test a lone paper whose embedding doesn't closely match any
+        other paper's is not flagged."""
+        pid1, pid2 = "a" * 32, "b" * 32
+        index = LibraryIndex(
+            papers={
+                pid1: PaperIndexEntry(
+                    title="One",
+                    pdf_file_id="p1",
+                    meta_file_id="m1",
+                    folder_id="f1",
+                    embedding=[1.0, 0.0, 0.0],
+                ),
+                pid2: PaperIndexEntry(
+                    title="Two",
+                    pdf_file_id="p2",
+                    meta_file_id="m2",
+                    folder_id="f2",
+                    embedding=[0.0, 1.0, 0.0],
+                ),
+            }
+        )
+        assert app.get_duplicate_pids(index) == set()
+
+
 class TestFilterPapers:
     """Test suite for filter_papers."""
 
@@ -1328,6 +1396,61 @@ class TestMainLibraryView:
             if c.kwargs.get("key") == f"btn_{pid}"
         )
         assert "📖" in row_button_call.args[0]
+
+    def test_paper_row_flags_similar_embeddings_persistently(
+        self, fake_st: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """Test papers with a matching embedding show a warning marker in
+        the Library Papers list, computed fresh from the saved index
+        regardless of session-only generation state."""
+        dupe_pid, unique_pid = "a" * 32, "b" * 32
+        fake_st.session_state.current_lib_id = "lib_123"
+        fake_st.session_state.current_papers_id = "papers_123"
+        fake_st.session_state.root_id = "root_123"
+        fake_st.session_state.index = LibraryIndex(
+            papers={
+                dupe_pid: PaperIndexEntry(
+                    title="Dupe One",
+                    pdf_file_id="p1",
+                    meta_file_id="m1",
+                    folder_id="f1",
+                    embedding=[1.0, 0.0, 0.0],
+                ),
+                "c" * 32: PaperIndexEntry(
+                    title="Dupe Two",
+                    pdf_file_id="p2",
+                    meta_file_id="m2",
+                    folder_id="f2",
+                    embedding=[1.0, 0.0, 0.0],
+                ),
+                unique_pid: PaperIndexEntry(
+                    title="Unique Paper",
+                    pdf_file_id="p3",
+                    meta_file_id="m3",
+                    folder_id="f3",
+                    embedding=[0.0, 1.0, 0.0],
+                ),
+            }
+        )
+        fake_st.session_state.selected_paper = None
+        fake_st.file_uploader.return_value = None
+        mocker.patch.object(app, "st_keyup", return_value="")
+        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
+
+        app.main()
+
+        dupe_call = next(
+            c
+            for c in fake_st.button.call_args_list
+            if c.kwargs.get("key") == f"btn_{dupe_pid}"
+        )
+        unique_call = next(
+            c
+            for c in fake_st.button.call_args_list
+            if c.kwargs.get("key") == f"btn_{unique_pid}"
+        )
+        assert "⚠️" in dupe_call.args[0]
+        assert "⚠️" not in unique_call.args[0]
 
 
 class TestMainUploadFlow:

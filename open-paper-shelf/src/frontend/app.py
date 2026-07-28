@@ -515,6 +515,31 @@ def get_all_tags(index: LibraryIndex) -> list[str]:
     return sorted({tag for p in index.papers.values() for tag in p.tags})
 
 
+def get_duplicate_pids(index: LibraryIndex) -> set[str]:
+    """Finds every paper whose embedding matches another paper in the index.
+
+    Computed fresh from the persisted embeddings already in `index` (rather
+    than from the ephemeral `dupes_{pid}` session-state key that's only
+    populated right after generation), so the result is available for any
+    paper regardless of when its embedding was generated or whether the
+    user has navigated away and back.
+
+    Args:
+        index: The library index to scan.
+
+    Returns:
+        set[str]: The paper IDs with at least one similar-embedding match
+        elsewhere in the index, per `find_similar_papers`'s default
+        threshold.
+    """
+    return {
+        pid
+        for pid, entry in index.papers.items()
+        if entry.embedding
+        and find_similar_papers(entry.embedding, index, exclude_pid=pid)
+    }
+
+
 def filter_papers(
     papers: dict[str, PaperIndexEntry],
     search_query: str,
@@ -889,6 +914,8 @@ def main() -> None:
                 st.session_state.index.papers, search_query, status_filter, tags_filter
             )
 
+            duplicate_pids = get_duplicate_pids(st.session_state.index)
+
             with st.container(height=400):
                 for pid, p in filtered_papers:
                     row_check, row_button = st.columns([1, 8])
@@ -898,6 +925,8 @@ def main() -> None:
                         )
                     with row_button:
                         display_name = f"{STATUS_ICONS.get(p.status, '📄')} {p.title}"
+                        if pid in duplicate_pids:
+                            display_name = f"⚠️ {display_name}"
                         if pid == st.session_state.selected_paper:
                             display_name = f"**{display_name}**"
                         if st.button(
