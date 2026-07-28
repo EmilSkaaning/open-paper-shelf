@@ -41,6 +41,8 @@ from backend.drive import (  # noqa: E402
 )
 from backend.models import LibraryIndex, PaperIndexEntry, PaperMetadata  # noqa: E402
 from backend.huggingface_client import (  # noqa: E402
+    DEFAULT_EMBEDDING_MODEL,
+    DEFAULT_GENERATION_MODEL,
     HFTokenMissingError,
     embed_text,
     extract_pdf_text,
@@ -53,6 +55,11 @@ st.set_page_config(
     layout="wide",
     page_title="Open Paper Shelf",
     initial_sidebar_state="expanded",
+)
+
+GENERATE_METADATA_HELP = (
+    f"Generates a title, abstract, and tags with {DEFAULT_GENERATION_MODEL}, "
+    f"and a similarity-detection embedding with {DEFAULT_EMBEDDING_MODEL}."
 )
 
 
@@ -280,7 +287,7 @@ def sync_paper_metadata(
         return had_local_copy
 
 
-def generate_metadata_for_paper(pid: str, local_pdf_path: Path) -> None:
+def generate_metadata_for_paper(pid: str, local_pdf_path: Path) -> bool:
     """Generates a draft title/abstract/tags/embedding for a paper via Hugging Face.
 
     Extracts text from the paper's local PDF and calls the Hugging Face
@@ -288,13 +295,18 @@ def generate_metadata_for_paper(pid: str, local_pdf_path: Path) -> None:
     duplicate matches found in the current library index) in
     `st.session_state` for the metadata form to prefill. Does not write to
     local disk, Drive, or the library index - the user must still click
-    "Save Changes" to persist the draft. Reports errors via `st.error`/
-    `st.warning` rather than raising, since this is invoked from a
+    "Save Changes" to persist the draft, and does not rerun, so callers can
+    batch several papers before triggering a single rerun. Reports errors via
+    `st.error`/`st.warning` rather than raising, since this is invoked from a
     best-effort UI action.
 
     Args:
         pid (str): The paper's unique ID.
         local_pdf_path (Path): Local path to the paper's downloaded PDF.
+
+    Returns:
+        bool: True if a draft was staged, False if generation was skipped or
+        failed (in which case an error/warning has already been shown).
     """
     pdf_text = extract_pdf_text(local_pdf_path)
     if not pdf_text.strip():
@@ -302,17 +314,17 @@ def generate_metadata_for_paper(pid: str, local_pdf_path: Path) -> None:
             "Could not extract text from this PDF (it may be scanned/"
             "image-only); metadata generation skipped."
         )
-        return
+        return False
 
     try:
         generated = generate_paper_metadata(pdf_text)
         embedding = embed_text(pdf_text)
     except HFTokenMissingError as e:
         st.error(str(e))
-        return
+        return False
     except Exception as e:
         st.error(f"Metadata generation failed: {e}")
-        return
+        return False
 
     st.session_state[f"generated_{pid}"] = {
         "title": generated.title,
@@ -330,7 +342,53 @@ def generate_metadata_for_paper(pid: str, local_pdf_path: Path) -> None:
     st.session_state[f"dupes_{pid}"] = find_similar_papers(
         embedding, st.session_state.index, exclude_pid=pid
     )
-    st.rerun()
+    return True
+
+
+def generate_metadata_for_selected(
+    creds: Credentials,
+    pids: Sequence[str],
+    index: LibraryIndex,
+    local_lib_dir: Path,
+) -> None:
+    """Generates draft metadata for multiple papers, downloading PDFs as needed.
+
+    Shows a progress bar across the batch. Each paper's local PDF is
+    downloaded first if it isn't already cached (e.g. because the paper was
+    never opened), mirroring the single-paper view's lazy download. A
+    per-paper failure is reported and the batch continues with the rest.
+
+    Args:
+        creds (Credentials): The Google OAuth credentials.
+        pids (Sequence[str]): The paper IDs to generate metadata for.
+        index (LibraryIndex): The current library index, used to look up
+            each paper's Drive file IDs.
+        local_lib_dir (Path): The local cache directory for the current
+            library.
+    """
+    total = len(pids)
+    progress = st.progress(0.0, text=f"Generating metadata (0/{total})...")
+    for i, pid in enumerate(pids):
+        entry = index.papers.get(pid)
+        if entry is None:
+            continue
+        local_paper_dir = local_lib_dir / pid
+        local_paper_dir.mkdir(parents=True, exist_ok=True)
+        local_pdf_path = local_paper_dir / "paper.pdf"
+        if not local_pdf_path.exists():
+            try:
+                download_file(creds, entry.pdf_file_id, local_pdf_path)
+            except Exception as e:
+                st.error(f"Failed to load PDF for '{entry.title}': {e}")
+                progress.progress(
+                    (i + 1) / total, text=f"Generating metadata ({i + 1}/{total})..."
+                )
+                continue
+        generate_metadata_for_paper(pid, local_pdf_path)
+        progress.progress(
+            (i + 1) / total, text=f"Generating metadata ({i + 1}/{total})..."
+        )
+    progress.empty()
 
 
 def init_library_state(
@@ -654,16 +712,29 @@ def main() -> None:
                 for pid in st.session_state.index.papers
                 if st.session_state.get(f"chk_{pid}")
             ]
-            if st.button(
-                "🗑️",
-                key="trash_icon",
-                help="Delete selected papers",
-                type="primary" if checked_pids else "secondary",
-            ):
-                if checked_pids:
-                    st.session_state.confirm_delete_pids = checked_pids
-                else:
-                    st.warning("No papers selected.")
+            icon_col1, icon_col2 = st.columns([1, 1])
+            with icon_col1:
+                if st.button(
+                    "🗑️",
+                    key="trash_icon",
+                    help="Delete selected papers",
+                    type="primary" if checked_pids else "secondary",
+                ):
+                    if checked_pids:
+                        st.session_state.confirm_delete_pids = checked_pids
+                    else:
+                        st.warning("No papers selected.")
+            with icon_col2:
+                if st.button(
+                    "✨",
+                    key="bulk_generate_icon",
+                    help=GENERATE_METADATA_HELP,
+                    type="primary" if checked_pids else "secondary",
+                ):
+                    if checked_pids:
+                        st.session_state.confirm_generate_pids = checked_pids
+                    else:
+                        st.warning("No papers selected.")
 
             search_box = st_keyup(
                 "Search", placeholder="Search papers...", key="search_box"
@@ -723,6 +794,28 @@ def main() -> None:
                 with cancel_col:
                     if st.button("Cancel", key="cancel_delete_btn"):
                         st.session_state.confirm_delete_pids = None
+                        st.rerun()
+
+            if st.session_state.get("confirm_generate_pids"):
+                pids_to_generate = st.session_state.confirm_generate_pids
+                st.warning(
+                    f"Generate metadata for {len(pids_to_generate)} paper(s)? "
+                    "Any existing metadata will be overwritten."
+                )
+                confirm_gen_col, cancel_gen_col = st.columns(2)
+                with confirm_gen_col:
+                    if st.button("Confirm", key="confirm_generate_btn"):
+                        generate_metadata_for_selected(
+                            creds,
+                            pids_to_generate,
+                            st.session_state.index,
+                            st.session_state.local_lib_dir,
+                        )
+                        st.session_state.confirm_generate_pids = None
+                        st.rerun()
+                with cancel_gen_col:
+                    if st.button("Cancel", key="cancel_generate_btn"):
+                        st.session_state.confirm_generate_pids = None
                         st.rerun()
 
             # Re-filter after the block above so a partial batch-delete
@@ -824,9 +917,11 @@ def main() -> None:
                 "✨ Generate metadata",
                 key=f"generate_btn_{pid}",
                 disabled=not pdf_available,
+                help=GENERATE_METADATA_HELP,
             ):
                 with st.spinner("Generating metadata with Hugging Face..."):
-                    generate_metadata_for_paper(pid, local_pdf_path)
+                    if generate_metadata_for_paper(pid, local_pdf_path):
+                        st.rerun()
 
             for _, dupe_title, dupe_score in st.session_state.get(f"dupes_{pid}", []):
                 st.warning(f"Similar to '{dupe_title}' — {dupe_score:.0%} match")

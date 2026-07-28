@@ -1630,6 +1630,271 @@ class TestMainDeleteFlow:
         assert f"btn_{kept_pid}" in rendered_keys
 
 
+class TestGenerateMetadataForSelected:
+    """Test suite for generate_metadata_for_selected."""
+
+    def test_downloads_missing_pdf_then_generates_for_each_paper(
+        self, fake_st: MagicMock, mocker: MockerFixture, tmp_path: Path
+    ) -> None:
+        """Test a paper with no locally cached PDF gets it downloaded before
+        generation, and every requested paper is processed."""
+        pid1, pid2 = "a" * 32, "b" * 32
+        index = LibraryIndex(
+            papers={
+                pid1: PaperIndexEntry(
+                    title="One", pdf_file_id="p1", meta_file_id="m1", folder_id="f1"
+                ),
+                pid2: PaperIndexEntry(
+                    title="Two", pdf_file_id="p2", meta_file_id="m2", folder_id="f2"
+                ),
+            }
+        )
+        mock_download = mocker.patch.object(app, "download_file")
+        mock_generate = mocker.patch.object(
+            app, "generate_metadata_for_paper", return_value=True
+        )
+
+        app.generate_metadata_for_selected(
+            creds=MagicMock(), pids=[pid1, pid2], index=index, local_lib_dir=tmp_path
+        )
+
+        assert mock_download.call_count == 2
+        assert mock_generate.call_count == 2
+        mock_generate.assert_any_call(pid1, tmp_path / pid1 / "paper.pdf")
+        mock_generate.assert_any_call(pid2, tmp_path / pid2 / "paper.pdf")
+
+    def test_skips_download_when_pdf_already_cached(
+        self, fake_st: MagicMock, mocker: MockerFixture, tmp_path: Path
+    ) -> None:
+        """Test an already-downloaded PDF isn't re-fetched from Drive."""
+        pid = "a" * 32
+        index = LibraryIndex(
+            papers={
+                pid: PaperIndexEntry(
+                    title="One", pdf_file_id="p1", meta_file_id="m1", folder_id="f1"
+                )
+            }
+        )
+        local_pdf_path = tmp_path / pid / "paper.pdf"
+        local_pdf_path.parent.mkdir(parents=True)
+        local_pdf_path.write_bytes(b"pdf-bytes")
+        mock_download = mocker.patch.object(app, "download_file")
+        mocker.patch.object(app, "generate_metadata_for_paper", return_value=True)
+
+        app.generate_metadata_for_selected(
+            creds=MagicMock(), pids=[pid], index=index, local_lib_dir=tmp_path
+        )
+
+        mock_download.assert_not_called()
+
+    def test_pdf_download_failure_reports_error_and_continues(
+        self, fake_st: MagicMock, mocker: MockerFixture, tmp_path: Path
+    ) -> None:
+        """Test a failed PDF download is reported without stopping the rest
+        of the batch."""
+        pid1, pid2 = "a" * 32, "b" * 32
+        index = LibraryIndex(
+            papers={
+                pid1: PaperIndexEntry(
+                    title="One", pdf_file_id="p1", meta_file_id="m1", folder_id="f1"
+                ),
+                pid2: PaperIndexEntry(
+                    title="Two", pdf_file_id="p2", meta_file_id="m2", folder_id="f2"
+                ),
+            }
+        )
+        mocker.patch.object(
+            app, "download_file", side_effect=[RuntimeError("network blip"), None]
+        )
+        mock_generate = mocker.patch.object(
+            app, "generate_metadata_for_paper", return_value=True
+        )
+
+        app.generate_metadata_for_selected(
+            creds=MagicMock(), pids=[pid1, pid2], index=index, local_lib_dir=tmp_path
+        )
+
+        fake_st.error.assert_called_once()
+        mock_generate.assert_called_once_with(pid2, tmp_path / pid2 / "paper.pdf")
+
+    def test_skips_pid_missing_from_index(
+        self, fake_st: MagicMock, mocker: MockerFixture, tmp_path: Path
+    ) -> None:
+        """Test a stale/unknown pid is skipped rather than crashing."""
+        mock_generate = mocker.patch.object(app, "generate_metadata_for_paper")
+
+        app.generate_metadata_for_selected(
+            creds=MagicMock(),
+            pids=["missing" * 5],
+            index=LibraryIndex(),
+            local_lib_dir=tmp_path,
+        )
+
+        mock_generate.assert_not_called()
+
+
+class TestMainBulkGenerateFlow:
+    """Test suite for main()'s sidebar icon-bar bulk generate flow."""
+
+    def test_bulk_generate_with_no_checked_papers_warns(
+        self, fake_st: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """Test clicking the bulk generate icon with nothing checked just warns."""
+        pid = "a" * 32
+        entry = PaperIndexEntry(
+            title="Some Paper", pdf_file_id="pdf1", meta_file_id="meta1", folder_id="f1"
+        )
+        fake_st.session_state.current_lib_id = "lib_123"
+        fake_st.session_state.current_papers_id = "papers_123"
+        fake_st.session_state.root_id = "root_123"
+        fake_st.session_state.index = LibraryIndex(papers={pid: entry})
+        fake_st.session_state.selected_paper = None
+        fake_st.file_uploader.return_value = None
+        fake_st.checkbox.return_value = False
+        fake_st.button.side_effect = lambda label, **kw: (
+            kw.get("key") == "bulk_generate_icon"
+        )
+        mocker.patch.object(app, "st_keyup", return_value="")
+        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
+
+        app.main()
+
+        fake_st.warning.assert_any_call("No papers selected.")
+        assert "confirm_generate_pids" not in fake_st.session_state
+
+        generate_call = next(
+            c
+            for c in fake_st.button.call_args_list
+            if c.kwargs.get("key") == "bulk_generate_icon"
+        )
+        assert generate_call.kwargs.get("type") == "secondary"
+
+    def test_bulk_generate_icon_turns_primary_when_a_paper_is_checked(
+        self, fake_st: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """Test the bulk generate icon renders as primary once at least one
+        paper's checkbox is checked."""
+        pid = "a" * 32
+        entry = PaperIndexEntry(
+            title="Some Paper", pdf_file_id="pdf1", meta_file_id="meta1", folder_id="f1"
+        )
+        fake_st.session_state.current_lib_id = "lib_123"
+        fake_st.session_state.current_papers_id = "papers_123"
+        fake_st.session_state.root_id = "root_123"
+        fake_st.session_state.index = LibraryIndex(papers={pid: entry})
+        fake_st.session_state.selected_paper = None
+        fake_st.file_uploader.return_value = None
+        fake_st.session_state[f"chk_{pid}"] = True
+        fake_st.button.return_value = False
+        mocker.patch.object(app, "st_keyup", return_value="")
+        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
+
+        app.main()
+
+        generate_call = next(
+            c
+            for c in fake_st.button.call_args_list
+            if c.kwargs.get("key") == "bulk_generate_icon"
+        )
+        assert generate_call.kwargs.get("type") == "primary"
+
+    def test_bulk_generate_with_checked_paper_shows_confirmation(
+        self, fake_st: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """Test clicking the bulk generate icon with a checked paper stages
+        a confirmation instead of generating immediately."""
+        pid = "a" * 32
+        entry = PaperIndexEntry(
+            title="Some Paper", pdf_file_id="pdf1", meta_file_id="meta1", folder_id="f1"
+        )
+        fake_st.session_state.current_lib_id = "lib_123"
+        fake_st.session_state.current_papers_id = "papers_123"
+        fake_st.session_state.root_id = "root_123"
+        fake_st.session_state.index = LibraryIndex(papers={pid: entry})
+        fake_st.session_state.selected_paper = None
+        fake_st.file_uploader.return_value = None
+        fake_st.session_state[f"chk_{pid}"] = True
+        fake_st.button.side_effect = lambda label, **kw: (
+            kw.get("key") == "bulk_generate_icon"
+        )
+        mock_generate = mocker.patch.object(app, "generate_metadata_for_selected")
+        mocker.patch.object(app, "st_keyup", return_value="")
+        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
+
+        app.main()
+
+        assert fake_st.session_state.confirm_generate_pids == [pid]
+        mock_generate.assert_not_called()
+
+    def test_confirming_bulk_generate_calls_generate_and_reruns(
+        self,
+        fake_st: MagicMock,
+        mocker: MockerFixture,
+        tmp_path: Path,
+        stop_rerun: type[BaseException],
+    ) -> None:
+        """Test clicking Confirm on a staged bulk generation actually
+        generates and clears the confirmation state."""
+        pid = "a" * 32
+        entry = PaperIndexEntry(
+            title="Some Paper", pdf_file_id="pdf1", meta_file_id="meta1", folder_id="f1"
+        )
+        fake_st.session_state.current_lib_id = "lib_123"
+        fake_st.session_state.current_papers_id = "papers_123"
+        fake_st.session_state.root_id = "root_123"
+        fake_st.session_state.index = LibraryIndex(papers={pid: entry})
+        fake_st.session_state.selected_paper = None
+        fake_st.session_state.local_lib_dir = tmp_path
+        fake_st.session_state.confirm_generate_pids = [pid]
+        fake_st.file_uploader.return_value = None
+        fake_st.button.side_effect = lambda label, **kw: (
+            kw.get("key") == "confirm_generate_btn"
+        )
+        mock_generate = mocker.patch.object(app, "generate_metadata_for_selected")
+        mocker.patch.object(app, "st_keyup", return_value="")
+        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
+
+        with pytest.raises(stop_rerun):
+            app.main()
+
+        mock_generate.assert_called_once_with(
+            mocker.ANY, [pid], fake_st.session_state.index, tmp_path
+        )
+        assert fake_st.session_state.confirm_generate_pids is None
+
+    def test_cancelling_bulk_generate_clears_confirmation_without_generating(
+        self,
+        fake_st: MagicMock,
+        mocker: MockerFixture,
+        stop_rerun: type[BaseException],
+    ) -> None:
+        """Test clicking Cancel on a staged bulk generation clears it
+        without generating anything."""
+        pid = "a" * 32
+        entry = PaperIndexEntry(
+            title="Some Paper", pdf_file_id="pdf1", meta_file_id="meta1", folder_id="f1"
+        )
+        fake_st.session_state.current_lib_id = "lib_123"
+        fake_st.session_state.current_papers_id = "papers_123"
+        fake_st.session_state.root_id = "root_123"
+        fake_st.session_state.index = LibraryIndex(papers={pid: entry})
+        fake_st.session_state.selected_paper = None
+        fake_st.session_state.confirm_generate_pids = [pid]
+        fake_st.file_uploader.return_value = None
+        fake_st.button.side_effect = lambda label, **kw: (
+            kw.get("key") == "cancel_generate_btn"
+        )
+        mock_generate = mocker.patch.object(app, "generate_metadata_for_selected")
+        mocker.patch.object(app, "st_keyup", return_value="")
+        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
+
+        with pytest.raises(stop_rerun):
+            app.main()
+
+        mock_generate.assert_not_called()
+        assert fake_st.session_state.confirm_generate_pids is None
+
+
 class TestMainMetadataView:
     """Test suite for main()'s paper detail / metadata editing view."""
 
@@ -1870,6 +2135,27 @@ class TestMainMetadataView:
             if call.args and call.args[0] == "✨ Generate metadata"
         )
         assert generate_call.kwargs["disabled"] is True
+
+    def test_generate_button_has_tooltip_naming_the_models_used(
+        self, fake_st: MagicMock, mocker: MockerFixture, tmp_path: Path
+    ) -> None:
+        """Test the Generate metadata button explains what it does and
+        which Hugging Face models it calls."""
+        pid = "9" * 32
+        self._select_paper(fake_st, mocker, tmp_path, pid)
+        mocker.patch.object(app, "sync_paper_metadata", return_value=True)
+        fake_st.form_submit_button.return_value = False
+
+        app.main()
+
+        generate_call = next(
+            call
+            for call in fake_st.button.call_args_list
+            if call.args and call.args[0] == "✨ Generate metadata"
+        )
+        help_text = generate_call.kwargs["help"]
+        assert app.DEFAULT_GENERATION_MODEL in help_text
+        assert app.DEFAULT_EMBEDDING_MODEL in help_text
 
     def test_generate_button_click_stages_draft_and_reruns(
         self,
