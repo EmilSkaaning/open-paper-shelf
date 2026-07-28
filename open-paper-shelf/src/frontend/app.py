@@ -331,6 +331,9 @@ def init_library_state(
 ) -> None:
     """Resets session state for a newly opened or newly created library.
 
+    Also clears any pending request to force the manual library-selection
+    screen, so a later single-library session goes back to auto-opening.
+
     Args:
         creds (Credentials): The Google OAuth credentials (unused directly,
             kept for a consistent signature with other library-scoped calls).
@@ -348,6 +351,7 @@ def init_library_state(
         st.session_state.local_lib_dir / "id-mapping.json"
     )
     st.session_state.selected_paper = None
+    st.session_state.pop("manual_library_selection", None)
 
 
 def sync_library_index(creds: Credentials) -> None:
@@ -517,8 +521,16 @@ def main() -> None:
 
     # Library Selection Screen
     if "current_lib_id" not in st.session_state:
-        st.subheader("Select or Create a Library")
         libraries = list_libraries(creds, root_id)
+
+        if len(libraries) == 1 and not st.session_state.get("manual_library_selection"):
+            only_lib = libraries[0]
+            papers_id = get_papers_folder(creds, only_lib["id"])
+            init_library_state(creds, only_lib["id"], papers_id, only_lib["name"])
+            st.rerun()
+            return
+
+        st.subheader("Select or Create a Library")
 
         col1, col2 = st.columns(2)
         with col1:
@@ -561,7 +573,12 @@ def main() -> None:
     with st.sidebar:
 
         def switch_lib() -> None:
-            """Clears the current library's session state to return to library selection."""
+            """Clears the current library's session state to return to library selection.
+
+            Also forces the manual selection screen to show even if only one
+            library exists, since the user explicitly asked to switch.
+            """
+            st.session_state.manual_library_selection = True
             for k in [
                 "current_lib_id",
                 "current_lib_name",
@@ -569,6 +586,7 @@ def main() -> None:
                 "index",
                 "last_sync_time",
                 "confirm_delete_pids",
+                "confirm_generate_pids",
             ]:
                 st.session_state.pop(k, None)
 

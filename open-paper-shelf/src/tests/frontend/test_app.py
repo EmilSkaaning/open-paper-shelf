@@ -627,10 +627,41 @@ class TestMainLibrarySelection:
         mocker: MockerFixture,
         stop_rerun: type[BaseException],
     ) -> None:
-        """Test clicking "Open Library" opens the selected library and reruns."""
+        """Test clicking "Open Library" opens the selected library and reruns.
+
+        Uses two libraries so the manual picker (not the single-library
+        auto-select path) is what's under test.
+        """
         fake_st.session_state.root_id = "root_123"
         fake_st.button.side_effect = lambda label, **kw: label == "Open Library"
         fake_st.selectbox.return_value = "lib1"
+        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
+        mocker.patch.object(
+            app,
+            "list_libraries",
+            return_value=[
+                {"id": "lib1", "name": "Lib One"},
+                {"id": "lib2", "name": "Lib Two"},
+            ],
+        )
+        mocker.patch.object(app, "get_papers_folder", return_value="papers_1")
+        mock_init = mocker.patch.object(app, "init_library_state")
+
+        with pytest.raises(stop_rerun):
+            app.main()
+
+        mock_init.assert_called_once_with(mocker.ANY, "lib1", "papers_1", "Lib One")
+
+    def test_single_library_auto_opens_without_button_click(
+        self,
+        fake_st: MagicMock,
+        mocker: MockerFixture,
+        stop_rerun: type[BaseException],
+    ) -> None:
+        """Test the sole library is opened automatically, with no picker
+        shown and no button click required."""
+        fake_st.session_state.root_id = "root_123"
+        fake_st.button.return_value = False
         mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
         mocker.patch.object(
             app, "list_libraries", return_value=[{"id": "lib1", "name": "Lib One"}]
@@ -642,6 +673,26 @@ class TestMainLibrarySelection:
             app.main()
 
         mock_init.assert_called_once_with(mocker.ANY, "lib1", "papers_1", "Lib One")
+        fake_st.subheader.assert_not_called()
+
+    def test_manual_selection_flag_blocks_single_library_auto_open(
+        self, fake_st: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """Test a pending manual-selection request (from Switch Library)
+        keeps showing the picker even when only one library exists."""
+        fake_st.session_state.root_id = "root_123"
+        fake_st.session_state.manual_library_selection = True
+        fake_st.button.return_value = False
+        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
+        mocker.patch.object(
+            app, "list_libraries", return_value=[{"id": "lib1", "name": "Lib One"}]
+        )
+        mock_init = mocker.patch.object(app, "init_library_state")
+
+        app.main()
+
+        mock_init.assert_not_called()
+        fake_st.subheader.assert_called_once_with("Select or Create a Library")
 
     def test_creates_new_library(
         self,
