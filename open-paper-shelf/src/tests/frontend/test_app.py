@@ -2044,11 +2044,12 @@ class TestMainBulkGenerateFlow:
         )
         assert generate_call.kwargs.get("type") == "primary"
 
-    def test_bulk_generate_icon_has_scoped_light_blue_css(
+    def test_icon_bar_columns_use_no_gap(
         self, fake_st: MagicMock, mocker: MockerFixture
     ) -> None:
-        """Test the generate icon's glow color is scoped via marker-div CSS,
-        distinct from the shared red primary-button theme color."""
+        """Test the icon-bar columns are requested with gap=None, so the
+        bin/generate icons render adjacent using only native Streamlit
+        layout (no CSS injection)."""
         pid = "a" * 32
         entry = PaperIndexEntry(
             title="Some Paper", pdf_file_id="pdf1", meta_file_id="meta1", folder_id="f1"
@@ -2066,13 +2067,13 @@ class TestMainBulkGenerateFlow:
 
         app.main()
 
-        css_call = next(
+        icon_bar_call = next(
             c
-            for c in fake_st.markdown.call_args_list
-            if "generate-icon-marker" in c.args[0]
+            for c in fake_st.columns.call_args_list
+            if c.args and c.args[0] == [1, 1, 8]
         )
-        assert css_call.kwargs.get("unsafe_allow_html") is True
-        assert "#4FC3F7" in css_call.args[0]
+        assert "gap" in icon_bar_call.kwargs
+        assert icon_bar_call.kwargs["gap"] is None
 
     def test_bulk_generate_with_checked_paper_shows_confirmation(
         self, fake_st: MagicMock, mocker: MockerFixture
