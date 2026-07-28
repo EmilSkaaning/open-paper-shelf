@@ -894,6 +894,36 @@ class TestDeleteSelectedPapers:
         assert not local_paper_dir.exists()
 
 
+class TestGetAllTags:
+    """Test suite for get_all_tags."""
+
+    def test_returns_sorted_deduplicated_tags_across_papers(self) -> None:
+        """Test tags from every paper are merged, deduped, and sorted."""
+        index = LibraryIndex(
+            papers={
+                "a" * 32: PaperIndexEntry(
+                    title="One",
+                    pdf_file_id="p1",
+                    meta_file_id="m1",
+                    folder_id="f1",
+                    tags=["nlp", "ai"],
+                ),
+                "b" * 32: PaperIndexEntry(
+                    title="Two",
+                    pdf_file_id="p2",
+                    meta_file_id="m2",
+                    folder_id="f2",
+                    tags=["ai", "vision"],
+                ),
+            }
+        )
+        assert app.get_all_tags(index) == ["ai", "nlp", "vision"]
+
+    def test_returns_empty_list_for_empty_library(self) -> None:
+        """Test an empty index returns an empty tag list."""
+        assert app.get_all_tags(LibraryIndex()) == []
+
+
 class TestFilterPapers:
     """Test suite for filter_papers."""
 
@@ -2195,6 +2225,45 @@ class TestMainMetadataView:
         assert fake_st.session_state[f"title_{pid}"] == "Gen Title"
         assert fake_st.session_state[f"abstract_{pid}"] == "Gen Abstract"
         assert fake_st.session_state[f"tags_{pid}"] == "ai, nlp"
+
+    def test_generate_button_passes_existing_library_tags(
+        self,
+        fake_st: MagicMock,
+        mocker: MockerFixture,
+        tmp_path: Path,
+        stop_rerun: type[BaseException],
+    ) -> None:
+        """Test generation is given every tag already used in the library,
+        so it's biased toward reusing them instead of inventing new ones."""
+        pid = "2b" * 16
+        other_pid = "2c" * 16
+        entry = self._select_paper(fake_st, mocker, tmp_path, pid)
+        fake_st.session_state.index.papers[other_pid] = PaperIndexEntry(
+            title="Other Paper",
+            pdf_file_id="pdf2",
+            meta_file_id="meta2",
+            folder_id="f2",
+            tags=["nlp", "ai"],
+        )
+        mocker.patch.object(app, "sync_paper_metadata", return_value=True)
+        (tmp_path / pid).mkdir(parents=True, exist_ok=True)
+        (tmp_path / pid / "paper.pdf").write_bytes(b"pdf-bytes")
+        mocker.patch.object(app, "extract_pdf_text", return_value="paper text")
+        mock_generate = mocker.patch.object(
+            app,
+            "generate_paper_metadata",
+            return_value=GeneratedMetadata(title="T", abstract="A", tags=["ai"]),
+        )
+        mocker.patch.object(app, "embed_text", return_value=[0.1] * 384)
+        mocker.patch.object(app, "find_similar_papers", return_value=[])
+        fake_st.button.side_effect = lambda label, **kw: label == "✨ Generate metadata"
+        fake_st.form_submit_button.return_value = False
+        assert entry.tags == []
+
+        with pytest.raises(stop_rerun):
+            app.main()
+
+        mock_generate.assert_called_once_with("paper text", existing_tags=["ai", "nlp"])
 
     def test_generate_button_empty_pdf_text_skips_api_calls(
         self, fake_st: MagicMock, mocker: MockerFixture, tmp_path: Path

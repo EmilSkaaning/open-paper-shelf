@@ -8,6 +8,7 @@ import pytest
 from huggingface_hub.errors import HfHubHTTPError
 from pytest_mock import MockerFixture
 
+import backend.huggingface_client as huggingface_client
 from backend.huggingface_client import (
     EMBEDDING_DIM,
     HFTokenMissingError,
@@ -180,6 +181,28 @@ class TestBuildPromptMessages:
         assert messages[1]["content"] == "paper body text"
         assert messages[0]["content"]
 
+    def test_tags_prompt_lists_existing_tags_when_given(self) -> None:
+        """Test the tags instruction names existing tags to bias reuse."""
+        messages = _build_prompt_messages(
+            "tags", "paper body text", existing_tags=["nlp", "vision"]
+        )
+        assert "nlp, vision" in messages[0]["content"]
+
+    def test_tags_prompt_omits_existing_tags_when_empty(self) -> None:
+        """Test no existing-tags clause is added when none are given."""
+        messages = _build_prompt_messages("tags", "paper body text")
+        assert "Prefer reusing" not in messages[0]["content"]
+
+    @pytest.mark.parametrize("kind", ["title", "abstract"])
+    def test_existing_tags_ignored_for_non_tags_kinds(self, kind: str) -> None:
+        """Test existing_tags only affects the tags instruction."""
+        messages = _build_prompt_messages(
+            kind,  # type: ignore[arg-type]
+            "paper body text",
+            existing_tags=["nlp", "vision"],
+        )
+        assert "nlp, vision" not in messages[0]["content"]
+
 
 class TestGeneratePaperMetadata:
     """Test suite for generate_paper_metadata."""
@@ -213,6 +236,29 @@ class TestGeneratePaperMetadata:
             "paper text", client=client, sleep_fn=MagicMock()
         )
         assert result.tags == [f"tag{i}" for i in range(8)]
+
+    def test_passes_existing_tags_through_to_build_prompt_messages(
+        self, mocker: MockerFixture
+    ) -> None:
+        """Test existing_tags reaches _build_prompt_messages for every
+        subtask call (it's simply ignored there for non-tags kinds)."""
+        client = MagicMock()
+        client.chat_completion.side_effect = [
+            _make_chat_response("Title"),
+            _make_chat_response("Abstract"),
+            _make_chat_response("nlp"),
+        ]
+        build_spy = mocker.spy(huggingface_client, "_build_prompt_messages")
+
+        generate_paper_metadata(
+            "paper text",
+            client=client,
+            sleep_fn=MagicMock(),
+            existing_tags=["nlp", "vision"],
+        )
+
+        existing_tags_per_call = [c.args[2] for c in build_spy.call_args_list]
+        assert existing_tags_per_call == [["nlp", "vision"]] * 3
 
     def test_propagates_hf_token_missing_error(self, mocker: MockerFixture) -> None:
         """Test the error from get_inference_client() propagates when no client given."""

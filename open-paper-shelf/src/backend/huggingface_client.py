@@ -131,18 +131,34 @@ def _call_with_retry(
 
 
 def _build_prompt_messages(
-    kind: Literal["title", "abstract", "tags"], pdf_text: str
+    kind: Literal["title", "abstract", "tags"],
+    pdf_text: str,
+    existing_tags: Sequence[str] = (),
 ) -> List[dict]:
     """Builds the chat messages for one metadata-generation subtask.
 
     Args:
         kind: Which field to generate.
         pdf_text: Extracted paper text to generate from.
+        existing_tags: Tags already used elsewhere in the library. Only
+            consulted when `kind` is "tags", to bias generation toward
+            reusing them instead of inventing near-duplicate new tags.
 
     Returns:
         A list of `{"role": ..., "content": ...}` messages suitable for
         `InferenceClient.chat_completion`.
     """
+    tags_instruction = (
+        "You are a scientific paper assistant. Respond with only a "
+        "comma-separated list of up to 8 short topical tags for the "
+        "paper below - no preamble, no numbering."
+    )
+    if kind == "tags" and existing_tags:
+        tags_instruction += (
+            " Prefer reusing tags from this existing set when they fit: "
+            + ", ".join(existing_tags)
+            + ". Only introduce a new tag if none of these apply."
+        )
     instructions = {
         "title": (
             "You are a scientific paper assistant. Respond with only a "
@@ -154,11 +170,7 @@ def _build_prompt_messages(
             "abstract/TL;DR (2-4 sentences) summarizing the paper below. "
             "Respond with only the summary - no preamble."
         ),
-        "tags": (
-            "You are a scientific paper assistant. Respond with only a "
-            "comma-separated list of up to 8 short topical tags for the "
-            "paper below - no preamble, no numbering."
-        ),
+        "tags": tags_instruction,
     }
     return [
         {"role": "system", "content": instructions[kind]},
@@ -171,6 +183,7 @@ def generate_paper_metadata(
     model: str = DEFAULT_GENERATION_MODEL,
     client: Optional[InferenceClient] = None,
     sleep_fn: Callable[[float], None] = time.sleep,
+    existing_tags: Sequence[str] = (),
 ) -> GeneratedMetadata:
     """Generates a title, abstract, and tags for a paper via Hugging Face.
 
@@ -180,6 +193,9 @@ def generate_paper_metadata(
         client: An existing InferenceClient to reuse. If not provided, one
             is created via `get_inference_client()`.
         sleep_fn: Passed through to the retry helper for each subtask call.
+        existing_tags: Tags already used elsewhere in the library, passed to
+            the tag-generation subtask so it prefers reusing them over
+            inventing near-duplicate new tags.
 
     Returns:
         A GeneratedMetadata with the suggested title, abstract, and tags.
@@ -193,7 +209,8 @@ def generate_paper_metadata(
     def call(kind: Literal["title", "abstract", "tags"]) -> str:
         response = _call_with_retry(
             lambda: active_client.chat_completion(
-                model=model, messages=_build_prompt_messages(kind, pdf_text)
+                model=model,
+                messages=_build_prompt_messages(kind, pdf_text, existing_tags),
             ),
             sleep_fn=sleep_fn,
         )

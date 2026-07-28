@@ -317,7 +317,8 @@ def generate_metadata_for_paper(pid: str, local_pdf_path: Path) -> bool:
         return False
 
     try:
-        generated = generate_paper_metadata(pdf_text)
+        existing_tags = get_all_tags(st.session_state.index)
+        generated = generate_paper_metadata(pdf_text, existing_tags=existing_tags)
         embedding = embed_text(pdf_text)
     except HFTokenMissingError as e:
         st.error(str(e))
@@ -460,6 +461,18 @@ def sync_library_index(creds: Credentials) -> None:
             st.session_state.index = LibraryIndex()
     else:
         st.session_state.index = LibraryIndex()
+
+
+def get_all_tags(index: LibraryIndex) -> list[str]:
+    """Returns every distinct tag used across the library, sorted alphabetically.
+
+    Args:
+        index: The library index to scan.
+
+    Returns:
+        list[str]: The sorted, deduplicated tags used by any paper in `index`.
+    """
+    return sorted({tag for p in index.papers.values() for tag in p.tags})
 
 
 def filter_papers(
@@ -753,13 +766,7 @@ def main() -> None:
                     LABEL_TO_STATUS[label] for label in status_filter_labels
                 ]
             with tags_col:
-                all_tags = sorted(
-                    {
-                        tag
-                        for p in st.session_state.index.papers.values()
-                        for tag in p.tags
-                    }
-                )
+                all_tags = get_all_tags(st.session_state.index)
                 # A previously selected tag may no longer exist (its last
                 # paper was deleted or retagged since the last rerun). Drop
                 # it from the persisted selection before the widget reads
