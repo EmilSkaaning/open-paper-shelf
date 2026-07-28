@@ -2187,6 +2187,91 @@ class TestMainMetadataView:
         assert app.DEFAULT_GENERATION_MODEL in help_text
         assert app.DEFAULT_EMBEDDING_MODEL in help_text
 
+    def test_generate_button_stages_confirm_when_metadata_already_exists(
+        self, fake_st: MagicMock, mocker: MockerFixture, tmp_path: Path
+    ) -> None:
+        """Test clicking Generate metadata on a paper that already has an
+        abstract/tags stages a confirmation instead of regenerating right
+        away, so the existing draft isn't silently overwritten."""
+        pid = "c1" * 16
+        self._select_paper(fake_st, mocker, tmp_path, pid)
+        mocker.patch.object(app, "sync_paper_metadata", return_value=True)
+        local_meta_path = tmp_path / pid / "meta.json"
+        local_meta_path.parent.mkdir(parents=True, exist_ok=True)
+        local_meta_path.write_text(
+            json.dumps({"title": "A Paper", "abstract": "Existing abstract."})
+        )
+        mock_generate = mocker.patch.object(app, "generate_metadata_for_paper")
+        fake_st.button.side_effect = lambda label, **kw: label == "✨ Generate metadata"
+        fake_st.form_submit_button.return_value = False
+
+        app.main()
+
+        assert fake_st.session_state[f"confirm_regenerate_{pid}"] is True
+        mock_generate.assert_not_called()
+
+    def test_confirming_regenerate_generates_and_reruns(
+        self,
+        fake_st: MagicMock,
+        mocker: MockerFixture,
+        tmp_path: Path,
+        stop_rerun: type[BaseException],
+    ) -> None:
+        """Test clicking Regenerate on a staged confirmation actually
+        generates and clears the confirmation state."""
+        pid = "c2" * 16
+        self._select_paper(fake_st, mocker, tmp_path, pid)
+        mocker.patch.object(app, "sync_paper_metadata", return_value=True)
+        local_meta_path = tmp_path / pid / "meta.json"
+        local_meta_path.parent.mkdir(parents=True, exist_ok=True)
+        local_meta_path.write_text(
+            json.dumps({"title": "A Paper", "abstract": "Existing abstract."})
+        )
+        fake_st.session_state[f"confirm_regenerate_{pid}"] = True
+        mock_generate = mocker.patch.object(
+            app, "generate_metadata_for_paper", return_value=True
+        )
+        fake_st.button.side_effect = lambda label, **kw: (
+            kw.get("key") == f"confirm_regenerate_btn_{pid}"
+        )
+        fake_st.form_submit_button.return_value = False
+
+        with pytest.raises(stop_rerun):
+            app.main()
+
+        mock_generate.assert_called_once_with(pid, tmp_path / pid / "paper.pdf")
+        assert f"confirm_regenerate_{pid}" not in fake_st.session_state
+
+    def test_cancelling_regenerate_clears_confirmation_without_generating(
+        self,
+        fake_st: MagicMock,
+        mocker: MockerFixture,
+        tmp_path: Path,
+        stop_rerun: type[BaseException],
+    ) -> None:
+        """Test clicking Cancel on a staged confirmation clears it without
+        generating anything."""
+        pid = "c3" * 16
+        self._select_paper(fake_st, mocker, tmp_path, pid)
+        mocker.patch.object(app, "sync_paper_metadata", return_value=True)
+        local_meta_path = tmp_path / pid / "meta.json"
+        local_meta_path.parent.mkdir(parents=True, exist_ok=True)
+        local_meta_path.write_text(
+            json.dumps({"title": "A Paper", "abstract": "Existing abstract."})
+        )
+        fake_st.session_state[f"confirm_regenerate_{pid}"] = True
+        mock_generate = mocker.patch.object(app, "generate_metadata_for_paper")
+        fake_st.button.side_effect = lambda label, **kw: (
+            kw.get("key") == f"cancel_regenerate_btn_{pid}"
+        )
+        fake_st.form_submit_button.return_value = False
+
+        with pytest.raises(stop_rerun):
+            app.main()
+
+        mock_generate.assert_not_called()
+        assert f"confirm_regenerate_{pid}" not in fake_st.session_state
+
     def test_generate_button_click_stages_draft_and_reruns(
         self,
         fake_st: MagicMock,

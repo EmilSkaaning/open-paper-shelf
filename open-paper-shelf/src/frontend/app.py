@@ -926,8 +926,28 @@ def main() -> None:
                 disabled=not pdf_available,
                 help=GENERATE_METADATA_HELP,
             ):
-                with st.spinner("Generating metadata with Hugging Face..."):
-                    if generate_metadata_for_paper(pid, local_pdf_path):
+                if meta.abstract or meta.tags:
+                    st.session_state[f"confirm_regenerate_{pid}"] = True
+                else:
+                    with st.spinner("Generating metadata with Hugging Face..."):
+                        if generate_metadata_for_paper(pid, local_pdf_path):
+                            st.rerun()
+
+            if st.session_state.get(f"confirm_regenerate_{pid}"):
+                st.warning(
+                    "This paper already has generated metadata. Regenerate "
+                    "and overwrite the draft?"
+                )
+                regen_col, cancel_regen_col = st.columns(2)
+                with regen_col:
+                    if st.button("Regenerate", key=f"confirm_regenerate_btn_{pid}"):
+                        st.session_state.pop(f"confirm_regenerate_{pid}", None)
+                        with st.spinner("Generating metadata with Hugging Face..."):
+                            if generate_metadata_for_paper(pid, local_pdf_path):
+                                st.rerun()
+                with cancel_regen_col:
+                    if st.button("Cancel", key=f"cancel_regenerate_btn_{pid}"):
+                        st.session_state.pop(f"confirm_regenerate_{pid}", None)
                         st.rerun()
 
             for _, dupe_title, dupe_score in st.session_state.get(f"dupes_{pid}", []):
