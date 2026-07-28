@@ -2729,6 +2729,145 @@ class TestMainMetadataView:
         )
         assert fake_st.session_state["hf_quota_exceeded"] is False
 
+    def test_generate_button_stages_draft_when_embedding_hits_quota_error(
+        self,
+        fake_st: MagicMock,
+        mocker: MockerFixture,
+        tmp_path: Path,
+        stop_rerun: type[BaseException],
+    ) -> None:
+        """Test title/abstract/tags stay staged (and hf_quota_exceeded is
+        set) when the already-succeeded generation call is followed by a
+        402 on the embedding call, instead of the whole draft being
+        discarded."""
+        pid = "8a" * 16
+        self._select_paper(fake_st, mocker, tmp_path, pid)
+        mocker.patch.object(app, "sync_paper_metadata", return_value=True)
+        (tmp_path / pid).mkdir(parents=True, exist_ok=True)
+        (tmp_path / pid / "paper.pdf").write_bytes(b"pdf-bytes")
+        mocker.patch.object(app, "extract_pdf_text", return_value="paper text")
+        generated = GeneratedMetadata(
+            title="Gen Title", abstract="Gen Abstract", tags=["ai"]
+        )
+        mocker.patch.object(app, "generate_paper_metadata", return_value=generated)
+        mocker.patch.object(app, "embed_text", side_effect=_make_402_error())
+        fake_st.button.side_effect = lambda label, **kw: label == "✨ Generate metadata"
+        fake_st.form_submit_button.return_value = False
+
+        with pytest.raises(stop_rerun):
+            app.main()
+
+        draft = fake_st.session_state[f"generated_{pid}"]
+        assert draft["title"] == "Gen Title"
+        assert draft["abstract"] == "Gen Abstract"
+        assert draft["tags"] == ["ai"]
+        assert fake_st.session_state["hf_quota_exceeded"] is True
+        assert any(
+            "embedding failed" in str(call.args)
+            for call in fake_st.warning.call_args_list
+        )
+
+    def test_generate_button_preserves_existing_embedding_on_embed_failure(
+        self,
+        fake_st: MagicMock,
+        mocker: MockerFixture,
+        tmp_path: Path,
+        stop_rerun: type[BaseException],
+    ) -> None:
+        """Test a previously-computed embedding isn't blanked out when a
+        re-generation's embedding call fails - only the new text is staged."""
+        pid = "8b" * 16
+        entry = self._select_paper(fake_st, mocker, tmp_path, pid)
+        entry.embedding = [0.9] * 384
+        mocker.patch.object(app, "sync_paper_metadata", return_value=True)
+        (tmp_path / pid).mkdir(parents=True, exist_ok=True)
+        (tmp_path / pid / "paper.pdf").write_bytes(b"pdf-bytes")
+        mocker.patch.object(app, "extract_pdf_text", return_value="paper text")
+        generated = GeneratedMetadata(
+            title="New Title", abstract="New Abstract", tags=[]
+        )
+        mocker.patch.object(app, "generate_paper_metadata", return_value=generated)
+        mocker.patch.object(app, "embed_text", side_effect=RuntimeError("boom"))
+        fake_st.button.side_effect = lambda label, **kw: label == "✨ Generate metadata"
+        fake_st.form_submit_button.return_value = False
+
+        with pytest.raises(stop_rerun):
+            app.main()
+
+        draft = fake_st.session_state[f"generated_{pid}"]
+        assert draft["embedding"] == [0.9] * 384
+        assert fake_st.session_state["hf_quota_exceeded"] is False
+
+    def test_generate_button_stages_draft_when_embedding_token_missing(
+        self,
+        fake_st: MagicMock,
+        mocker: MockerFixture,
+        tmp_path: Path,
+        stop_rerun: type[BaseException],
+    ) -> None:
+        """Test the draft stays staged when the embedding call fails because
+        no HF token is configured for it."""
+        pid = "8c" * 16
+        self._select_paper(fake_st, mocker, tmp_path, pid)
+        mocker.patch.object(app, "sync_paper_metadata", return_value=True)
+        (tmp_path / pid).mkdir(parents=True, exist_ok=True)
+        (tmp_path / pid / "paper.pdf").write_bytes(b"pdf-bytes")
+        mocker.patch.object(app, "extract_pdf_text", return_value="paper text")
+        generated = GeneratedMetadata(title="T", abstract="A", tags=[])
+        mocker.patch.object(app, "generate_paper_metadata", return_value=generated)
+        mocker.patch.object(
+            app, "embed_text", side_effect=app.HFTokenMissingError("Set HF_TOKEN")
+        )
+        fake_st.button.side_effect = lambda label, **kw: label == "✨ Generate metadata"
+        fake_st.form_submit_button.return_value = False
+
+        with pytest.raises(stop_rerun):
+            app.main()
+
+        assert fake_st.session_state[f"generated_{pid}"]["title"] == "T"
+        assert any(
+            "Set HF_TOKEN" in str(call.args) for call in fake_st.error.call_args_list
+        )
+
+    def test_generate_button_stages_draft_when_embedding_hits_non_quota_http_error(
+        self,
+        fake_st: MagicMock,
+        mocker: MockerFixture,
+        tmp_path: Path,
+        stop_rerun: type[BaseException],
+    ) -> None:
+        """Test a non-402 HfHubHTTPError from the embedding call falls
+        through to the generic embed-failure warning without setting
+        hf_quota_exceeded."""
+        pid = "8d" * 16
+        self._select_paper(fake_st, mocker, tmp_path, pid)
+        mocker.patch.object(app, "sync_paper_metadata", return_value=True)
+        (tmp_path / pid).mkdir(parents=True, exist_ok=True)
+        (tmp_path / pid / "paper.pdf").write_bytes(b"pdf-bytes")
+        mocker.patch.object(app, "extract_pdf_text", return_value="paper text")
+        generated = GeneratedMetadata(title="T", abstract="A", tags=[])
+        mocker.patch.object(app, "generate_paper_metadata", return_value=generated)
+        response = httpx.Response(
+            status_code=500, request=httpx.Request("POST", "https://example.com")
+        )
+        mocker.patch.object(
+            app,
+            "embed_text",
+            side_effect=HfHubHTTPError("Internal error", response=response),
+        )
+        fake_st.button.side_effect = lambda label, **kw: label == "✨ Generate metadata"
+        fake_st.form_submit_button.return_value = False
+
+        with pytest.raises(stop_rerun):
+            app.main()
+
+        assert fake_st.session_state[f"generated_{pid}"]["title"] == "T"
+        assert fake_st.session_state["hf_quota_exceeded"] is False
+        assert any(
+            "embedding failed" in str(call.args)
+            for call in fake_st.warning.call_args_list
+        )
+
     def test_duplicate_warning_rendered_when_dupes_present(
         self, fake_st: MagicMock, mocker: MockerFixture, tmp_path: Path
     ) -> None:

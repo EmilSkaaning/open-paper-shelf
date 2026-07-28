@@ -304,17 +304,24 @@ def generate_metadata_for_paper(pid: str, local_pdf_path: Path) -> bool:
     `st.error`/`st.warning` rather than raising, since this is invoked from a
     best-effort UI action.
 
+    The title/abstract/tags call and the embedding call are each already-
+    paid-for Hugging Face requests, so they're staged independently: if
+    title/abstract/tags succeed but the embedding call then fails (e.g. a
+    402 quota error), the text draft is still staged and saveable rather
+    than being discarded along with the failed embedding.
+
     Args:
         pid (str): The paper's unique ID.
         local_pdf_path (Path): Local path to the paper's downloaded PDF.
 
     Returns:
-        bool: True if a draft was staged, False if generation was skipped or
+        bool: True if a draft (full or text-only) was staged, False if
+        generation was skipped or the title/abstract/tags call itself
         failed (in which case an error/warning has already been shown).
 
     Sets:
-        `st.session_state["hf_quota_exceeded"]`: True if this call failed
-        because Hugging Face returned 402 Payment Required (monthly
+        `st.session_state["hf_quota_exceeded"]`: True if either HF call
+        failed because Hugging Face returned 402 Payment Required (monthly
         included credits used up), False otherwise. Callers that generate
         for multiple papers in a loop should check this after each call and
         stop the batch rather than retrying more calls doomed to fail the
@@ -332,7 +339,6 @@ def generate_metadata_for_paper(pid: str, local_pdf_path: Path) -> bool:
     try:
         existing_tags = get_all_tags(st.session_state.index)
         generated = generate_paper_metadata(pdf_text, existing_tags=existing_tags)
-        embedding = embed_text(pdf_text)
     except HFTokenMissingError as e:
         st.error(str(e))
         return False
@@ -351,11 +357,18 @@ def generate_metadata_for_paper(pid: str, local_pdf_path: Path) -> bool:
         st.error(f"Metadata generation failed: {e}")
         return False
 
+    # Stage the text draft now, before the embedding is even attempted -
+    # this call already cost real HF credits, so a failure below must not
+    # throw it away. Seed "embedding" from any existing embedding rather
+    # than blanking it, so a failed re-generation doesn't lose a
+    # previously-computed one if the user saves this draft as-is.
+    existing_entry = st.session_state.index.papers.get(pid)
+    existing_embedding = existing_entry.embedding if existing_entry else []
     st.session_state[f"generated_{pid}"] = {
         "title": generated.title,
         "abstract": generated.abstract,
         "tags": generated.tags,
-        "embedding": embedding,
+        "embedding": existing_embedding,
     }
     # The form's widgets already have keys (title_{pid}, etc.) from their
     # first render, so passing value=... on later reruns has no effect -
@@ -364,6 +377,30 @@ def generate_metadata_for_paper(pid: str, local_pdf_path: Path) -> bool:
     st.session_state[f"title_{pid}"] = generated.title
     st.session_state[f"abstract_{pid}"] = generated.abstract
     st.session_state[f"tags_{pid}"] = ", ".join(generated.tags)
+
+    try:
+        embedding = embed_text(pdf_text)
+    except HFTokenMissingError as e:
+        st.error(str(e))
+        return True
+    except HfHubHTTPError as e:
+        if getattr(e.response, "status_code", None) == 402:
+            st.session_state["hf_quota_exceeded"] = True
+            st.warning(
+                "Title/abstract/tags generated, but the similarity-detection "
+                "embedding failed: Hugging Face returned 402 Payment "
+                "Required. You can still save this draft; duplicate "
+                "detection won't be refreshed for it until you regenerate "
+                "later."
+            )
+        else:
+            st.warning(f"Title/abstract/tags generated, but embedding failed: {e}")
+        return True
+    except Exception as e:
+        st.warning(f"Title/abstract/tags generated, but embedding failed: {e}")
+        return True
+
+    st.session_state[f"generated_{pid}"]["embedding"] = embedding
     st.session_state[f"dupes_{pid}"] = find_similar_papers(
         embedding, st.session_state.index, exclude_pid=pid
     )
