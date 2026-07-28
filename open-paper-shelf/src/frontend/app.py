@@ -577,6 +577,22 @@ def get_duplicate_pids(index: LibraryIndex) -> set[str]:
     }
 
 
+def get_missing_metadata_pids(index: LibraryIndex) -> set[str]:
+    """Finds every paper with no generated tags or embedding yet.
+
+    Args:
+        index: The library index to scan.
+
+    Returns:
+        set[str]: The paper IDs that have never had metadata generated.
+    """
+    return {
+        pid
+        for pid, entry in index.papers.items()
+        if not entry.tags and not entry.embedding
+    }
+
+
 def filter_papers(
     papers: dict[str, PaperIndexEntry],
     search_query: str,
@@ -834,7 +850,9 @@ def main() -> None:
             # offers theme-wide presets), so the delete and generate icons
             # share the same "primary" red when active and are told apart
             # by their emoji and tooltip instead.
-            icon_col1, icon_col2, _icon_spacer = st.columns([1, 1, 8], gap=None)
+            icon_col1, icon_col2, icon_col3, _icon_spacer = st.columns(
+                [1, 1, 1, 7], gap=None
+            )
             with icon_col1:
                 if st.button(
                     "🗑️",
@@ -857,6 +875,19 @@ def main() -> None:
                         st.session_state.confirm_generate_pids = checked_pids
                     else:
                         st.warning("No papers selected.")
+            with icon_col3:
+                if st.button(
+                    "🪄",
+                    key="generate_missing_icon",
+                    help="Generate metadata for every paper that doesn't have any yet",
+                ):
+                    missing_pids = list(
+                        get_missing_metadata_pids(st.session_state.index)
+                    )
+                    if missing_pids:
+                        st.session_state.confirm_generate_pids = missing_pids
+                    else:
+                        st.info("Every paper already has metadata.")
 
             search_box = st_keyup(
                 "Search", placeholder="Search papers...", key="search_box"

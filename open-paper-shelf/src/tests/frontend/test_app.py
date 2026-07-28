@@ -1002,6 +1002,54 @@ class TestGetDuplicatePids:
         assert app.get_duplicate_pids(index) == set()
 
 
+class TestGetMissingMetadataPids:
+    """Test suite for get_missing_metadata_pids."""
+
+    def test_paper_with_no_tags_or_embedding_is_included(self) -> None:
+        """Test a never-generated paper (no tags, no embedding) is flagged."""
+        pid = "a" * 32
+        index = LibraryIndex(
+            papers={
+                pid: PaperIndexEntry(
+                    title="One", pdf_file_id="p1", meta_file_id="m1", folder_id="f1"
+                )
+            }
+        )
+        assert app.get_missing_metadata_pids(index) == {pid}
+
+    def test_paper_with_tags_is_excluded(self) -> None:
+        """Test a paper with tags (but no embedding) is not flagged."""
+        pid = "a" * 32
+        index = LibraryIndex(
+            papers={
+                pid: PaperIndexEntry(
+                    title="One",
+                    pdf_file_id="p1",
+                    meta_file_id="m1",
+                    folder_id="f1",
+                    tags=["nlp"],
+                )
+            }
+        )
+        assert app.get_missing_metadata_pids(index) == set()
+
+    def test_paper_with_embedding_is_excluded(self) -> None:
+        """Test a paper with an embedding (but no tags) is not flagged."""
+        pid = "a" * 32
+        index = LibraryIndex(
+            papers={
+                pid: PaperIndexEntry(
+                    title="One",
+                    pdf_file_id="p1",
+                    meta_file_id="m1",
+                    folder_id="f1",
+                    embedding=[1.0, 0.0],
+                )
+            }
+        )
+        assert app.get_missing_metadata_pids(index) == set()
+
+
 class TestFilterPapers:
     """Test suite for filter_papers."""
 
@@ -2070,7 +2118,7 @@ class TestMainBulkGenerateFlow:
         icon_bar_call = next(
             c
             for c in fake_st.columns.call_args_list
-            if c.args and c.args[0] == [1, 1, 8]
+            if c.args and c.args[0] == [1, 1, 1, 7]
         )
         assert "gap" in icon_bar_call.kwargs
         assert icon_bar_call.kwargs["gap"] is None
@@ -2102,6 +2150,75 @@ class TestMainBulkGenerateFlow:
 
         assert fake_st.session_state.confirm_generate_pids == [pid]
         mock_generate.assert_not_called()
+
+    def test_generate_missing_icon_stages_confirmation_for_missing_papers(
+        self, fake_st: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """Test clicking the wizard icon stages a confirmation for every
+        paper with no generated metadata yet, ignoring checkbox selection."""
+        pid_missing, pid_has_tags = "a" * 32, "b" * 32
+        entry_missing = PaperIndexEntry(
+            title="Missing", pdf_file_id="pdf1", meta_file_id="meta1", folder_id="f1"
+        )
+        entry_has_tags = PaperIndexEntry(
+            title="Has Tags",
+            pdf_file_id="pdf2",
+            meta_file_id="meta2",
+            folder_id="f2",
+            tags=["nlp"],
+        )
+        fake_st.session_state.current_lib_id = "lib_123"
+        fake_st.session_state.current_papers_id = "papers_123"
+        fake_st.session_state.root_id = "root_123"
+        fake_st.session_state.index = LibraryIndex(
+            papers={pid_missing: entry_missing, pid_has_tags: entry_has_tags}
+        )
+        fake_st.session_state.selected_paper = None
+        fake_st.file_uploader.return_value = None
+        fake_st.button.side_effect = lambda label, **kw: (
+            kw.get("key") == "generate_missing_icon"
+        )
+        mock_generate = mocker.patch.object(app, "generate_metadata_for_selected")
+        mocker.patch.object(app, "st_keyup", return_value="")
+        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
+
+        app.main()
+
+        assert fake_st.session_state.confirm_generate_pids == [pid_missing]
+        mock_generate.assert_not_called()
+
+    def test_generate_missing_icon_with_none_missing_shows_info(
+        self, fake_st: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """Test clicking the wizard icon when every paper already has
+        metadata shows an info message instead of staging a confirmation."""
+        pid = "a" * 32
+        entry = PaperIndexEntry(
+            title="Has Tags",
+            pdf_file_id="pdf1",
+            meta_file_id="meta1",
+            folder_id="f1",
+            tags=["nlp"],
+        )
+        fake_st.session_state.current_lib_id = "lib_123"
+        fake_st.session_state.current_papers_id = "papers_123"
+        fake_st.session_state.root_id = "root_123"
+        fake_st.session_state.index = LibraryIndex(papers={pid: entry})
+        fake_st.session_state.selected_paper = None
+        fake_st.file_uploader.return_value = None
+        fake_st.button.side_effect = lambda label, **kw: (
+            kw.get("key") == "generate_missing_icon"
+        )
+        mocker.patch.object(app, "st_keyup", return_value="")
+        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
+
+        app.main()
+
+        assert "confirm_generate_pids" not in fake_st.session_state
+        assert any(
+            "already has metadata" in str(call.args)
+            for call in fake_st.info.call_args_list
+        )
 
     def test_confirming_bulk_generate_calls_generate_and_reruns(
         self,
