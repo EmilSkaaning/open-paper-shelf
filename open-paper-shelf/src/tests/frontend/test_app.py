@@ -1828,6 +1828,36 @@ class TestMainBulkGenerateFlow:
         )
         assert generate_call.kwargs.get("type") == "primary"
 
+    def test_bulk_generate_icon_has_scoped_light_blue_css(
+        self, fake_st: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """Test the generate icon's glow color is scoped via marker-div CSS,
+        distinct from the shared red primary-button theme color."""
+        pid = "a" * 32
+        entry = PaperIndexEntry(
+            title="Some Paper", pdf_file_id="pdf1", meta_file_id="meta1", folder_id="f1"
+        )
+        fake_st.session_state.current_lib_id = "lib_123"
+        fake_st.session_state.current_papers_id = "papers_123"
+        fake_st.session_state.root_id = "root_123"
+        fake_st.session_state.index = LibraryIndex(papers={pid: entry})
+        fake_st.session_state.selected_paper = None
+        fake_st.file_uploader.return_value = None
+        fake_st.checkbox.return_value = False
+        fake_st.button.return_value = False
+        mocker.patch.object(app, "st_keyup", return_value="")
+        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
+
+        app.main()
+
+        css_call = next(
+            c
+            for c in fake_st.markdown.call_args_list
+            if "generate-icon-marker" in c.args[0]
+        )
+        assert css_call.kwargs.get("unsafe_allow_html") is True
+        assert "#4FC3F7" in css_call.args[0]
+
     def test_bulk_generate_with_checked_paper_shows_confirmation(
         self, fake_st: MagicMock, mocker: MockerFixture
     ) -> None:

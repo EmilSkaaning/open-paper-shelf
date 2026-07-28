@@ -725,7 +725,10 @@ def main() -> None:
                 for pid in st.session_state.index.papers
                 if st.session_state.get(f"chk_{pid}")
             ]
-            icon_col1, icon_col2 = st.columns([1, 1])
+            # Narrow columns keep the two icons adjacent instead of centered
+            # in two full-width halves; the trailing column just absorbs
+            # the remaining space.
+            icon_col1, icon_col2, _icon_spacer = st.columns([1, 1, 8])
             with icon_col1:
                 if st.button(
                     "🗑️",
@@ -738,6 +741,18 @@ def main() -> None:
                     else:
                         st.warning("No papers selected.")
             with icon_col2:
+                # Marker div + adjacent-sibling CSS scopes the light-blue
+                # "glow" to just this button, since Streamlit's `type=`
+                # only offers the shared theme primary color (used above
+                # for the red delete icon) with no per-button override.
+                st.markdown(
+                    '<div class="generate-icon-marker"></div>'
+                    "<style>.generate-icon-marker + div button[kind='primary'] "
+                    "{ background-color: #4FC3F7 !important; "
+                    "border-color: #4FC3F7 !important; "
+                    "box-shadow: 0 0 8px #4FC3F7 !important; }</style>",
+                    unsafe_allow_html=True,
+                )
                 if st.button(
                     "✨",
                     key="bulk_generate_icon",
