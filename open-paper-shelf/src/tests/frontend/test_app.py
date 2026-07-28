@@ -12,7 +12,7 @@ from pytest_mock import MockerFixture
 
 import frontend.app as app
 from backend.huggingface_client import GeneratedMetadata
-from backend.models import LibraryIndex, PaperIndexEntry
+from backend.models import LibraryIndex, PaperIndexEntry, PaperMetadata
 from tests.frontend.conftest import make_uploaded_file
 
 
@@ -1841,6 +1841,136 @@ class TestMainDeleteFlow:
         assert f"btn_{kept_pid}" in rendered_keys
 
 
+class TestPersistGeneratedMetadata:
+    """Test suite for persist_generated_metadata."""
+
+    def test_returns_false_and_skips_drive_calls_when_nothing_staged(
+        self, fake_st: MagicMock, mocker: MockerFixture, tmp_path: Path
+    ) -> None:
+        """Test a pid with no staged draft is a no-op."""
+        pid = "a" * 32
+        index = LibraryIndex(
+            papers={
+                pid: PaperIndexEntry(
+                    title="One", pdf_file_id="p1", meta_file_id="m1", folder_id="f1"
+                )
+            }
+        )
+        mock_upload_file = mocker.patch.object(app, "upload_file_to_folder")
+
+        result = app.persist_generated_metadata(
+            creds=MagicMock(),
+            pid=pid,
+            index=index,
+            local_meta_path=tmp_path / "meta.json",
+        )
+
+        assert result is False
+        mock_upload_file.assert_not_called()
+
+    def test_writes_uploads_and_updates_index_with_no_existing_local_cache(
+        self, fake_st: MagicMock, mocker: MockerFixture, tmp_path: Path
+    ) -> None:
+        """Test a staged draft is written, uploaded, and applied to the
+        index entry when there is no pre-existing local meta.json."""
+        pid = "a" * 32
+        entry = PaperIndexEntry(
+            title="Old Title", pdf_file_id="p1", meta_file_id="m1", folder_id="f1"
+        )
+        index = LibraryIndex(papers={pid: entry})
+        fake_st.session_state[f"generated_{pid}"] = {
+            "title": "New Title",
+            "abstract": "A new abstract.",
+            "tags": ["nlp", "transformers"],
+            "embedding": [0.1, 0.2],
+        }
+        fake_st.session_state[f"dupes_{pid}"] = [("other", "Other Paper", 0.9)]
+        mock_upload_file = mocker.patch.object(app, "upload_file_to_folder")
+        local_meta_path = tmp_path / "meta.json"
+
+        result = app.persist_generated_metadata(
+            creds=MagicMock(), pid=pid, index=index, local_meta_path=local_meta_path
+        )
+
+        assert result is True
+        saved = json.loads(local_meta_path.read_text(encoding="utf-8"))
+        assert saved["title"] == "New Title"
+        assert saved["abstract"] == "A new abstract."
+        assert saved["tags"] == ["nlp", "transformers"]
+        assert saved["embedding"] == [0.1, 0.2]
+        mock_upload_file.assert_called_once_with(
+            mocker.ANY, "f1", local_meta_path, "meta.json", "application/json"
+        )
+        assert index.papers[pid].title == "New Title"
+        assert index.papers[pid].tags == ["nlp", "transformers"]
+        assert index.papers[pid].embedding == [0.1, 0.2]
+        assert f"generated_{pid}" not in fake_st.session_state
+        assert f"dupes_{pid}" not in fake_st.session_state
+
+    def test_preserves_notes_citation_and_status_from_existing_local_cache(
+        self, fake_st: MagicMock, mocker: MockerFixture, tmp_path: Path
+    ) -> None:
+        """Test fields not covered by the draft survive from the paper's
+        existing local metadata cache."""
+        pid = "a" * 32
+        entry = PaperIndexEntry(
+            title="Old Title", pdf_file_id="p1", meta_file_id="m1", folder_id="f1"
+        )
+        index = LibraryIndex(papers={pid: entry})
+        local_meta_path = tmp_path / "meta.json"
+        existing = PaperMetadata(
+            title="Old Title",
+            notes="My notes",
+            citation="Some Citation",
+            status="Reading",
+        )
+        local_meta_path.write_text(existing.model_dump_json(indent=2), encoding="utf-8")
+        fake_st.session_state[f"generated_{pid}"] = {
+            "title": "New Title",
+            "abstract": "A new abstract.",
+            "tags": ["nlp"],
+            "embedding": [0.5],
+        }
+        mocker.patch.object(app, "upload_file_to_folder")
+
+        app.persist_generated_metadata(
+            creds=MagicMock(), pid=pid, index=index, local_meta_path=local_meta_path
+        )
+
+        saved = json.loads(local_meta_path.read_text(encoding="utf-8"))
+        assert saved["notes"] == "My notes"
+        assert saved["citation"] == "Some Citation"
+        assert saved["status"] == "Reading"
+        assert saved["title"] == "New Title"
+
+    def test_falls_back_to_defaults_when_local_cache_is_corrupt(
+        self, fake_st: MagicMock, mocker: MockerFixture, tmp_path: Path
+    ) -> None:
+        """Test a corrupt local meta.json doesn't abort persistence."""
+        pid = "a" * 32
+        entry = PaperIndexEntry(
+            title="Old Title", pdf_file_id="p1", meta_file_id="m1", folder_id="f1"
+        )
+        index = LibraryIndex(papers={pid: entry})
+        local_meta_path = tmp_path / "meta.json"
+        local_meta_path.write_text("not valid json", encoding="utf-8")
+        fake_st.session_state[f"generated_{pid}"] = {
+            "title": "New Title",
+            "abstract": "A new abstract.",
+            "tags": ["nlp"],
+            "embedding": [0.5],
+        }
+        mocker.patch.object(app, "upload_file_to_folder")
+
+        result = app.persist_generated_metadata(
+            creds=MagicMock(), pid=pid, index=index, local_meta_path=local_meta_path
+        )
+
+        assert result is True
+        saved = json.loads(local_meta_path.read_text(encoding="utf-8"))
+        assert saved["title"] == "New Title"
+
+
 class TestGenerateMetadataForSelected:
     """Test suite for generate_metadata_for_selected."""
 
@@ -1861,6 +1991,7 @@ class TestGenerateMetadataForSelected:
             }
         )
         mock_download = mocker.patch.object(app, "download_file")
+        mocker.patch.object(app, "sync_paper_metadata")
         mock_generate = mocker.patch.object(
             app, "generate_metadata_for_paper", return_value=True
         )
@@ -1869,6 +2000,7 @@ class TestGenerateMetadataForSelected:
             creds=MagicMock(),
             pids=[pid1, pid2],
             index=index,
+            papers_id="papers_123",
             local_lib_dir=tmp_path,
             sleep_fn=lambda _: None,
         )
@@ -1894,10 +2026,15 @@ class TestGenerateMetadataForSelected:
         local_pdf_path.parent.mkdir(parents=True)
         local_pdf_path.write_bytes(b"pdf-bytes")
         mock_download = mocker.patch.object(app, "download_file")
+        mocker.patch.object(app, "sync_paper_metadata")
         mocker.patch.object(app, "generate_metadata_for_paper", return_value=True)
 
         app.generate_metadata_for_selected(
-            creds=MagicMock(), pids=[pid], index=index, local_lib_dir=tmp_path
+            creds=MagicMock(),
+            pids=[pid],
+            index=index,
+            papers_id="papers_123",
+            local_lib_dir=tmp_path,
         )
 
         mock_download.assert_not_called()
@@ -1921,6 +2058,7 @@ class TestGenerateMetadataForSelected:
         mocker.patch.object(
             app, "download_file", side_effect=[RuntimeError("network blip"), None]
         )
+        mocker.patch.object(app, "sync_paper_metadata")
         mock_generate = mocker.patch.object(
             app, "generate_metadata_for_paper", return_value=True
         )
@@ -1929,6 +2067,7 @@ class TestGenerateMetadataForSelected:
             creds=MagicMock(),
             pids=[pid1, pid2],
             index=index,
+            papers_id="papers_123",
             local_lib_dir=tmp_path,
             sleep_fn=lambda _: None,
         )
@@ -1946,6 +2085,7 @@ class TestGenerateMetadataForSelected:
             creds=MagicMock(),
             pids=["missing" * 5],
             index=LibraryIndex(),
+            papers_id="papers_123",
             local_lib_dir=tmp_path,
         )
 
@@ -1968,6 +2108,7 @@ class TestGenerateMetadataForSelected:
         for pid in pids:
             (tmp_path / pid).mkdir(parents=True)
             (tmp_path / pid / "paper.pdf").write_bytes(b"pdf-bytes")
+        mocker.patch.object(app, "sync_paper_metadata")
         mocker.patch.object(app, "generate_metadata_for_paper", return_value=True)
         mock_sleep = mocker.Mock()
 
@@ -1975,6 +2116,7 @@ class TestGenerateMetadataForSelected:
             creds=MagicMock(),
             pids=pids,
             index=index,
+            papers_id="papers_123",
             local_lib_dir=tmp_path,
             sleep_fn=mock_sleep,
         )
@@ -2006,6 +2148,7 @@ class TestGenerateMetadataForSelected:
             fake_st.session_state["hf_quota_exceeded"] = True
             return False
 
+        mocker.patch.object(app, "sync_paper_metadata")
         mock_generate = mocker.patch.object(
             app, "generate_metadata_for_paper", side_effect=fake_generate
         )
@@ -2015,6 +2158,7 @@ class TestGenerateMetadataForSelected:
             creds=MagicMock(),
             pids=[pid1, pid2],
             index=index,
+            papers_id="papers_123",
             local_lib_dir=tmp_path,
             sleep_fn=mock_sleep,
         )
@@ -2024,6 +2168,189 @@ class TestGenerateMetadataForSelected:
         assert any(
             "Stopped after 1/2 paper(s)" in str(call.args)
             for call in fake_st.warning.call_args_list
+        )
+
+    def test_persists_each_paper_and_uploads_index_once_after_the_batch(
+        self, fake_st: MagicMock, mocker: MockerFixture, tmp_path: Path
+    ) -> None:
+        """Test a successful batch persists every paper's draft and
+        uploads the whole-library index exactly once, after the loop."""
+        pid1, pid2 = "a" * 32, "b" * 32
+        index = LibraryIndex(
+            papers={
+                pid1: PaperIndexEntry(
+                    title="One", pdf_file_id="p1", meta_file_id="m1", folder_id="f1"
+                ),
+                pid2: PaperIndexEntry(
+                    title="Two", pdf_file_id="p2", meta_file_id="m2", folder_id="f2"
+                ),
+            }
+        )
+        for pid in (pid1, pid2):
+            (tmp_path / pid).mkdir(parents=True)
+            (tmp_path / pid / "paper.pdf").write_bytes(b"pdf-bytes")
+
+        def fake_generate(pid: str, _local_pdf_path: Path) -> bool:
+            fake_st.session_state[f"generated_{pid}"] = {
+                "title": f"Title {pid}",
+                "abstract": "Abstract.",
+                "tags": ["nlp"],
+                "embedding": [0.1],
+            }
+            return True
+
+        mocker.patch.object(app, "sync_paper_metadata")
+        mocker.patch.object(
+            app, "generate_metadata_for_paper", side_effect=fake_generate
+        )
+        mocker.patch.object(app, "upload_file_to_folder")
+        mock_upload_index = mocker.patch.object(app, "upload_library_index")
+
+        app.generate_metadata_for_selected(
+            creds=MagicMock(),
+            pids=[pid1, pid2],
+            index=index,
+            papers_id="papers_123",
+            local_lib_dir=tmp_path,
+            sleep_fn=lambda _: None,
+        )
+
+        assert index.papers[pid1].title == f"Title {pid1}"
+        assert index.papers[pid2].title == f"Title {pid2}"
+        mock_upload_index.assert_called_once_with(mocker.ANY, "papers_123", index)
+
+    def test_persist_failure_for_one_paper_is_reported_and_batch_continues(
+        self, fake_st: MagicMock, mocker: MockerFixture, tmp_path: Path
+    ) -> None:
+        """Test a persistence failure for one paper is reported without
+        stopping the rest of the batch, and the surviving paper is still
+        applied to the index."""
+        pid1, pid2 = "a" * 32, "b" * 32
+        index = LibraryIndex(
+            papers={
+                pid1: PaperIndexEntry(
+                    title="One", pdf_file_id="p1", meta_file_id="m1", folder_id="f1"
+                ),
+                pid2: PaperIndexEntry(
+                    title="Two", pdf_file_id="p2", meta_file_id="m2", folder_id="f2"
+                ),
+            }
+        )
+        for pid in (pid1, pid2):
+            (tmp_path / pid).mkdir(parents=True)
+            (tmp_path / pid / "paper.pdf").write_bytes(b"pdf-bytes")
+
+        def fake_generate(pid: str, _local_pdf_path: Path) -> bool:
+            fake_st.session_state[f"generated_{pid}"] = {
+                "title": f"Title {pid}",
+                "abstract": "Abstract.",
+                "tags": ["nlp"],
+                "embedding": [0.1],
+            }
+            return True
+
+        mocker.patch.object(app, "sync_paper_metadata")
+        mocker.patch.object(
+            app, "generate_metadata_for_paper", side_effect=fake_generate
+        )
+        mocker.patch.object(
+            app, "upload_file_to_folder", side_effect=[RuntimeError("boom"), None]
+        )
+        mock_upload_index = mocker.patch.object(app, "upload_library_index")
+
+        app.generate_metadata_for_selected(
+            creds=MagicMock(),
+            pids=[pid1, pid2],
+            index=index,
+            papers_id="papers_123",
+            local_lib_dir=tmp_path,
+            sleep_fn=lambda _: None,
+        )
+
+        assert any(
+            "failed to save it" in str(call.args)
+            for call in fake_st.error.call_args_list
+        )
+        assert index.papers[pid1].title == "One"
+        assert index.papers[pid2].title == f"Title {pid2}"
+        mock_upload_index.assert_called_once_with(mocker.ANY, "papers_123", index)
+
+    def test_does_not_upload_index_when_nothing_was_persisted(
+        self, fake_st: MagicMock, mocker: MockerFixture, tmp_path: Path
+    ) -> None:
+        """Test the index isn't uploaded at all when every paper in the
+        batch failed to generate (nothing to save)."""
+        pid = "a" * 32
+        index = LibraryIndex(
+            papers={
+                pid: PaperIndexEntry(
+                    title="One", pdf_file_id="p1", meta_file_id="m1", folder_id="f1"
+                )
+            }
+        )
+        (tmp_path / pid).mkdir(parents=True)
+        (tmp_path / pid / "paper.pdf").write_bytes(b"pdf-bytes")
+        mocker.patch.object(app, "sync_paper_metadata")
+        mocker.patch.object(app, "generate_metadata_for_paper", return_value=False)
+        mock_upload_index = mocker.patch.object(app, "upload_library_index")
+
+        app.generate_metadata_for_selected(
+            creds=MagicMock(),
+            pids=[pid],
+            index=index,
+            papers_id="papers_123",
+            local_lib_dir=tmp_path,
+            sleep_fn=lambda _: None,
+        )
+
+        mock_upload_index.assert_not_called()
+
+    def test_index_upload_failure_after_batch_is_reported(
+        self, fake_st: MagicMock, mocker: MockerFixture, tmp_path: Path
+    ) -> None:
+        """Test a failure uploading the whole-library index after the batch
+        is reported rather than raised."""
+        pid = "a" * 32
+        index = LibraryIndex(
+            papers={
+                pid: PaperIndexEntry(
+                    title="One", pdf_file_id="p1", meta_file_id="m1", folder_id="f1"
+                )
+            }
+        )
+        (tmp_path / pid).mkdir(parents=True)
+        (tmp_path / pid / "paper.pdf").write_bytes(b"pdf-bytes")
+
+        def fake_generate(pid: str, _local_pdf_path: Path) -> bool:
+            fake_st.session_state[f"generated_{pid}"] = {
+                "title": "New Title",
+                "abstract": "Abstract.",
+                "tags": ["nlp"],
+                "embedding": [0.1],
+            }
+            return True
+
+        mocker.patch.object(app, "sync_paper_metadata")
+        mocker.patch.object(
+            app, "generate_metadata_for_paper", side_effect=fake_generate
+        )
+        mocker.patch.object(app, "upload_file_to_folder")
+        mocker.patch.object(
+            app, "upload_library_index", side_effect=RuntimeError("network blip")
+        )
+
+        app.generate_metadata_for_selected(
+            creds=MagicMock(),
+            pids=[pid],
+            index=index,
+            papers_id="papers_123",
+            local_lib_dir=tmp_path,
+            sleep_fn=lambda _: None,
+        )
+
+        assert any(
+            "syncing the index failed" in str(call.args)
+            for call in fake_st.error.call_args_list
         )
 
 
@@ -2252,7 +2579,7 @@ class TestMainBulkGenerateFlow:
             app.main()
 
         mock_generate.assert_called_once_with(
-            mocker.ANY, [pid], fake_st.session_state.index, tmp_path
+            mocker.ANY, [pid], fake_st.session_state.index, "papers_123", tmp_path
         )
         assert fake_st.session_state.confirm_generate_pids is None
 
