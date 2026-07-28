@@ -1110,6 +1110,42 @@ class TestMainLibraryView:
         assert f"btn_{pid_read}" in rendered_keys
         assert f"btn_{pid_unread}" not in rendered_keys
 
+    def test_stale_tags_filter_selection_is_dropped(
+        self, fake_st: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """Test a previously selected tag that no longer exists on any
+        paper (e.g. its last paper was deleted or retagged) is silently
+        dropped from the persisted filter selection instead of leaving a
+        stale value that no longer matches the widget's current options."""
+        pid = "a" * 32
+        fake_st.session_state.current_lib_id = "lib_123"
+        fake_st.session_state.current_papers_id = "papers_123"
+        fake_st.session_state.root_id = "root_123"
+        fake_st.session_state.index = LibraryIndex(
+            papers={
+                pid: PaperIndexEntry(
+                    title="Urgent Paper",
+                    pdf_file_id="p1",
+                    meta_file_id="m1",
+                    folder_id="f1",
+                    tags=["urgent"],
+                )
+            }
+        )
+        fake_st.session_state.selected_paper = None
+        fake_st.session_state.tags_filter = ["urgent", "obsolete-tag"]
+        fake_st.file_uploader.return_value = None
+        fake_st.multiselect.side_effect = lambda label, **kw: (
+            fake_st.session_state.get(kw.get("key"), []) if label == "Tags" else []
+        )
+        mocker.patch.object(app, "st_keyup", return_value="")
+        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
+
+        app.main()
+
+        assert fake_st.session_state.tags_filter == ["urgent"]
+        fake_st.error.assert_not_called()
+
     def test_paper_row_icon_reflects_status(
         self, fake_st: MagicMock, mocker: MockerFixture
     ) -> None:

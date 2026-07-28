@@ -560,6 +560,14 @@ def main() -> None:
             all_tags = sorted(
                 {tag for p in st.session_state.index.papers.values() for tag in p.tags}
             )
+            # A previously selected tag may no longer exist (its last paper
+            # was deleted or retagged since the last rerun). Drop it from
+            # the persisted selection before the widget reads it so a stale
+            # value never lingers against the current options.
+            if "tags_filter" in st.session_state:
+                st.session_state.tags_filter = [
+                    tag for tag in st.session_state.tags_filter if tag in all_tags
+                ]
             tags_filter = st.multiselect("Tags", options=all_tags, key="tags_filter")
 
         filtered_papers = filter_papers(
