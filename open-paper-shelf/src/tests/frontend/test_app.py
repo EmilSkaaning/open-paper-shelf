@@ -30,21 +30,6 @@ class TestFakeStColumnsFixture:
         assert three[0] is not three[1] is not three[2]
 
 
-class TestGetInitialSidebarState:
-    """Test suite for get_initial_sidebar_state."""
-
-    def test_expanded_when_library_already_open(self, fake_st: MagicMock) -> None:
-        """Test the sidebar starts expanded once a library is selected."""
-        fake_st.session_state.current_lib_id = "lib_123"
-
-        assert app.get_initial_sidebar_state() == "expanded"
-
-    def test_auto_when_no_library_selected(self, fake_st: MagicMock) -> None:
-        """Test the sidebar keeps Streamlit's default behavior before any
-        library has been opened."""
-        assert app.get_initial_sidebar_state() == "auto"
-
-
 class TestSyncLibraryIndex:
     """Test suite for sync_library_index."""
 
@@ -1201,6 +1186,7 @@ class TestMainUploadFlow:
         app.main()
 
         fake_st.expander.assert_any_call("📤 Upload Paper", expanded=False)
+        fake_st.expander.assert_any_call("Library Papers", expanded=True)
         assert any(
             call.kwargs.get("height") == 150
             for call in fake_st.container.call_args_list
@@ -1284,6 +1270,43 @@ class TestMainDeleteFlow:
 
         fake_st.warning.assert_any_call("No papers selected.")
         assert "confirm_delete_pids" not in fake_st.session_state
+
+        trash_call = next(
+            c
+            for c in fake_st.button.call_args_list
+            if c.kwargs.get("key") == "trash_icon"
+        )
+        assert trash_call.kwargs.get("type") == "secondary"
+
+    def test_trash_icon_turns_primary_when_a_paper_is_checked(
+        self, fake_st: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """Test the bin icon renders as a primary (red) button once at
+        least one paper's checkbox is checked, even if that paper is
+        currently hidden by a search/status/tag filter."""
+        pid = "a" * 32
+        entry = PaperIndexEntry(
+            title="Some Paper", pdf_file_id="pdf1", meta_file_id="meta1", folder_id="f1"
+        )
+        fake_st.session_state.current_lib_id = "lib_123"
+        fake_st.session_state.current_papers_id = "papers_123"
+        fake_st.session_state.root_id = "root_123"
+        fake_st.session_state.index = LibraryIndex(papers={pid: entry})
+        fake_st.session_state.selected_paper = None
+        fake_st.file_uploader.return_value = None
+        fake_st.session_state[f"chk_{pid}"] = True
+        fake_st.button.return_value = False
+        mocker.patch.object(app, "st_keyup", return_value="")
+        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
+
+        app.main()
+
+        trash_call = next(
+            c
+            for c in fake_st.button.call_args_list
+            if c.kwargs.get("key") == "trash_icon"
+        )
+        assert trash_call.kwargs.get("type") == "primary"
 
     def test_trash_with_checked_paper_shows_confirmation(
         self, fake_st: MagicMock, mocker: MockerFixture
@@ -1503,10 +1526,15 @@ class TestMainMetadataView:
         assert entry.title == "A Paper"
 
     def test_form_submit_saves_and_uploads_metadata(
-        self, fake_st: MagicMock, mocker: MockerFixture, tmp_path: Path
+        self,
+        fake_st: MagicMock,
+        mocker: MockerFixture,
+        tmp_path: Path,
+        stop_rerun: type[BaseException],
     ) -> None:
         """Test submitting the metadata form saves it locally, uploads it to
-        Drive, and updates the index entry's title if it changed."""
+        Drive, updates the index entry's title if it changed, and reruns so
+        the sidebar reflects the new status/tags immediately."""
         pid = "c" * 32
         self._select_paper(fake_st, mocker, tmp_path, pid)
         mocker.patch.object(app, "sync_paper_metadata", return_value=True)
@@ -1522,7 +1550,8 @@ class TestMainMetadataView:
         fake_st.text_area.return_value = "Some notes"
         fake_st.form_submit_button.return_value = True
 
-        app.main()
+        with pytest.raises(stop_rerun):
+            app.main()
 
         local_meta_path = tmp_path / pid / "meta.json"
         assert local_meta_path.exists()
@@ -1535,7 +1564,11 @@ class TestMainMetadataView:
         fake_st.success.assert_called_once()
 
     def test_form_submit_syncs_index_even_without_title_change(
-        self, fake_st: MagicMock, mocker: MockerFixture, tmp_path: Path
+        self,
+        fake_st: MagicMock,
+        mocker: MockerFixture,
+        tmp_path: Path,
+        stop_rerun: type[BaseException],
     ) -> None:
         """Regression test: saving tags/status must update and re-upload
         the index even when the title is unchanged, since the sidebar's
@@ -1555,14 +1588,19 @@ class TestMainMetadataView:
         fake_st.text_area.return_value = ""
         fake_st.form_submit_button.return_value = True
 
-        app.main()
+        with pytest.raises(stop_rerun):
+            app.main()
 
         mock_upload_index.assert_called_once()
         assert fake_st.session_state.index.papers[pid].tags == ["urgent"]
         assert fake_st.session_state.index.papers[pid].status == "Reading"
 
     def test_form_submit_strips_pdf_from_edited_title(
-        self, fake_st: MagicMock, mocker: MockerFixture, tmp_path: Path
+        self,
+        fake_st: MagicMock,
+        mocker: MockerFixture,
+        tmp_path: Path,
+        stop_rerun: type[BaseException],
     ) -> None:
         """Regression test: typing '.pdf' into the title field on save must
         not let it end up in the stored title."""
@@ -1579,7 +1617,8 @@ class TestMainMetadataView:
         fake_st.text_area.return_value = ""
         fake_st.form_submit_button.return_value = True
 
-        app.main()
+        with pytest.raises(stop_rerun):
+            app.main()
 
         local_meta_path = tmp_path / pid / "meta.json"
         saved = json.loads(local_meta_path.read_text(encoding="utf-8"))

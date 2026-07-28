@@ -42,23 +42,10 @@ from backend.drive import (  # noqa: E402
 from backend.models import LibraryIndex, PaperIndexEntry, PaperMetadata  # noqa: E402
 
 
-def get_initial_sidebar_state() -> Literal["auto", "expanded"]:
-    """Determines whether the sidebar should start expanded.
-
-    Returns:
-        Literal["auto", "expanded"]: "expanded" once a library is already
-        open in session state, so its controls are immediately usable
-        without an extra click; otherwise Streamlit's default "auto".
-    """
-    if st.session_state.get("current_lib_id"):
-        return "expanded"
-    return "auto"
-
-
 st.set_page_config(
     layout="wide",
     page_title="Open Paper Shelf",
-    initial_sidebar_state=get_initial_sidebar_state(),
+    initial_sidebar_state="expanded",
 )
 
 
@@ -506,6 +493,14 @@ def main() -> None:
             for k in ["current_lib_id", "current_papers_id", "index", "last_sync_time"]:
                 st.session_state.pop(k, None)
 
+        # Expander headers have no built-in alignment option, so center
+        # them to match the full-width "Switch Library" button above them.
+        st.markdown(
+            "<style>[data-testid='stExpander'] summary "
+            "{ justify-content: center; }</style>",
+            unsafe_allow_html=True,
+        )
+
         st.caption(f"📁 Library ID: {st.session_state.current_lib_id}")
         st.button("🔙 Switch Library", on_click=switch_lib, use_container_width=True)
 
@@ -542,87 +537,104 @@ def main() -> None:
                                 "re-select the failed files to retry."
                             )
 
-        st.header("Library Papers")
-        search_box = st_keyup(
-            "Search", placeholder="Search papers...", key="search_box"
-        )
-        search_query = (search_box or "").lower()
-
-        icon_col, status_col, tags_col = st.columns([1, 2, 2])
-
-        with status_col:
-            status_filter = st.multiselect(
-                "Status",
-                options=["Unread", "Reading", "Read", "TODO"],
-                key="status_filter",
-            )
-        with tags_col:
-            all_tags = sorted(
-                {tag for p in st.session_state.index.papers.values() for tag in p.tags}
-            )
-            # A previously selected tag may no longer exist (its last paper
-            # was deleted or retagged since the last rerun). Drop it from
-            # the persisted selection before the widget reads it so a stale
-            # value never lingers against the current options.
-            if "tags_filter" in st.session_state:
-                st.session_state.tags_filter = [
-                    tag for tag in st.session_state.tags_filter if tag in all_tags
-                ]
-            tags_filter = st.multiselect("Tags", options=all_tags, key="tags_filter")
-
-        filtered_papers = filter_papers(
-            st.session_state.index.papers, search_query, status_filter, tags_filter
-        )
-
-        with icon_col:
-            if st.button("🗑️", key="trash_icon", help="Delete selected papers"):
-                checked_pids = [
-                    pid
-                    for pid, _ in filtered_papers
-                    if st.session_state.get(f"chk_{pid}")
-                ]
+        with st.expander("Library Papers", expanded=True):
+            # A paper's checkbox stays checked in session state even while
+            # it's hidden by a search/status/tag filter, so scan every
+            # known paper (not just the currently filtered ones) to decide
+            # whether the bin icon should read as "armed".
+            checked_pids = [
+                pid
+                for pid in st.session_state.index.papers
+                if st.session_state.get(f"chk_{pid}")
+            ]
+            if st.button(
+                "🗑️",
+                key="trash_icon",
+                help="Delete selected papers",
+                type="primary" if checked_pids else "secondary",
+            ):
                 if checked_pids:
                     st.session_state.confirm_delete_pids = checked_pids
                 else:
                     st.warning("No papers selected.")
 
-        if st.session_state.get("confirm_delete_pids"):
-            pids_to_delete = st.session_state.confirm_delete_pids
-            st.warning(f"Delete {len(pids_to_delete)} paper(s)? This cannot be undone.")
-            confirm_col, cancel_col = st.columns(2)
-            with confirm_col:
-                if st.button("Confirm", key="confirm_delete_btn"):
-                    delete_succeeded = delete_selected_papers(
-                        creds,
-                        pids_to_delete,
-                        st.session_state.index,
-                        st.session_state.current_papers_id,
-                        st.session_state.local_lib_dir,
-                    )
-                    st.session_state.confirm_delete_pids = None
-                    if delete_succeeded:
-                        st.rerun()
-            with cancel_col:
-                if st.button("Cancel", key="cancel_delete_btn"):
-                    st.session_state.confirm_delete_pids = None
-                    st.rerun()
+            search_box = st_keyup(
+                "Search", placeholder="Search papers...", key="search_box"
+            )
+            search_query = (search_box or "").lower()
 
-        with st.container(height=400):
-            for pid, p in filtered_papers:
-                row_check, row_button = st.columns([1, 4])
-                with row_check:
-                    st.checkbox(
-                        "Select", key=f"chk_{pid}", label_visibility="collapsed"
-                    )
-                with row_button:
-                    display_name = f"{STATUS_ICONS.get(p.status, '📄')} {p.title}"
-                    if pid == st.session_state.selected_paper:
-                        display_name = f"**{display_name}**"
-                    if st.button(
-                        display_name, key=f"btn_{pid}", use_container_width=True
-                    ):
-                        st.session_state.selected_paper = pid
+            status_col, tags_col = st.columns([1, 1])
+
+            with status_col:
+                status_filter = st.multiselect(
+                    "Status",
+                    options=["Unread", "Reading", "Read", "TODO"],
+                    key="status_filter",
+                )
+            with tags_col:
+                all_tags = sorted(
+                    {
+                        tag
+                        for p in st.session_state.index.papers.values()
+                        for tag in p.tags
+                    }
+                )
+                # A previously selected tag may no longer exist (its last
+                # paper was deleted or retagged since the last rerun). Drop
+                # it from the persisted selection before the widget reads
+                # it so a stale value never lingers against the current
+                # options.
+                if "tags_filter" in st.session_state:
+                    st.session_state.tags_filter = [
+                        tag for tag in st.session_state.tags_filter if tag in all_tags
+                    ]
+                tags_filter = st.multiselect(
+                    "Tags", options=all_tags, key="tags_filter"
+                )
+
+            filtered_papers = filter_papers(
+                st.session_state.index.papers, search_query, status_filter, tags_filter
+            )
+
+            if st.session_state.get("confirm_delete_pids"):
+                pids_to_delete = st.session_state.confirm_delete_pids
+                st.warning(
+                    f"Delete {len(pids_to_delete)} paper(s)? This cannot be undone."
+                )
+                confirm_col, cancel_col = st.columns(2)
+                with confirm_col:
+                    if st.button("Confirm", key="confirm_delete_btn"):
+                        delete_succeeded = delete_selected_papers(
+                            creds,
+                            pids_to_delete,
+                            st.session_state.index,
+                            st.session_state.current_papers_id,
+                            st.session_state.local_lib_dir,
+                        )
+                        st.session_state.confirm_delete_pids = None
+                        if delete_succeeded:
+                            st.rerun()
+                with cancel_col:
+                    if st.button("Cancel", key="cancel_delete_btn"):
+                        st.session_state.confirm_delete_pids = None
                         st.rerun()
+
+            with st.container(height=400):
+                for pid, p in filtered_papers:
+                    row_check, row_button = st.columns([1, 8])
+                    with row_check:
+                        st.checkbox(
+                            "Select", key=f"chk_{pid}", label_visibility="collapsed"
+                        )
+                    with row_button:
+                        display_name = f"{STATUS_ICONS.get(p.status, '📄')} {p.title}"
+                        if pid == st.session_state.selected_paper:
+                            display_name = f"**{display_name}**"
+                        if st.button(
+                            display_name, key=f"btn_{pid}", use_container_width=True
+                        ):
+                            st.session_state.selected_paper = pid
+                            st.rerun()
 
     # Main area
     if st.session_state.selected_paper:
@@ -738,6 +750,7 @@ def main() -> None:
                         )
 
                     st.success("Metadata saved!")
+                    st.rerun()
     else:
         st.info("Select a paper from the sidebar to view it.")
 
