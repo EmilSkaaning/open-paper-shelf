@@ -1904,6 +1904,11 @@ class TestMainMetadataView:
         assert draft["tags"] == ["ai", "nlp"]
         assert draft["embedding"] == [0.1] * 384
         assert fake_st.session_state[f"dupes_{pid}"] == []
+        # Regression: the form's widget keys must be overwritten directly,
+        # since Streamlit ignores value=... once a keyed widget has rendered.
+        assert fake_st.session_state[f"title_{pid}"] == "Gen Title"
+        assert fake_st.session_state[f"abstract_{pid}"] == "Gen Abstract"
+        assert fake_st.session_state[f"tags_{pid}"] == "ai, nlp"
 
     def test_generate_button_empty_pdf_text_skips_api_calls(
         self, fake_st: MagicMock, mocker: MockerFixture, tmp_path: Path

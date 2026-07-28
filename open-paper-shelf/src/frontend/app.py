@@ -320,6 +320,13 @@ def generate_metadata_for_paper(pid: str, local_pdf_path: Path) -> None:
         "tags": generated.tags,
         "embedding": embedding,
     }
+    # The form's widgets already have keys (title_{pid}, etc.) from their
+    # first render, so passing value=... on later reruns has no effect -
+    # Streamlit serves the widget's session_state entry instead. Write the
+    # draft into those same keys directly so the form actually refreshes.
+    st.session_state[f"title_{pid}"] = generated.title
+    st.session_state[f"abstract_{pid}"] = generated.abstract
+    st.session_state[f"tags_{pid}"] = ", ".join(generated.tags)
     st.session_state[f"dupes_{pid}"] = find_similar_papers(
         embedding, st.session_state.index, exclude_pid=pid
     )
