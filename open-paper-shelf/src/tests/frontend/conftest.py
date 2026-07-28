@@ -37,6 +37,21 @@ class StopRerun(BaseException):
     """
 
 
+def _columns_side_effect(spec: object, **_kwargs: object) -> tuple[MagicMock, ...]:
+    """Builds the right number of column mocks for a given st.columns() spec.
+
+    Args:
+        spec: The column spec passed to st.columns() — an int count or a
+            sequence of relative widths.
+        _kwargs: Unused; absorbs st.columns() keyword arguments like `gap`.
+
+    Returns:
+        tuple[MagicMock, ...]: One fresh MagicMock per requested column.
+    """
+    count = spec if isinstance(spec, int) else len(spec)  # type: ignore[arg-type]
+    return tuple(MagicMock() for _ in range(count))
+
+
 def make_uploaded_file(name: str, content: bytes = b"pdf-bytes") -> MagicMock:
     """Builds a mock standing in for a Streamlit UploadedFile.
 
@@ -85,14 +100,18 @@ def fake_st(mocker: MockerFixture) -> MagicMock:
 
     Returns:
         MagicMock: The mock standing in for streamlit, with a real
-        FakeSessionState for session_state, an empty query_params dict, and
-        a `rerun()` that raises StopRerun (mirroring Streamlit's real halt
-        behavior on rerun).
+        FakeSessionState for session_state, an empty query_params dict, a
+        `multiselect()` defaulting to an empty selection (so unrelated
+        filters don't unexpectedly exclude everything), and a `rerun()`
+        that raises StopRerun (mirroring Streamlit's real halt behavior on
+        rerun).
     """
     mock_st = MagicMock()
     mock_st.session_state = FakeSessionState()
     mock_st.query_params = {}
     mock_st.button.return_value = False
+    mock_st.multiselect.return_value = []
     mock_st.rerun.side_effect = StopRerun
+    mock_st.columns.side_effect = _columns_side_effect
     mocker.patch.object(app, "st", mock_st)
     return mock_st

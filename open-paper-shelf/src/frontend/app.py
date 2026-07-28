@@ -41,7 +41,27 @@ from backend.drive import (  # noqa: E402
 )
 from backend.models import LibraryIndex, PaperIndexEntry, PaperMetadata  # noqa: E402
 
-st.set_page_config(layout="wide", page_title="Open Paper Shelf")
+
+st.set_page_config(
+    layout="wide",
+    page_title="Open Paper Shelf",
+    initial_sidebar_state="expanded",
+)
+
+
+STATUS_ICONS: dict[str, str] = {
+    "Unread": "📄",
+    "Reading": "📖",
+    "Read": "✅",
+    "TODO": "📌",
+}
+
+STATUS_LABELS: dict[str, str] = {
+    status: f"{icon} {status}" for status, icon in STATUS_ICONS.items()
+}
+LABEL_TO_STATUS: dict[str, str] = {
+    label: status for status, label in STATUS_LABELS.items()
+}
 
 
 class OAuthCallbackParams(BaseModel):
@@ -131,6 +151,22 @@ class UploadedPaperName(BaseModel):
     name: str = Field(min_length=1, max_length=255)
 
 
+def strip_pdf_suffix(name: str) -> str:
+    """Removes a trailing .pdf extension from a paper title, if present.
+
+    Args:
+        name: The candidate title, typically derived from an uploaded
+            filename or user-edited text.
+
+    Returns:
+        str: `name` with a trailing ".pdf" (any case) suffix removed.
+        Falls back to the original `name` if stripping it would leave an
+        empty string (e.g. a file literally named ".pdf").
+    """
+    stripped = re.sub(r"\.pdf$", "", name, flags=re.IGNORECASE)
+    return stripped if stripped else name
+
+
 def upload_papers(creds: Credentials, uploaded_files: Sequence[UploadedFile]) -> bool:
     """Uploads each file to Drive and records it in the in-memory index.
 
@@ -146,6 +182,7 @@ def upload_papers(creds: Credentials, uploaded_files: Sequence[UploadedFile]) ->
     for uploaded_file in uploaded_files:
         try:
             validated_name = UploadedPaperName(name=uploaded_file.name).name
+            title = strip_pdf_suffix(validated_name)
             paper_id = uuid.uuid4().hex
             with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
                 tmp.write(uploaded_file.getvalue())
@@ -165,7 +202,7 @@ def upload_papers(creds: Credentials, uploaded_files: Sequence[UploadedFile]) ->
                         "paper.pdf",
                         "application/pdf",
                     )
-                    meta = PaperMetadata(title=validated_name)
+                    meta = PaperMetadata(title=title)
 
                     with tempfile.NamedTemporaryFile(
                         delete=False, suffix=".json"
@@ -187,6 +224,8 @@ def upload_papers(creds: Credentials, uploaded_files: Sequence[UploadedFile]) ->
                             pdf_file_id=pdf_file_id,
                             meta_file_id=meta_file_id,
                             folder_id=folder_id,
+                            tags=meta.tags,
+                            status=meta.status,
                         )
                     finally:
                         meta_tmp_path.unlink(missing_ok=True)
@@ -234,7 +273,9 @@ def sync_paper_metadata(
         return had_local_copy
 
 
-def init_library_state(creds: Credentials, lib_id: str, papers_id: str) -> None:
+def init_library_state(
+    creds: Credentials, lib_id: str, papers_id: str, lib_name: str
+) -> None:
     """Resets session state for a newly opened or newly created library.
 
     Args:
@@ -242,8 +283,11 @@ def init_library_state(creds: Credentials, lib_id: str, papers_id: str) -> None:
             kept for a consistent signature with other library-scoped calls).
         lib_id (str): The Google Drive file ID of the library folder.
         papers_id (str): The Google Drive file ID of the library's papers folder.
+        lib_name (str): The library's human-readable display name, shown in
+            the sidebar in place of the opaque Drive file ID.
     """
     st.session_state.current_lib_id = lib_id
+    st.session_state.current_lib_name = lib_name
     st.session_state.current_papers_id = papers_id
     st.session_state.local_lib_dir = PAPERS_DIR / lib_id
     st.session_state.local_lib_dir.mkdir(parents=True, exist_ok=True)
@@ -296,6 +340,105 @@ def sync_library_index(creds: Credentials) -> None:
         st.session_state.index = LibraryIndex()
 
 
+def filter_papers(
+    papers: dict[str, PaperIndexEntry],
+    search_query: str,
+    status_filter: Sequence[str],
+    tags_filter: Sequence[str],
+) -> list[tuple[str, PaperIndexEntry]]:
+    """Filters and sorts the library's papers for sidebar display.
+
+    Args:
+        papers: Mapping of paper ID to its index entry, as stored in
+            LibraryIndex.papers.
+        search_query: Lowercased search text; a paper matches if its title
+            contains this text.
+        status_filter: Statuses to restrict results to. Empty means no
+            status filtering.
+        tags_filter: Tags to restrict results to; a paper matches if it has
+            at least one of these tags. Empty means no tag filtering.
+
+    Returns:
+        list[tuple[str, PaperIndexEntry]]: Matching (paper_id, entry) pairs,
+        sorted by title. Entries whose key isn't a 32-character hex paper ID
+        (e.g. a legacy/malformed index entry) are always skipped.
+    """
+    matches: list[tuple[str, PaperIndexEntry]] = []
+    for pid, p in papers.items():
+        if not re.match(r"^[a-f0-9]{32}$", pid):
+            continue
+        if search_query not in p.title.lower():
+            continue
+        if status_filter and p.status not in status_filter:
+            continue
+        if tags_filter and not any(tag in p.tags for tag in tags_filter):
+            continue
+        matches.append((pid, p))
+    return sorted(matches, key=lambda x: x[1].title)
+
+
+def delete_selected_papers(
+    creds: Credentials,
+    pids: Sequence[str],
+    index: LibraryIndex,
+    papers_id: str,
+    local_lib_dir: Path,
+) -> bool:
+    """Deletes multiple papers from Drive, the library index, and disk.
+
+    Each paper's Drive folder is removed individually - a failure there
+    leaves that paper untouched and reports an error, but doesn't stop the
+    rest of the batch. The index is then updated once for every paper that
+    was actually deleted. If uploading the updated index fails, every
+    removed entry is restored locally so a future sync doesn't merge it
+    back in from the unchanged remote index as a broken entry.
+
+    Args:
+        creds: The Google OAuth credentials.
+        pids: The paper IDs to delete.
+        index: The current library index; mutated in place.
+        papers_id: The Google Drive folder ID of the library's papers folder.
+        local_lib_dir: The local cache directory for this library.
+
+    Returns:
+        bool: True only if every requested paper was deleted from Drive and
+        (when there was anything to upload) the index upload succeeded.
+        False if any individual paper's Drive deletion failed, or if the
+        index upload failed.
+    """
+    all_succeeded = True
+    removed: dict[str, PaperIndexEntry] = {}
+    for pid in pids:
+        entry = index.papers.get(pid)
+        if entry is None:
+            continue
+        try:
+            delete_paper_folder(creds, entry.folder_id)
+        except Exception as e:
+            st.error(f"Failed to delete paper '{entry.title}': {e}")
+            all_succeeded = False
+            continue
+        removed[pid] = index.papers.pop(pid)
+
+    if not removed:
+        return all_succeeded
+
+    try:
+        upload_library_index(creds, papers_id, index, deleted_pids=set(removed))
+    except Exception as e:
+        for pid, entry in removed.items():
+            index.papers[pid] = entry
+        st.error(f"Failed to sync deletion: {e}")
+        return False
+
+    for pid in removed:
+        if st.session_state.selected_paper == pid:
+            st.session_state.selected_paper = None
+        shutil.rmtree(local_lib_dir / pid, ignore_errors=True)
+
+    return all_succeeded
+
+
 def main() -> None:
     """The main entry point for the Streamlit frontend application.
 
@@ -335,7 +478,9 @@ def main() -> None:
                 )
                 if st.button("Open Library"):
                     papers_id = get_papers_folder(creds, selected_lib)
-                    init_library_state(creds, selected_lib, papers_id)
+                    init_library_state(
+                        creds, selected_lib, papers_id, lib_options[selected_lib]
+                    )
                     st.rerun()
             else:
                 st.info("No existing libraries found.")
@@ -344,7 +489,12 @@ def main() -> None:
             new_lib_name = st.text_input("New Library Name")
             if st.button("Create Library") and new_lib_name:
                 lib_info = create_library(creds, root_id, new_lib_name)
-                init_library_state(creds, lib_info["lib_id"], lib_info["papers_id"])
+                init_library_state(
+                    creds,
+                    lib_info["lib_id"],
+                    lib_info["papers_id"],
+                    lib_info["lib_name"],
+                )
                 upload_library_index(creds, lib_info["papers_id"], LibraryIndex())
                 st.success(f"Library '{new_lib_name}' created!")
                 st.rerun()
@@ -359,92 +509,170 @@ def main() -> None:
 
         def switch_lib() -> None:
             """Clears the current library's session state to return to library selection."""
-            for k in ["current_lib_id", "current_papers_id", "index", "last_sync_time"]:
+            for k in [
+                "current_lib_id",
+                "current_lib_name",
+                "current_papers_id",
+                "index",
+                "last_sync_time",
+                "confirm_delete_pids",
+            ]:
                 st.session_state.pop(k, None)
 
-        st.button("🔙 Switch Library", on_click=switch_lib, use_container_width=True)
+        # Expander headers have no built-in alignment option, so center
+        # them to match the full-width "Switch Library" button above them.
+        st.markdown(
+            "<style>[data-testid='stExpander'] summary "
+            "{ justify-content: center; }</style>",
+            unsafe_allow_html=True,
+        )
+
+        lib_name = st.session_state.get(
+            "current_lib_name", st.session_state.current_lib_id
+        )
+        st.caption(f"📁 Library: {lib_name}")
+        st.button("Switch Library", on_click=switch_lib, use_container_width=True)
 
         if "uploader_key" not in st.session_state:
             st.session_state.uploader_key = 0
 
-        st.header("Upload Paper")
-        uploaded_files = st.file_uploader(
-            "Choose PDF files",
-            type="pdf",
-            accept_multiple_files=True,
-            key=str(st.session_state.uploader_key),
-        )
-        if uploaded_files:
-            if st.button("Upload"):
-                with st.spinner("Uploading to Google Drive..."):
-                    try:
-                        all_succeeded = upload_papers(creds, uploaded_files)
-                    finally:
-                        upload_library_index(
-                            creds,
-                            st.session_state.current_papers_id,
-                            st.session_state.index,
-                        )
-                        st.session_state.last_sync_time = None
-                    st.session_state.uploader_key += 1
-                    if all_succeeded:
-                        st.success("Uploaded successfully!")
-                        st.rerun()
-                    else:
-                        st.warning(
-                            "Some files failed to upload. See the errors above; "
-                            "re-select the failed files to retry."
-                        )
-
-        st.header("Library Papers")
-        search_box = st_keyup(
-            "Search", placeholder="Search papers...", key="search_box"
-        )
-        search_query = (search_box or "").lower()
-
-        filtered_papers = []
-        for pid, p in st.session_state.index.papers.items():
-            if not re.match(r"^[a-f0-9]{32}$", pid):
-                continue
-            if search_query in p.title.lower():
-                filtered_papers.append((pid, p))
-
-        for pid, p in sorted(filtered_papers, key=lambda x: x[1].title):
-            col1, col2 = st.columns([4, 1])
-            with col1:
-                display_name = f"📄 {p.title}"
-                if pid == st.session_state.selected_paper:
-                    display_name = f"**{display_name}**"
-                if st.button(display_name, key=f"btn_{pid}", use_container_width=True):
-                    st.session_state.selected_paper = pid
-                    st.rerun()
-            with col2:
-                if st.button("🗑️", key=f"del_{pid}", help="Delete paper"):
-                    with st.spinner("Deleting..."):
+        with st.expander("Upload Paper(s)", expanded=False):
+            with st.container(height=150):
+                uploaded_files = st.file_uploader(
+                    "Choose PDF files",
+                    type="pdf",
+                    accept_multiple_files=True,
+                    key=str(st.session_state.uploader_key),
+                )
+            if uploaded_files:
+                if st.button("Upload"):
+                    with st.spinner("Uploading to Google Drive..."):
                         try:
-                            delete_paper_folder(creds, p.folder_id)
-                        except Exception as e:
-                            st.error(f"Failed to delete paper: {e}")
+                            all_succeeded = upload_papers(creds, uploaded_files)
+                        finally:
+                            upload_library_index(
+                                creds,
+                                st.session_state.current_papers_id,
+                                st.session_state.index,
+                            )
+                            st.session_state.last_sync_time = None
+                        st.session_state.uploader_key += 1
+                        if all_succeeded:
+                            st.success("Uploaded successfully!")
+                            st.rerun()
                         else:
-                            removed_paper = st.session_state.index.papers.pop(pid)
-                            try:
-                                upload_library_index(
-                                    creds,
-                                    st.session_state.current_papers_id,
-                                    st.session_state.index,
-                                    deleted_pids={pid},
-                                )
-                            except Exception as e:
-                                st.session_state.index.papers[pid] = removed_paper
-                                st.error(f"Failed to sync deletion: {e}")
-                            else:
-                                if st.session_state.selected_paper == pid:
-                                    st.session_state.selected_paper = None
-                                shutil.rmtree(
-                                    st.session_state.local_lib_dir / pid,
-                                    ignore_errors=True,
-                                )
-                                st.rerun()
+                            st.warning(
+                                "Some files failed to upload. See the errors above; "
+                                "re-select the failed files to retry."
+                            )
+
+        with st.expander("Library Papers", expanded=True):
+            # A paper's checkbox stays checked in session state even while
+            # it's hidden by a search/status/tag filter, so scan every
+            # known paper (not just the currently filtered ones) to decide
+            # whether the bin icon should read as "armed".
+            checked_pids = [
+                pid
+                for pid in st.session_state.index.papers
+                if st.session_state.get(f"chk_{pid}")
+            ]
+            if st.button(
+                "🗑️",
+                key="trash_icon",
+                help="Delete selected papers",
+                type="primary" if checked_pids else "secondary",
+            ):
+                if checked_pids:
+                    st.session_state.confirm_delete_pids = checked_pids
+                else:
+                    st.warning("No papers selected.")
+
+            search_box = st_keyup(
+                "Search", placeholder="Search papers...", key="search_box"
+            )
+            search_query = (search_box or "").lower()
+
+            status_col, tags_col = st.columns([1, 1])
+
+            with status_col:
+                status_filter_labels = st.multiselect(
+                    "Status",
+                    options=list(STATUS_LABELS.values()),
+                    key="status_filter",
+                )
+                status_filter = [
+                    LABEL_TO_STATUS[label] for label in status_filter_labels
+                ]
+            with tags_col:
+                all_tags = sorted(
+                    {
+                        tag
+                        for p in st.session_state.index.papers.values()
+                        for tag in p.tags
+                    }
+                )
+                # A previously selected tag may no longer exist (its last
+                # paper was deleted or retagged since the last rerun). Drop
+                # it from the persisted selection before the widget reads
+                # it so a stale value never lingers against the current
+                # options.
+                if "tags_filter" in st.session_state:
+                    st.session_state.tags_filter = [
+                        tag for tag in st.session_state.tags_filter if tag in all_tags
+                    ]
+                tags_filter = st.multiselect(
+                    "Tags", options=all_tags, key="tags_filter"
+                )
+
+            if st.session_state.get("confirm_delete_pids"):
+                pids_to_delete = st.session_state.confirm_delete_pids
+                st.warning(
+                    f"Delete {len(pids_to_delete)} paper(s)? This cannot be undone."
+                )
+                confirm_col, cancel_col = st.columns(2)
+                with confirm_col:
+                    if st.button("Confirm", key="confirm_delete_btn"):
+                        delete_succeeded = delete_selected_papers(
+                            creds,
+                            pids_to_delete,
+                            st.session_state.index,
+                            st.session_state.current_papers_id,
+                            st.session_state.local_lib_dir,
+                        )
+                        st.session_state.confirm_delete_pids = None
+                        if delete_succeeded:
+                            st.rerun()
+                with cancel_col:
+                    if st.button("Cancel", key="cancel_delete_btn"):
+                        st.session_state.confirm_delete_pids = None
+                        st.rerun()
+
+            # Re-filter after the block above so a partial batch-delete
+            # failure (which skips st.rerun() to keep its error visible)
+            # never renders a now-deleted paper's row - clicking one would
+            # otherwise select a pid missing from st.session_state.index.papers
+            # and crash the main-area lookup with a KeyError.
+            filtered_papers = filter_papers(
+                st.session_state.index.papers, search_query, status_filter, tags_filter
+            )
+
+            with st.container(height=400):
+                for pid, p in filtered_papers:
+                    row_check, row_button = st.columns([1, 8])
+                    with row_check:
+                        st.checkbox(
+                            "Select", key=f"chk_{pid}", label_visibility="collapsed"
+                        )
+                    with row_button:
+                        display_name = f"{STATUS_ICONS.get(p.status, '📄')} {p.title}"
+                        if pid == st.session_state.selected_paper:
+                            display_name = f"**{display_name}**"
+                        if st.button(
+                            display_name, key=f"btn_{pid}", use_container_width=True
+                        ):
+                            st.session_state.selected_paper = pid
+                            st.session_state.confirm_delete_pids = None
+                            st.rerun()
 
     # Main area
     if st.session_state.selected_paper:
@@ -518,18 +746,19 @@ def main() -> None:
                 tags_str = st.text_input(
                     "Tags (comma separated)", value=", ".join(meta.tags)
                 )
-                status = st.selectbox(
+                status_label = st.selectbox(
                     "Status",
-                    options=["Unread", "Reading", "Read", "TODO"],
-                    index=["Unread", "Reading", "Read", "TODO"].index(meta.status),
+                    options=list(STATUS_LABELS.values()),
+                    index=list(STATUS_LABELS.keys()).index(meta.status),
                 )
+                status = LABEL_TO_STATUS.get(status_label, meta.status)
                 citation = st.text_input("Citation", value=meta.citation)
                 notes = st.text_area("Notes", value=meta.notes, height=200)
 
                 if st.form_submit_button(
                     "Save Changes", disabled=not metadata_available
                 ):
-                    meta.title = new_title
+                    meta.title = strip_pdf_suffix(new_title)
                     meta.tags = [t.strip() for t in tags_str.split(",") if t.strip()]
                     meta.status = cast(
                         Literal["Unread", "Reading", "Read", "TODO"], status
@@ -549,17 +778,18 @@ def main() -> None:
                             "application/json",
                         )
 
-                        # Update index if title changed
-                        if paper_info.title != new_title:
-                            paper_info.title = new_title
-                            st.session_state.index.papers[pid] = paper_info
-                            upload_library_index(
-                                creds,
-                                st.session_state.current_papers_id,
-                                st.session_state.index,
-                            )
+                        paper_info.title = meta.title
+                        paper_info.tags = meta.tags
+                        paper_info.status = meta.status
+                        st.session_state.index.papers[pid] = paper_info
+                        upload_library_index(
+                            creds,
+                            st.session_state.current_papers_id,
+                            st.session_state.index,
+                        )
 
                     st.success("Metadata saved!")
+                    st.rerun()
     else:
         st.info("Select a paper from the sidebar to view it.")
 
