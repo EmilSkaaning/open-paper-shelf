@@ -80,17 +80,30 @@ def extract_pdf_text(pdf_path: Path, max_chars: int = MAX_EXTRACTED_CHARS) -> st
             excess so requests stay within model context limits.
 
     Returns:
-        The concatenated text of every page, cleaned of common extraction
-        noise (see `_clean_extracted_text`) and truncated to `max_chars`.
-        Returns an empty string if the PDF has no extractable text (e.g. a
-        scanned/image-only document) rather than raising.
+        The concatenated text of every page read (see below), cleaned of
+        common extraction noise (see `_clean_extracted_text`) and truncated
+        to `max_chars`. Returns an empty string if the PDF has no
+        extractable text (e.g. a scanned/image-only document) rather than
+        raising.
 
     Raises:
         ValueError: If the PDF file cannot be read/parsed (e.g. corrupt file).
     """
     try:
         reader = PdfReader(str(pdf_path))
-        text = "\n".join(page.extract_text() or "" for page in reader.pages)
+        chunks: List[str] = []
+        total_chars = 0
+        # Stop once enough raw text is collected to fill max_chars, rather
+        # than extracting every page of a long document just to discard
+        # most of it below - cleaning only ever shrinks text, so this still
+        # yields a full max_chars of cleaned output.
+        for page in reader.pages:
+            page_text = page.extract_text() or ""
+            chunks.append(page_text)
+            total_chars += len(page_text)
+            if total_chars >= max_chars:
+                break
+        text = "\n".join(chunks)
     except Exception as e:
         raise ValueError(f"Could not read PDF: {e}") from e
     return _clean_extracted_text(text)[:max_chars]
@@ -375,13 +388,17 @@ def find_similar_papers(
     Returns:
         A list of `(paper_id, title, score)` tuples for every paper at or
         above `threshold`, sorted by score descending. Papers with no
-        stored embedding yet are excluded.
+        stored embedding yet, or whose embedding has a different dimension
+        than `embedding` (e.g. a legacy/corrupted entry), are excluded.
     """
     matches = []
     for pid, entry in index.papers.items():
         if pid == exclude_pid or not entry.embedding:
             continue
-        score = cosine_similarity(embedding, entry.embedding)
+        try:
+            score = cosine_similarity(embedding, entry.embedding)
+        except ValueError:
+            continue
         if score >= threshold:
             matches.append((pid, entry.title, score))
     matches.sort(key=lambda m: m[2], reverse=True)

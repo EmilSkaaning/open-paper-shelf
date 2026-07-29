@@ -109,6 +109,24 @@ class TestExtractPdfText:
         with pytest.raises(ValueError, match="Could not read PDF"):
             extract_pdf_text(pdf_path)
 
+    def test_stops_reading_pages_once_max_chars_reached(
+        self, mocker: MockerFixture, tmp_path: Path
+    ) -> None:
+        """Test pages after max_chars is reached are never extracted, so a
+        long document isn't fully parsed just to be truncated away."""
+        pdf_path = tmp_path / "paper.pdf"
+        pdf_path.write_bytes(b"%PDF-1.4 fake")
+        page1 = MagicMock()
+        page1.extract_text.return_value = "a" * 10
+        page2 = MagicMock()
+        page2.extract_text.return_value = "b" * 10
+        mocker.patch(
+            "backend.huggingface_client.PdfReader",
+            return_value=MagicMock(pages=[page1, page2]),
+        )
+        assert extract_pdf_text(pdf_path, max_chars=5) == "a" * 5
+        page2.extract_text.assert_not_called()
+
     def test_cleans_before_truncating(
         self, mocker: MockerFixture, tmp_path: Path
     ) -> None:
@@ -499,3 +517,16 @@ class TestFindSimilarPapers:
         index = _index_with({"a": _entry("A", [0.0, 1.0])})
         matches = find_similar_papers([1.0, 0.0], index, threshold=0.9)
         assert matches == []
+
+    def test_skips_entry_with_mismatched_embedding_dimension(self) -> None:
+        """Test an entry whose embedding has a different length than the
+        query embedding is skipped rather than raising, while other valid
+        entries are still matched."""
+        index = _index_with(
+            {
+                "a": _entry("A", [1.0, 0.0, 0.0]),
+                "b": _entry("B", [1.0, 0.0]),
+            }
+        )
+        matches = find_similar_papers([1.0, 0.0, 0.0], index, threshold=0.9)
+        assert [m[0] for m in matches] == ["a"]
