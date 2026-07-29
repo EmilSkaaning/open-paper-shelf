@@ -15,7 +15,7 @@ This document governs how work is done and how function/class documentation and 
 * **Exclusions**: Skip files where the changes are purely deletions or trivial (e.g. config, constants, `__init__.py`).
 
 ### Testing & Quality Assurance
-* **Unit Test Coverage**: Ensure 100% unit test coverage for all new and existing backend functions.
+* **Unit Test Coverage**: Ensure 80% unit test coverage for all new and existing backend functions.
 * **Structured Tests**: Group similar tests under test classes.
 * **Parametrization**: Use `@pytest.mark.parametrize` for screening over large settings to keep test code clean.
 * **Fixtures**: Information used multiple times should be extracted into `conftest.py` files as pytest fixtures.

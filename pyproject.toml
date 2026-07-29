@@ -17,6 +17,9 @@ dependencies = [
     "google-auth-httplib2>=0.2.0",
     "google-auth-oauthlib>=1.2.0",
     "streamlit-keyup>=0.3.0",
+    "huggingface_hub",
+    "pypdf",
+    "pip-system-certs",
 ]
 
 [build-system]

@@ -15,25 +15,31 @@ class TestPaperMetadata:
         """Test default values of PaperMetadata when only title is provided."""
         meta = PaperMetadata(title="Test Paper")
         assert meta.title == "Test Paper"
+        assert meta.abstract == ""
         assert meta.tags == []
         assert meta.notes == ""
         assert meta.citation == ""
         assert meta.status == "Unread"
+        assert meta.embedding == []
 
     def test_paper_metadata_custom_values(self) -> None:
         """Test PaperMetadata initialization with custom values for all fields."""
         meta = PaperMetadata(
             title="Attention Is All You Need",
+            abstract="Introduces the Transformer architecture.",
             tags=["AI", "Transformer"],
             notes="Seminal paper on transformers.",
             citation="Vaswani et al., 2017",
             status="Read",
+            embedding=[0.1, 0.2, 0.3],
         )
         assert meta.title == "Attention Is All You Need"
+        assert meta.abstract == "Introduces the Transformer architecture."
         assert meta.tags == ["AI", "Transformer"]
         assert meta.notes == "Seminal paper on transformers."
         assert meta.citation == "Vaswani et al., 2017"
         assert meta.status == "Read"
+        assert meta.embedding == [0.1, 0.2, 0.3]
 
     @pytest.mark.parametrize("status", ["Unread", "Reading", "Read", "TODO"])
     def test_paper_metadata_valid_statuses(
@@ -62,8 +68,9 @@ class TestPaperIndexEntry:
     """Test suite for the PaperIndexEntry Pydantic model."""
 
     def test_defaults_when_tags_and_status_omitted(self) -> None:
-        """Test tags/status default to empty/Unread for entries created
-        before these fields existed (e.g. parsed from an old id-mapping.json)."""
+        """Test tags/status/embedding default to empty/Unread for entries
+        created before these fields existed (e.g. parsed from an old
+        id-mapping.json)."""
         entry = PaperIndexEntry(
             title="A Paper",
             pdf_file_id="pdf1",
@@ -72,9 +79,10 @@ class TestPaperIndexEntry:
         )
         assert entry.tags == []
         assert entry.status == "Unread"
+        assert entry.embedding == []
 
     def test_custom_tags_and_status(self) -> None:
-        """Test tags/status are stored as given when provided."""
+        """Test tags/status/embedding are stored as given when provided."""
         entry = PaperIndexEntry(
             title="A Paper",
             pdf_file_id="pdf1",
@@ -82,9 +90,11 @@ class TestPaperIndexEntry:
             folder_id="folder1",
             tags=["ai", "nlp"],
             status="Reading",
+            embedding=[0.4, 0.5, 0.6],
         )
         assert entry.tags == ["ai", "nlp"]
         assert entry.status == "Reading"
+        assert entry.embedding == [0.4, 0.5, 0.6]
 
     def test_invalid_status_rejected(self) -> None:
         """Test an out-of-range status raises ValidationError, matching

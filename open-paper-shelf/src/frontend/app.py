@@ -3,13 +3,15 @@ import json
 import re
 import shutil
 import tempfile
+import time
 import urllib.parse
 import uuid
 from pathlib import Path
-from typing import Optional, Sequence, cast, Literal
+from typing import Callable, Optional, Sequence, cast, Literal
 
 import streamlit as st
 from google.oauth2.credentials import Credentials
+from huggingface_hub.errors import HfHubHTTPError
 from pydantic import BaseModel, Field, ValidationError
 from streamlit.runtime.uploaded_file_manager import UploadedFile
 import os
@@ -40,6 +42,15 @@ from backend.drive import (  # noqa: E402
     PAPERS_DIR,
 )
 from backend.models import LibraryIndex, PaperIndexEntry, PaperMetadata  # noqa: E402
+from backend.huggingface_client import (  # noqa: E402
+    DEFAULT_EMBEDDING_MODEL,
+    DEFAULT_GENERATION_MODEL,
+    HFTokenMissingError,
+    embed_text,
+    extract_pdf_text,
+    find_similar_papers,
+    generate_paper_metadata,
+)
 
 
 st.set_page_config(
@@ -47,6 +58,13 @@ st.set_page_config(
     page_title="Open Paper Shelf",
     initial_sidebar_state="expanded",
 )
+
+GENERATE_METADATA_HELP = (
+    f"Generates a title, abstract, and tags with {DEFAULT_GENERATION_MODEL}, "
+    f"and a similarity-detection embedding with {DEFAULT_EMBEDDING_MODEL}."
+)
+
+BULK_GENERATE_DELAY_SECONDS: float = 1.5
 
 
 STATUS_ICONS: dict[str, str] = {
@@ -273,10 +291,282 @@ def sync_paper_metadata(
         return had_local_copy
 
 
+def generate_metadata_for_paper(pid: str, local_pdf_path: Path) -> bool:
+    """Generates a draft title/abstract/tags/embedding for a paper via Hugging Face.
+
+    Extracts text from the paper's local PDF and calls the Hugging Face
+    generation and embedding functions, staging the result (and any
+    duplicate matches found in the current library index) in
+    `st.session_state` for the metadata form to prefill. Does not write to
+    local disk, Drive, or the library index - the user must still click
+    "Save Changes" to persist the draft, and does not rerun, so callers can
+    batch several papers before triggering a single rerun. Reports errors via
+    `st.error`/`st.warning` rather than raising, since this is invoked from a
+    best-effort UI action.
+
+    The title/abstract/tags call and the embedding call are each already-
+    paid-for Hugging Face requests, so they're staged independently: if
+    title/abstract/tags succeed but the embedding call then fails (e.g. a
+    402 quota error), the text draft is still staged and saveable rather
+    than being discarded along with the failed embedding.
+
+    Args:
+        pid (str): The paper's unique ID.
+        local_pdf_path (Path): Local path to the paper's downloaded PDF.
+
+    Returns:
+        bool: True if a draft (full or text-only) was staged, False if
+        the PDF couldn't be read, generation was skipped, or the
+        title/abstract/tags call itself failed (in which case an
+        error/warning has already been shown).
+
+    Sets:
+        `st.session_state["hf_quota_exceeded"]`: True if either HF call
+        failed because Hugging Face returned 402 Payment Required (monthly
+        included credits used up), False otherwise. Callers that generate
+        for multiple papers in a loop should check this after each call and
+        stop the batch rather than retrying more calls doomed to fail the
+        same way.
+    """
+    try:
+        pdf_text = extract_pdf_text(local_pdf_path)
+    except ValueError as e:
+        st.error(str(e))
+        return False
+    if not pdf_text.strip():
+        st.warning(
+            "Could not extract text from this PDF (it may be scanned/"
+            "image-only); metadata generation skipped."
+        )
+        return False
+
+    st.session_state["hf_quota_exceeded"] = False
+    try:
+        existing_tags = get_all_tags(st.session_state.index)
+        generated = generate_paper_metadata(pdf_text, existing_tags=existing_tags)
+    except HFTokenMissingError as e:
+        st.error(str(e))
+        return False
+    except HfHubHTTPError as e:
+        if getattr(e.response, "status_code", None) == 402:
+            st.session_state["hf_quota_exceeded"] = True
+            st.error(
+                "Hugging Face returned 402 Payment Required — your monthly "
+                "included credits are used up. Purchase pre-paid credits or "
+                "upgrade to PRO, then try again."
+            )
+        else:
+            st.error(f"Metadata generation failed: {e}")
+        return False
+    except Exception as e:
+        st.error(f"Metadata generation failed: {e}")
+        return False
+
+    # Stage the text draft now, before the embedding is even attempted -
+    # this call already cost real HF credits, so a failure below must not
+    # throw it away. Seed "embedding" from any existing embedding rather
+    # than blanking it, so a failed re-generation doesn't lose a
+    # previously-computed one if the user saves this draft as-is.
+    existing_entry = st.session_state.index.papers.get(pid)
+    existing_embedding = existing_entry.embedding if existing_entry else []
+    st.session_state[f"generated_{pid}"] = {
+        "title": generated.title,
+        "abstract": generated.abstract,
+        "tags": generated.tags,
+        "embedding": existing_embedding,
+    }
+    # The form's widgets already have keys (title_{pid}, etc.) from their
+    # first render, so passing value=... on later reruns has no effect -
+    # Streamlit serves the widget's session_state entry instead. Write the
+    # draft into those same keys directly so the form actually refreshes.
+    st.session_state[f"title_{pid}"] = generated.title
+    st.session_state[f"abstract_{pid}"] = generated.abstract
+    st.session_state[f"tags_{pid}"] = ", ".join(generated.tags)
+
+    try:
+        embedding = embed_text(pdf_text)
+    except HFTokenMissingError as e:
+        st.error(str(e))
+        return True
+    except HfHubHTTPError as e:
+        if getattr(e.response, "status_code", None) == 402:
+            st.session_state["hf_quota_exceeded"] = True
+            st.warning(
+                "Title/abstract/tags generated, but the similarity-detection "
+                "embedding failed: Hugging Face returned 402 Payment "
+                "Required. You can still save this draft; duplicate "
+                "detection won't be refreshed for it until you regenerate "
+                "later."
+            )
+        else:
+            st.warning(f"Title/abstract/tags generated, but embedding failed: {e}")
+        return True
+    except Exception as e:
+        st.warning(f"Title/abstract/tags generated, but embedding failed: {e}")
+        return True
+
+    st.session_state[f"generated_{pid}"]["embedding"] = embedding
+    st.session_state[f"dupes_{pid}"] = find_similar_papers(
+        embedding, st.session_state.index, exclude_pid=pid
+    )
+    return True
+
+
+def persist_generated_metadata(
+    creds: Credentials,
+    pid: str,
+    index: LibraryIndex,
+    local_meta_path: Path,
+) -> bool:
+    """Writes a paper's staged Hugging Face draft to local disk and Drive.
+
+    Merges the draft staged under `st.session_state[f"generated_{pid}"]`
+    (title/abstract/tags/embedding) onto the paper's existing metadata -
+    loaded from `local_meta_path` if present, so previously-saved
+    notes/citation/status survive - writes the result back to
+    `local_meta_path`, uploads it to the paper's Drive folder, and updates
+    its `PaperIndexEntry` in `index` in place. Does not call
+    `upload_library_index`; batch callers persisting several papers should
+    do that once after the whole batch, not once per paper.
+
+    Args:
+        creds (Credentials): The Google OAuth credentials.
+        pid (str): The paper's unique ID.
+        index (LibraryIndex): The library index; the paper's entry is
+            mutated in place.
+        local_meta_path (Path): Local path to the paper's meta.json cache.
+
+    Returns:
+        bool: True if a staged draft was found and persisted, False if
+        there was nothing staged for this pid (no-op).
+    """
+    draft = st.session_state.get(f"generated_{pid}")
+    if not draft:
+        return False
+
+    paper_info = index.papers[pid]
+    meta = PaperMetadata(title=paper_info.title)
+    if local_meta_path.exists():
+        try:
+            data = json.loads(local_meta_path.read_text(encoding="utf-8"))
+            meta = PaperMetadata(**data)
+        except Exception:
+            meta = PaperMetadata(title=paper_info.title)
+
+    meta.title = strip_pdf_suffix(draft["title"]) or meta.title
+    meta.abstract = draft["abstract"]
+    meta.tags = draft["tags"]
+    meta.embedding = draft["embedding"]
+
+    local_meta_path.write_text(meta.model_dump_json(indent=2), encoding="utf-8")
+    upload_file_to_folder(
+        creds, paper_info.folder_id, local_meta_path, "meta.json", "application/json"
+    )
+
+    paper_info.title = meta.title
+    paper_info.tags = meta.tags
+    paper_info.embedding = meta.embedding
+    index.papers[pid] = paper_info
+
+    st.session_state.pop(f"generated_{pid}", None)
+    st.session_state.pop(f"dupes_{pid}", None)
+    return True
+
+
+def generate_metadata_for_selected(
+    creds: Credentials,
+    pids: Sequence[str],
+    index: LibraryIndex,
+    papers_id: str,
+    local_lib_dir: Path,
+    sleep_fn: Callable[[float], None] = time.sleep,
+) -> None:
+    """Generates and saves draft metadata for multiple papers.
+
+    Shows a progress bar across the batch. Each paper's local PDF (and
+    existing metadata cache) is downloaded first if not already cached
+    (e.g. because the paper was never opened), mirroring the single-paper
+    view's lazy download. Each paper's generated draft is written to its
+    local meta.json, uploaded to its Drive folder, and applied to `index`
+    as soon as it's generated - via `persist_generated_metadata` - so a
+    paper is never left as an in-memory-only draft nobody will open again.
+    The whole-library index is uploaded once, after the batch, rather than
+    once per paper. A per-paper failure (download or persistence) is
+    reported and the batch continues with the rest, a small delay is
+    inserted between papers to avoid bursting Hugging Face's inference API,
+    and the batch stops immediately (rather than continuing to burn through
+    guaranteed failures) if a paper fails with a 402 Payment Required quota
+    error.
+
+    Args:
+        creds (Credentials): The Google OAuth credentials.
+        pids (Sequence[str]): The paper IDs to generate metadata for.
+        index (LibraryIndex): The current library index; mutated in place
+            as each paper's draft is persisted.
+        papers_id (str): The Google Drive folder ID of the library's papers
+            folder, used to upload the updated index once after the batch.
+        local_lib_dir (Path): The local cache directory for the current
+            library.
+        sleep_fn (Callable[[float], None]): Called between papers to pace
+            requests. Injected so tests never sleep for real.
+    """
+    total = len(pids)
+    progress = st.progress(0.0, text=f"Generating metadata (0/{total})...")
+    any_persisted = False
+    for i, pid in enumerate(pids):
+        entry = index.papers.get(pid)
+        if entry is None:
+            continue
+        local_paper_dir = local_lib_dir / pid
+        local_paper_dir.mkdir(parents=True, exist_ok=True)
+        local_pdf_path = local_paper_dir / "paper.pdf"
+        local_meta_path = local_paper_dir / "meta.json"
+        if not local_pdf_path.exists():
+            try:
+                download_file(creds, entry.pdf_file_id, local_pdf_path)
+            except Exception as e:
+                st.error(f"Failed to load PDF for '{entry.title}': {e}")
+                progress.progress(
+                    (i + 1) / total, text=f"Generating metadata ({i + 1}/{total})..."
+                )
+                continue
+        sync_paper_metadata(creds, entry, local_meta_path)
+        if generate_metadata_for_paper(pid, local_pdf_path):
+            try:
+                if persist_generated_metadata(creds, pid, index, local_meta_path):
+                    any_persisted = True
+            except Exception as e:
+                st.error(
+                    f"Generated metadata for '{entry.title}' but failed to save it: {e}"
+                )
+        if st.session_state.get("hf_quota_exceeded"):
+            st.warning(
+                f"Stopped after {i + 1}/{total} paper(s): Hugging Face "
+                "credits are exhausted for now. Wait a bit, or generate one "
+                "paper at a time."
+            )
+            break
+        progress.progress(
+            (i + 1) / total, text=f"Generating metadata ({i + 1}/{total})..."
+        )
+        if i + 1 < total:
+            sleep_fn(BULK_GENERATE_DELAY_SECONDS)
+    progress.empty()
+
+    if any_persisted:
+        try:
+            upload_library_index(creds, papers_id, index)
+        except Exception as e:
+            st.error(f"Generated metadata was saved, but syncing the index failed: {e}")
+
+
 def init_library_state(
     creds: Credentials, lib_id: str, papers_id: str, lib_name: str
 ) -> None:
     """Resets session state for a newly opened or newly created library.
+
+    Also clears any pending request to force the manual library-selection
+    screen, so a later single-library session goes back to auto-opening.
 
     Args:
         creds (Credentials): The Google OAuth credentials (unused directly,
@@ -295,6 +585,7 @@ def init_library_state(
         st.session_state.local_lib_dir / "id-mapping.json"
     )
     st.session_state.selected_paper = None
+    st.session_state.pop("manual_library_selection", None)
 
 
 def sync_library_index(creds: Credentials) -> None:
@@ -338,6 +629,82 @@ def sync_library_index(creds: Credentials) -> None:
             st.session_state.index = LibraryIndex()
     else:
         st.session_state.index = LibraryIndex()
+
+
+def get_all_tags(index: LibraryIndex) -> list[str]:
+    """Returns every distinct tag used across the library, sorted alphabetically.
+
+    Args:
+        index: The library index to scan.
+
+    Returns:
+        list[str]: The sorted, deduplicated tags used by any paper in `index`.
+    """
+    return sorted({tag for p in index.papers.values() for tag in p.tags})
+
+
+def get_duplicate_pids(index: LibraryIndex) -> set[str]:
+    """Finds every paper whose embedding matches another paper in the index.
+
+    Computed fresh from the persisted embeddings already in `index` (rather
+    than from the ephemeral `dupes_{pid}` session-state key that's only
+    populated right after generation), so the result is available for any
+    paper regardless of when its embedding was generated or whether the
+    user has navigated away and back.
+
+    The underlying pairwise comparison is O(N^2) in the number of papers,
+    but this is called on every Streamlit rerun (i.e. on every click or
+    keystroke anywhere in the app), so the result is cached in
+    `st.session_state` under a signature of every paper's embedding
+    content. `st.session_state.index` is typically the same object mutated
+    in place across reruns, so caching by object identity wouldn't detect
+    embedding changes - the signature is recomputed each call (an O(N)
+    operation) and only triggers the expensive O(N^2) scan when it
+    actually differs from the last cached signature.
+
+    Args:
+        index: The library index to scan.
+
+    Returns:
+        set[str]: The paper IDs with at least one similar-embedding match
+        elsewhere in the index, per `find_similar_papers`'s default
+        threshold.
+    """
+    signature = tuple(
+        sorted(
+            (pid, tuple(entry.embedding))
+            for pid, entry in index.papers.items()
+            if entry.embedding
+        )
+    )
+    cached = st.session_state.get("_duplicate_pids_cache")
+    if cached is not None and cached[0] == signature:
+        return cached[1]
+
+    result = {
+        pid
+        for pid, entry in index.papers.items()
+        if entry.embedding
+        and find_similar_papers(entry.embedding, index, exclude_pid=pid)
+    }
+    st.session_state["_duplicate_pids_cache"] = (signature, result)
+    return result
+
+
+def get_missing_metadata_pids(index: LibraryIndex) -> set[str]:
+    """Finds every paper with no generated tags or embedding yet.
+
+    Args:
+        index: The library index to scan.
+
+    Returns:
+        set[str]: The paper IDs that have never had metadata generated.
+    """
+    return {
+        pid
+        for pid, entry in index.papers.items()
+        if not entry.tags and not entry.embedding
+    }
 
 
 def filter_papers(
@@ -464,8 +831,16 @@ def main() -> None:
 
     # Library Selection Screen
     if "current_lib_id" not in st.session_state:
-        st.subheader("Select or Create a Library")
         libraries = list_libraries(creds, root_id)
+
+        if len(libraries) == 1 and not st.session_state.get("manual_library_selection"):
+            only_lib = libraries[0]
+            papers_id = get_papers_folder(creds, only_lib["id"])
+            init_library_state(creds, only_lib["id"], papers_id, only_lib["name"])
+            st.rerun()
+            return
+
+        st.subheader("Select or Create a Library")
 
         col1, col2 = st.columns(2)
         with col1:
@@ -508,7 +883,12 @@ def main() -> None:
     with st.sidebar:
 
         def switch_lib() -> None:
-            """Clears the current library's session state to return to library selection."""
+            """Clears the current library's session state to return to library selection.
+
+            Also forces the manual selection screen to show even if only one
+            library exists, since the user explicitly asked to switch.
+            """
+            st.session_state.manual_library_selection = True
             for k in [
                 "current_lib_id",
                 "current_lib_name",
@@ -516,6 +896,7 @@ def main() -> None:
                 "index",
                 "last_sync_time",
                 "confirm_delete_pids",
+                "confirm_generate_pids",
             ]:
                 st.session_state.pop(k, None)
 
@@ -576,16 +957,51 @@ def main() -> None:
                 for pid in st.session_state.index.papers
                 if st.session_state.get(f"chk_{pid}")
             ]
-            if st.button(
-                "🗑️",
-                key="trash_icon",
-                help="Delete selected papers",
-                type="primary" if checked_pids else "secondary",
-            ):
-                if checked_pids:
-                    st.session_state.confirm_delete_pids = checked_pids
-                else:
-                    st.warning("No papers selected.")
+            # Narrow columns with no gap keep the two icons adjacent instead
+            # of centered in two full-width halves; the trailing column
+            # just absorbs the remaining space. Native Streamlit has no way
+            # to give one specific button a custom color (`type=` only
+            # offers theme-wide presets), so the delete and generate icons
+            # share the same "primary" red when active and are told apart
+            # by their emoji and tooltip instead.
+            icon_col1, icon_col2, icon_col3, _icon_spacer = st.columns(
+                [1, 1, 1, 7], gap=None
+            )
+            with icon_col1:
+                if st.button(
+                    "🗑️",
+                    key="trash_icon",
+                    help="Delete selected papers",
+                    type="primary" if checked_pids else "secondary",
+                ):
+                    if checked_pids:
+                        st.session_state.confirm_delete_pids = checked_pids
+                    else:
+                        st.warning("No papers selected.")
+            with icon_col2:
+                if st.button(
+                    "✨",
+                    key="bulk_generate_icon",
+                    help=GENERATE_METADATA_HELP,
+                    type="primary" if checked_pids else "secondary",
+                ):
+                    if checked_pids:
+                        st.session_state.confirm_generate_pids = checked_pids
+                    else:
+                        st.warning("No papers selected.")
+            with icon_col3:
+                if st.button(
+                    "🪄",
+                    key="generate_missing_icon",
+                    help="Generate metadata for every paper that doesn't have any yet",
+                ):
+                    missing_pids = list(
+                        get_missing_metadata_pids(st.session_state.index)
+                    )
+                    if missing_pids:
+                        st.session_state.confirm_generate_pids = missing_pids
+                    else:
+                        st.info("Every paper already has metadata.")
 
             search_box = st_keyup(
                 "Search", placeholder="Search papers...", key="search_box"
@@ -604,13 +1020,7 @@ def main() -> None:
                     LABEL_TO_STATUS[label] for label in status_filter_labels
                 ]
             with tags_col:
-                all_tags = sorted(
-                    {
-                        tag
-                        for p in st.session_state.index.papers.values()
-                        for tag in p.tags
-                    }
-                )
+                all_tags = get_all_tags(st.session_state.index)
                 # A previously selected tag may no longer exist (its last
                 # paper was deleted or retagged since the last rerun). Drop
                 # it from the persisted selection before the widget reads
@@ -647,6 +1057,29 @@ def main() -> None:
                         st.session_state.confirm_delete_pids = None
                         st.rerun()
 
+            if st.session_state.get("confirm_generate_pids"):
+                pids_to_generate = st.session_state.confirm_generate_pids
+                st.warning(
+                    f"Generate metadata for {len(pids_to_generate)} paper(s)? "
+                    "Any existing metadata will be overwritten."
+                )
+                confirm_gen_col, cancel_gen_col = st.columns(2)
+                with confirm_gen_col:
+                    if st.button("Confirm", key="confirm_generate_btn"):
+                        generate_metadata_for_selected(
+                            creds,
+                            pids_to_generate,
+                            st.session_state.index,
+                            st.session_state.current_papers_id,
+                            st.session_state.local_lib_dir,
+                        )
+                        st.session_state.confirm_generate_pids = None
+                        st.rerun()
+                with cancel_gen_col:
+                    if st.button("Cancel", key="cancel_generate_btn"):
+                        st.session_state.confirm_generate_pids = None
+                        st.rerun()
+
             # Re-filter after the block above so a partial batch-delete
             # failure (which skips st.rerun() to keep its error visible)
             # never renders a now-deleted paper's row - clicking one would
@@ -655,6 +1088,8 @@ def main() -> None:
             filtered_papers = filter_papers(
                 st.session_state.index.papers, search_query, status_filter, tags_filter
             )
+
+            duplicate_pids = get_duplicate_pids(st.session_state.index)
 
             with st.container(height=400):
                 for pid, p in filtered_papers:
@@ -665,6 +1100,8 @@ def main() -> None:
                         )
                     with row_button:
                         display_name = f"{STATUS_ICONS.get(p.status, '📄')} {p.title}"
+                        if pid in duplicate_pids:
+                            display_name = f"⚠️ {display_name}"
                         if pid == st.session_state.selected_paper:
                             display_name = f"**{display_name}**"
                         if st.button(
@@ -741,30 +1178,89 @@ def main() -> None:
                     "Could not load the latest metadata from Drive. Editing is "
                     "disabled to avoid overwriting your saved data."
                 )
+
+            if st.button(
+                "✨ Generate metadata",
+                key=f"generate_btn_{pid}",
+                disabled=not pdf_available,
+                help=GENERATE_METADATA_HELP,
+            ):
+                has_unsaved_edits = (
+                    st.session_state.get(f"title_{pid}", meta.title) != meta.title
+                    or st.session_state.get(f"abstract_{pid}", meta.abstract)
+                    != meta.abstract
+                    or st.session_state.get(f"tags_{pid}", ", ".join(meta.tags))
+                    != ", ".join(meta.tags)
+                )
+                if meta.abstract or meta.tags or has_unsaved_edits:
+                    st.session_state[f"confirm_regenerate_{pid}"] = True
+                else:
+                    with st.spinner("Generating metadata with Hugging Face..."):
+                        if generate_metadata_for_paper(pid, local_pdf_path):
+                            st.rerun()
+
+            if st.session_state.get(f"confirm_regenerate_{pid}"):
+                st.warning(
+                    "This paper already has generated metadata or unsaved "
+                    "edits. Regenerate and overwrite them?"
+                )
+                regen_col, cancel_regen_col = st.columns(2)
+                with regen_col:
+                    if st.button("Regenerate", key=f"confirm_regenerate_btn_{pid}"):
+                        st.session_state.pop(f"confirm_regenerate_{pid}", None)
+                        with st.spinner("Generating metadata with Hugging Face..."):
+                            if generate_metadata_for_paper(pid, local_pdf_path):
+                                st.rerun()
+                with cancel_regen_col:
+                    if st.button("Cancel", key=f"cancel_regenerate_btn_{pid}"):
+                        st.session_state.pop(f"confirm_regenerate_{pid}", None)
+                        st.rerun()
+
+            for _, dupe_title, dupe_score in st.session_state.get(f"dupes_{pid}", []):
+                st.warning(f"Similar to '{dupe_title}' — {dupe_score:.0%} match")
+
+            draft = st.session_state.get(f"generated_{pid}", {})
             with st.form(key=f"meta_form_{pid}"):
-                new_title = st.text_input("Title", value=meta.title)
+                new_title = st.text_input(
+                    "Title", value=draft.get("title", meta.title), key=f"title_{pid}"
+                )
+                new_abstract = st.text_area(
+                    "Abstract / TL;DR",
+                    value=draft.get("abstract", meta.abstract),
+                    height=100,
+                    key=f"abstract_{pid}",
+                )
                 tags_str = st.text_input(
-                    "Tags (comma separated)", value=", ".join(meta.tags)
+                    "Tags (comma separated)",
+                    value=", ".join(draft.get("tags", meta.tags)),
+                    key=f"tags_{pid}",
                 )
                 status_label = st.selectbox(
                     "Status",
                     options=list(STATUS_LABELS.values()),
                     index=list(STATUS_LABELS.keys()).index(meta.status),
+                    key=f"status_{pid}",
                 )
                 status = LABEL_TO_STATUS.get(status_label, meta.status)
-                citation = st.text_input("Citation", value=meta.citation)
-                notes = st.text_area("Notes", value=meta.notes, height=200)
+                citation = st.text_input(
+                    "Citation", value=meta.citation, key=f"citation_{pid}"
+                )
+                notes = st.text_area(
+                    "Notes", value=meta.notes, height=200, key=f"notes_{pid}"
+                )
 
                 if st.form_submit_button(
                     "Save Changes", disabled=not metadata_available
                 ):
-                    meta.title = strip_pdf_suffix(new_title)
+                    meta.title = strip_pdf_suffix(new_title or "")
+                    meta.abstract = new_abstract or ""
                     meta.tags = [t.strip() for t in tags_str.split(",") if t.strip()]
                     meta.status = cast(
                         Literal["Unread", "Reading", "Read", "TODO"], status
                     )
                     meta.citation = citation
                     meta.notes = notes
+                    meta.embedding = draft.get("embedding", meta.embedding)
 
                     local_meta_path.write_text(
                         meta.model_dump_json(indent=2), encoding="utf-8"
@@ -781,6 +1277,7 @@ def main() -> None:
                         paper_info.title = meta.title
                         paper_info.tags = meta.tags
                         paper_info.status = meta.status
+                        paper_info.embedding = meta.embedding
                         st.session_state.index.papers[pid] = paper_info
                         upload_library_index(
                             creds,
@@ -788,6 +1285,8 @@ def main() -> None:
                             st.session_state.index,
                         )
 
+                    st.session_state.pop(f"generated_{pid}", None)
+                    st.session_state.pop(f"dupes_{pid}", None)
                     st.success("Metadata saved!")
                     st.rerun()
     else:

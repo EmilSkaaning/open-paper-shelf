@@ -10,17 +10,23 @@ class PaperMetadata(BaseModel):
 
     Attributes:
         title: The title of the paper.
+        abstract: Generated or user-written abstract/TL;DR for the paper.
         tags: List of tag strings associated with the paper.
         notes: Personal notes or summary for the paper.
         citation: Citation text for the paper.
         status: Reading status of the paper.
+        embedding: 384-dim sentence embedding of the paper's text, used for
+            duplicate detection. An empty list means no embedding has been
+            generated yet.
     """
 
     title: str
+    abstract: str = ""
     tags: List[str] = Field(default_factory=list)
     notes: str = ""
     citation: str = ""
     status: Literal["Unread", "Reading", "Read", "TODO"] = "Unread"
+    embedding: List[float] = Field(default_factory=list)
 
 
 class PaperIndexEntry(BaseModel):
@@ -37,6 +43,12 @@ class PaperIndexEntry(BaseModel):
         status: Reading status of the paper, kept in sync with the paper's
             meta.json so the sidebar can filter/display by status without
             fetching every paper's metadata.
+        embedding: 384-dim sentence embedding of the paper, kept in sync
+            with the paper's meta.json so duplicate detection can compare
+            against every paper in the library without fetching each one's
+            metadata individually. An empty list means no embedding has
+            been generated yet. Note this grows id-mapping.json roughly
+            linearly with library size once every paper has an embedding.
     """
 
     title: str
@@ -45,6 +57,7 @@ class PaperIndexEntry(BaseModel):
     folder_id: str
     tags: List[str] = Field(default_factory=list)
     status: Literal["Unread", "Reading", "Read", "TODO"] = "Unread"
+    embedding: List[float] = Field(default_factory=list)
 
 
 class LibraryIndex(BaseModel):
