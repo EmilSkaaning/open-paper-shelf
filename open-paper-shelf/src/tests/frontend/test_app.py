@@ -11,6 +11,11 @@ from huggingface_hub.errors import HfHubHTTPError
 from pytest_mock import MockerFixture
 
 import frontend.app as app
+import frontend.auth as auth
+import frontend.library as library
+import frontend.library_filters as library_filters
+import frontend.metadata_generation as metadata_generation
+import frontend.uploads as uploads
 from backend.huggingface_client import GeneratedMetadata
 from backend.models import LibraryIndex, PaperIndexEntry, PaperMetadata
 from tests.frontend.conftest import make_uploaded_file
@@ -48,7 +53,7 @@ class TestSyncLibraryIndex:
         """Test an empty index is used when no remote index file exists yet."""
         fake_st.session_state.current_papers_id = "papers_123"
         fake_st.session_state.local_index_path = None
-        mocker.patch.object(app, "get_library_index_file", return_value=None)
+        mocker.patch.object(library, "get_library_index_file", return_value=None)
 
         app.sync_library_index(creds=MagicMock())
 
@@ -63,7 +68,7 @@ class TestSyncLibraryIndex:
         fake_st.session_state.current_papers_id = "papers_123"
         fake_st.session_state.local_index_path = local_path
         mocker.patch.object(
-            app,
+            library,
             "get_library_index_file",
             return_value={"id": "idx", "modifiedTime": "t1"},
         )
@@ -99,7 +104,7 @@ class TestSyncLibraryIndex:
         fake_st.session_state.local_index_path = local_path
         fake_st.session_state.last_sync_time = "t0"
         mocker.patch.object(
-            app,
+            library,
             "get_library_index_file",
             return_value={"id": "idx", "modifiedTime": "t1"},
         )
@@ -123,11 +128,11 @@ class TestSyncLibraryIndex:
         fake_st.session_state.local_index_path = local_path
         fake_st.session_state.last_sync_time = "t1"
         mocker.patch.object(
-            app,
+            library,
             "get_library_index_file",
             return_value={"id": "idx", "modifiedTime": "t1"},
         )
-        mock_download = mocker.patch.object(app, "download_file")
+        mock_download = mocker.patch.object(library, "download_file")
 
         app.sync_library_index(creds=MagicMock())
 
@@ -148,11 +153,11 @@ class TestSyncLibraryIndex:
         fake_st.session_state.local_index_path = local_path
         fake_st.session_state.last_sync_time = "t1"
         mocker.patch.object(
-            app,
+            library,
             "get_library_index_file",
             return_value={"id": "idx", "modifiedTime": "t1"},
         )
-        mock_download = mocker.patch.object(app, "download_file")
+        mock_download = mocker.patch.object(library, "download_file")
 
         app.sync_library_index(creds=MagicMock())
 
@@ -183,11 +188,11 @@ class TestSyncLibraryIndex:
             dest_path.write_text(json.dumps(valid_data))
 
         mocker.patch.object(
-            app,
+            library,
             "get_library_index_file",
             return_value={"id": "idx", "modifiedTime": "t1"},
         )
-        mocker.patch.object(app, "download_file", side_effect=fake_download)
+        mocker.patch.object(library, "download_file", side_effect=fake_download)
 
         app.sync_library_index(creds=MagicMock())
 
@@ -218,11 +223,11 @@ class TestSyncLibraryIndex:
         fake_st.session_state.local_index_path = local_path
         fake_st.session_state.last_sync_time = "t1"
         mocker.patch.object(
-            app,
+            library,
             "get_library_index_file",
             return_value={"id": "idx", "modifiedTime": "t1"},
         )
-        mock_download = mocker.patch.object(app, "download_file")
+        mock_download = mocker.patch.object(library, "download_file")
         mock_read_text = mocker.patch.object(
             Path, "read_text", return_value=json.dumps(valid_data)
         )
@@ -270,10 +275,10 @@ class TestUploadPapers:
         fake_st.session_state.index = LibraryIndex()
         files = [make_uploaded_file("a.pdf"), make_uploaded_file("b.pdf")]
         mocker.patch.object(
-            app, "create_paper_folder", side_effect=["folder1", "folder2"]
+            uploads, "create_paper_folder", side_effect=["folder1", "folder2"]
         )
         mocker.patch.object(
-            app,
+            uploads,
             "upload_file_to_folder",
             side_effect=["pdf1", "meta1", "pdf2", "meta2"],
         )
@@ -291,8 +296,10 @@ class TestUploadPapers:
         fake_st.session_state.current_papers_id = "papers_123"
         fake_st.session_state.index = LibraryIndex()
         files = [make_uploaded_file("Attention Is All You Need.pdf")]
-        mocker.patch.object(app, "create_paper_folder", return_value="folder1")
-        mocker.patch.object(app, "upload_file_to_folder", side_effect=["pdf1", "meta1"])
+        mocker.patch.object(uploads, "create_paper_folder", return_value="folder1")
+        mocker.patch.object(
+            uploads, "upload_file_to_folder", side_effect=["pdf1", "meta1"]
+        )
 
         result = app.upload_papers(creds=MagicMock(), uploaded_files=files)
 
@@ -311,9 +318,13 @@ class TestUploadPapers:
         fake_st.session_state.index = LibraryIndex()
         files = [make_uploaded_file("a.pdf"), make_uploaded_file("b.pdf")]
         mocker.patch.object(
-            app, "create_paper_folder", side_effect=["folder1", RuntimeError("boom")]
+            uploads,
+            "create_paper_folder",
+            side_effect=["folder1", RuntimeError("boom")],
         )
-        mocker.patch.object(app, "upload_file_to_folder", side_effect=["pdf1", "meta1"])
+        mocker.patch.object(
+            uploads, "upload_file_to_folder", side_effect=["pdf1", "meta1"]
+        )
 
         result = app.upload_papers(creds=MagicMock(), uploaded_files=files)
 
@@ -330,8 +341,8 @@ class TestUploadPapers:
         fake_st.session_state.current_papers_id = "papers_123"
         fake_st.session_state.index = LibraryIndex()
         files = [make_uploaded_file("")]
-        mocker.patch.object(app, "create_paper_folder")
-        mocker.patch.object(app, "upload_file_to_folder")
+        mocker.patch.object(uploads, "create_paper_folder")
+        mocker.patch.object(uploads, "upload_file_to_folder")
 
         result = app.upload_papers(creds=MagicMock(), uploaded_files=files)
 
@@ -347,11 +358,11 @@ class TestUploadPapers:
         fake_st.session_state.current_papers_id = "papers_123"
         fake_st.session_state.index = LibraryIndex()
         files = [make_uploaded_file("a.pdf")]
-        mocker.patch.object(app, "create_paper_folder", return_value="folder1")
+        mocker.patch.object(uploads, "create_paper_folder", return_value="folder1")
         mocker.patch.object(
-            app, "upload_file_to_folder", side_effect=RuntimeError("boom")
+            uploads, "upload_file_to_folder", side_effect=RuntimeError("boom")
         )
-        mock_delete = mocker.patch.object(app, "delete_paper_folder")
+        mock_delete = mocker.patch.object(uploads, "delete_paper_folder")
 
         result = app.upload_papers(creds=MagicMock(), uploaded_files=files)
 
@@ -368,11 +379,11 @@ class TestUploadPapers:
         fake_st.session_state.current_papers_id = "papers_123"
         fake_st.session_state.index = LibraryIndex()
         files = [make_uploaded_file("a.pdf")]
-        mocker.patch.object(app, "create_paper_folder", return_value="folder1")
+        mocker.patch.object(uploads, "create_paper_folder", return_value="folder1")
         mocker.patch.object(
-            app, "upload_file_to_folder", side_effect=["pdf1", RuntimeError("boom")]
+            uploads, "upload_file_to_folder", side_effect=["pdf1", RuntimeError("boom")]
         )
-        mock_delete = mocker.patch.object(app, "delete_paper_folder")
+        mock_delete = mocker.patch.object(uploads, "delete_paper_folder")
 
         result = app.upload_papers(creds=MagicMock(), uploaded_files=files)
 
@@ -389,9 +400,9 @@ class TestUploadPapers:
         fake_st.session_state.index = LibraryIndex()
         files = [make_uploaded_file("a.pdf")]
         mocker.patch.object(
-            app, "create_paper_folder", side_effect=RuntimeError("boom")
+            uploads, "create_paper_folder", side_effect=RuntimeError("boom")
         )
-        mock_delete = mocker.patch.object(app, "delete_paper_folder")
+        mock_delete = mocker.patch.object(uploads, "delete_paper_folder")
 
         result = app.upload_papers(creds=MagicMock(), uploaded_files=files)
 
@@ -407,12 +418,12 @@ class TestUploadPapers:
         fake_st.session_state.current_papers_id = "papers_123"
         fake_st.session_state.index = LibraryIndex()
         files = [make_uploaded_file("a.pdf")]
-        mocker.patch.object(app, "create_paper_folder", return_value="folder1")
+        mocker.patch.object(uploads, "create_paper_folder", return_value="folder1")
         mocker.patch.object(
-            app, "upload_file_to_folder", side_effect=RuntimeError("boom")
+            uploads, "upload_file_to_folder", side_effect=RuntimeError("boom")
         )
         mocker.patch.object(
-            app, "delete_paper_folder", side_effect=RuntimeError("cleanup failed")
+            uploads, "delete_paper_folder", side_effect=RuntimeError("cleanup failed")
         )
 
         result = app.upload_papers(creds=MagicMock(), uploaded_files=files)
@@ -433,7 +444,7 @@ class TestSyncPaperMetadata:
         """Test a successful download is reported as safe to edit."""
         local_meta_path = tmp_path / "meta.json"
         paper_info = MagicMock(meta_file_id="meta1")
-        mock_download = mocker.patch.object(app, "download_file")
+        mock_download = mocker.patch.object(metadata_generation, "download_file")
 
         result = app.sync_paper_metadata(MagicMock(), paper_info, local_meta_path)
 
@@ -471,7 +482,9 @@ class TestSyncPaperMetadata:
             local_meta_path.write_text('{"title": "cached"}')
         paper_info = MagicMock(meta_file_id="meta1")
         mocker.patch.object(
-            app, "download_file", side_effect=RuntimeError("network blip")
+            metadata_generation,
+            "download_file",
+            side_effect=RuntimeError("network blip"),
         )
 
         result = app.sync_paper_metadata(MagicMock(), paper_info, local_meta_path)
@@ -489,7 +502,7 @@ class TestAuthenticateUser:
         """Test valid cached credentials short-circuit the OAuth flow entirely."""
         cached_creds = MagicMock()
         mocker.patch.object(
-            app, "load_credentials_from_file", return_value=cached_creds
+            auth, "load_credentials_from_file", return_value=cached_creds
         )
 
         result = app.authenticate_user()
@@ -511,8 +524,8 @@ class TestAuthenticateUser:
         mock_flow.credentials = mock_creds
         app.OAUTH_FLOWS["state1"] = mock_flow
         fake_st.query_params = {"code": "abc123", "state": "state1"}
-        mocker.patch.object(app, "load_credentials_from_file", return_value=None)
-        mock_save_creds = mocker.patch.object(app, "save_credentials")
+        mocker.patch.object(auth, "load_credentials_from_file", return_value=None)
+        mock_save_creds = mocker.patch.object(auth, "save_credentials")
 
         with pytest.raises(stop_rerun):
             app.authenticate_user()
@@ -528,7 +541,7 @@ class TestAuthenticateUser:
         """An unknown/forged state (not in OAUTH_FLOWS) must be rejected as a
         possible CSRF attempt, never call fetch_token."""
         fake_st.query_params = {"code": "abc123", "state": "forged-state"}
-        mocker.patch.object(app, "load_credentials_from_file", return_value=None)
+        mocker.patch.object(auth, "load_credentials_from_file", return_value=None)
 
         result = app.authenticate_user()
 
@@ -542,7 +555,7 @@ class TestAuthenticateUser:
         """Regression test: a callback with a code but no state param must
         be rejected as a CSRF mismatch rather than raising."""
         fake_st.query_params = {"code": "abc123"}
-        mocker.patch.object(app, "load_credentials_from_file", return_value=None)
+        mocker.patch.object(auth, "load_credentials_from_file", return_value=None)
 
         result = app.authenticate_user()
 
@@ -558,7 +571,7 @@ class TestAuthenticateUser:
         mock_flow.fetch_token.side_effect = RuntimeError("token exchange failed")
         app.OAUTH_FLOWS["state1"] = mock_flow
         fake_st.query_params = {"code": "abc123", "state": "state1"}
-        mocker.patch.object(app, "load_credentials_from_file", return_value=None)
+        mocker.patch.object(auth, "load_credentials_from_file", return_value=None)
 
         result = app.authenticate_user()
 
@@ -576,9 +589,9 @@ class TestAuthenticateUser:
             "https://accounts.google.com/auth",
             "new-state",
         )
-        mocker.patch.object(app, "load_credentials_from_file", return_value=None)
-        mocker.patch.object(app, "get_oauth_flow", return_value=mock_flow)
-        mock_add_flow = mocker.patch.object(app, "add_oauth_flow")
+        mocker.patch.object(auth, "load_credentials_from_file", return_value=None)
+        mocker.patch.object(auth, "get_oauth_flow", return_value=mock_flow)
+        mock_add_flow = mocker.patch.object(auth, "add_oauth_flow")
 
         result = app.authenticate_user()
 
@@ -595,8 +608,8 @@ class TestAuthenticateUser:
         self, fake_st: MagicMock, mocker: MockerFixture
     ) -> None:
         """Test a missing credentials.json surfaces a clear error instead of crashing."""
-        mocker.patch.object(app, "load_credentials_from_file", return_value=None)
-        mocker.patch.object(app, "get_oauth_flow", side_effect=FileNotFoundError())
+        mocker.patch.object(auth, "load_credentials_from_file", return_value=None)
+        mocker.patch.object(auth, "get_oauth_flow", side_effect=FileNotFoundError())
 
         result = app.authenticate_user()
 
@@ -612,7 +625,7 @@ class TestInitLibraryState:
         self, fake_st: MagicMock, mocker: MockerFixture, tmp_path: Path
     ) -> None:
         """Test session state is reset and the library's local dir is created."""
-        mocker.patch.object(app, "PAPERS_DIR", tmp_path)
+        mocker.patch.object(library, "PAPERS_DIR", tmp_path)
 
         app.init_library_state(MagicMock(), "lib_123", "papers_123", "My Lib")
 
@@ -784,8 +797,8 @@ class TestDeleteSelectedPapers:
             }
         )
         fake_st.session_state.selected_paper = None
-        mock_delete_folder = mocker.patch.object(app, "delete_paper_folder")
-        mock_upload_index = mocker.patch.object(app, "upload_library_index")
+        mock_delete_folder = mocker.patch.object(library, "delete_paper_folder")
+        mock_upload_index = mocker.patch.object(library, "upload_library_index")
 
         result = app.delete_selected_papers(
             creds=MagicMock(),
@@ -821,9 +834,9 @@ class TestDeleteSelectedPapers:
         )
         fake_st.session_state.selected_paper = None
         mocker.patch.object(
-            app, "delete_paper_folder", side_effect=[RuntimeError("boom"), None]
+            library, "delete_paper_folder", side_effect=[RuntimeError("boom"), None]
         )
-        mock_upload_index = mocker.patch.object(app, "upload_library_index")
+        mock_upload_index = mocker.patch.object(library, "upload_library_index")
 
         result = app.delete_selected_papers(
             creds=MagicMock(),
@@ -854,9 +867,9 @@ class TestDeleteSelectedPapers:
         )
         index = LibraryIndex(papers={pid: entry})
         fake_st.session_state.selected_paper = pid
-        mocker.patch.object(app, "delete_paper_folder")
+        mocker.patch.object(library, "delete_paper_folder")
         mocker.patch.object(
-            app, "upload_library_index", side_effect=RuntimeError("network blip")
+            library, "upload_library_index", side_effect=RuntimeError("network blip")
         )
 
         result = app.delete_selected_papers(
@@ -889,8 +902,8 @@ class TestDeleteSelectedPapers:
         local_paper_dir = tmp_path / pid
         local_paper_dir.mkdir(parents=True)
         (local_paper_dir / "paper.pdf").write_bytes(b"x")
-        mocker.patch.object(app, "delete_paper_folder")
-        mocker.patch.object(app, "upload_library_index")
+        mocker.patch.object(library, "delete_paper_folder")
+        mocker.patch.object(library, "upload_library_index")
 
         app.delete_selected_papers(
             creds=MagicMock(),
@@ -1026,7 +1039,7 @@ class TestGetDuplicatePids:
                 ),
             }
         )
-        spy = mocker.spy(app, "find_similar_papers")
+        spy = mocker.spy(library_filters, "find_similar_papers")
 
         first = app.get_duplicate_pids(index)
         call_count_after_first = spy.call_count
@@ -1059,7 +1072,7 @@ class TestGetDuplicatePids:
                 ),
             }
         )
-        spy = mocker.spy(app, "find_similar_papers")
+        spy = mocker.spy(library_filters, "find_similar_papers")
 
         first = app.get_duplicate_pids(index)
         call_count_after_first = spy.call_count
@@ -1927,7 +1940,9 @@ class TestPersistGeneratedMetadata:
                 )
             }
         )
-        mock_upload_file = mocker.patch.object(app, "upload_file_to_folder")
+        mock_upload_file = mocker.patch.object(
+            metadata_generation, "upload_file_to_folder"
+        )
 
         result = app.persist_generated_metadata(
             creds=MagicMock(),
@@ -1956,7 +1971,9 @@ class TestPersistGeneratedMetadata:
             "embedding": [0.1, 0.2],
         }
         fake_st.session_state[f"dupes_{pid}"] = [("other", "Other Paper", 0.9)]
-        mock_upload_file = mocker.patch.object(app, "upload_file_to_folder")
+        mock_upload_file = mocker.patch.object(
+            metadata_generation, "upload_file_to_folder"
+        )
         local_meta_path = tmp_path / "meta.json"
 
         result = app.persist_generated_metadata(
@@ -2002,7 +2019,7 @@ class TestPersistGeneratedMetadata:
             "tags": ["nlp"],
             "embedding": [0.5],
         }
-        mocker.patch.object(app, "upload_file_to_folder")
+        mocker.patch.object(metadata_generation, "upload_file_to_folder")
 
         app.persist_generated_metadata(
             creds=MagicMock(), pid=pid, index=index, local_meta_path=local_meta_path
@@ -2031,7 +2048,7 @@ class TestPersistGeneratedMetadata:
             "tags": ["nlp"],
             "embedding": [0.5],
         }
-        mocker.patch.object(app, "upload_file_to_folder")
+        mocker.patch.object(metadata_generation, "upload_file_to_folder")
 
         result = app.persist_generated_metadata(
             creds=MagicMock(), pid=pid, index=index, local_meta_path=local_meta_path
@@ -2061,10 +2078,10 @@ class TestGenerateMetadataForSelected:
                 ),
             }
         )
-        mock_download = mocker.patch.object(app, "download_file")
-        mocker.patch.object(app, "sync_paper_metadata")
+        mock_download = mocker.patch.object(metadata_generation, "download_file")
+        mocker.patch.object(metadata_generation, "sync_paper_metadata")
         mock_generate = mocker.patch.object(
-            app, "generate_metadata_for_paper", return_value=True
+            metadata_generation, "generate_metadata_for_paper", return_value=True
         )
 
         app.generate_metadata_for_selected(
@@ -2096,9 +2113,11 @@ class TestGenerateMetadataForSelected:
         local_pdf_path = tmp_path / pid / "paper.pdf"
         local_pdf_path.parent.mkdir(parents=True)
         local_pdf_path.write_bytes(b"pdf-bytes")
-        mock_download = mocker.patch.object(app, "download_file")
-        mocker.patch.object(app, "sync_paper_metadata")
-        mocker.patch.object(app, "generate_metadata_for_paper", return_value=True)
+        mock_download = mocker.patch.object(metadata_generation, "download_file")
+        mocker.patch.object(metadata_generation, "sync_paper_metadata")
+        mocker.patch.object(
+            metadata_generation, "generate_metadata_for_paper", return_value=True
+        )
 
         app.generate_metadata_for_selected(
             creds=MagicMock(),
@@ -2127,11 +2146,13 @@ class TestGenerateMetadataForSelected:
             }
         )
         mocker.patch.object(
-            app, "download_file", side_effect=[RuntimeError("network blip"), None]
+            metadata_generation,
+            "download_file",
+            side_effect=[RuntimeError("network blip"), None],
         )
-        mocker.patch.object(app, "sync_paper_metadata")
+        mocker.patch.object(metadata_generation, "sync_paper_metadata")
         mock_generate = mocker.patch.object(
-            app, "generate_metadata_for_paper", return_value=True
+            metadata_generation, "generate_metadata_for_paper", return_value=True
         )
 
         app.generate_metadata_for_selected(
@@ -2150,7 +2171,9 @@ class TestGenerateMetadataForSelected:
         self, fake_st: MagicMock, mocker: MockerFixture, tmp_path: Path
     ) -> None:
         """Test a stale/unknown pid is skipped rather than crashing."""
-        mock_generate = mocker.patch.object(app, "generate_metadata_for_paper")
+        mock_generate = mocker.patch.object(
+            metadata_generation, "generate_metadata_for_paper"
+        )
 
         app.generate_metadata_for_selected(
             creds=MagicMock(),
@@ -2179,8 +2202,10 @@ class TestGenerateMetadataForSelected:
         for pid in pids:
             (tmp_path / pid).mkdir(parents=True)
             (tmp_path / pid / "paper.pdf").write_bytes(b"pdf-bytes")
-        mocker.patch.object(app, "sync_paper_metadata")
-        mocker.patch.object(app, "generate_metadata_for_paper", return_value=True)
+        mocker.patch.object(metadata_generation, "sync_paper_metadata")
+        mocker.patch.object(
+            metadata_generation, "generate_metadata_for_paper", return_value=True
+        )
         mock_sleep = mocker.Mock()
 
         app.generate_metadata_for_selected(
@@ -2219,9 +2244,11 @@ class TestGenerateMetadataForSelected:
             fake_st.session_state["hf_quota_exceeded"] = True
             return False
 
-        mocker.patch.object(app, "sync_paper_metadata")
+        mocker.patch.object(metadata_generation, "sync_paper_metadata")
         mock_generate = mocker.patch.object(
-            app, "generate_metadata_for_paper", side_effect=fake_generate
+            metadata_generation,
+            "generate_metadata_for_paper",
+            side_effect=fake_generate,
         )
         mock_sleep = mocker.Mock()
 
@@ -2270,12 +2297,16 @@ class TestGenerateMetadataForSelected:
             }
             return True
 
-        mocker.patch.object(app, "sync_paper_metadata")
+        mocker.patch.object(metadata_generation, "sync_paper_metadata")
         mocker.patch.object(
-            app, "generate_metadata_for_paper", side_effect=fake_generate
+            metadata_generation,
+            "generate_metadata_for_paper",
+            side_effect=fake_generate,
         )
-        mocker.patch.object(app, "upload_file_to_folder")
-        mock_upload_index = mocker.patch.object(app, "upload_library_index")
+        mocker.patch.object(metadata_generation, "upload_file_to_folder")
+        mock_upload_index = mocker.patch.object(
+            metadata_generation, "upload_library_index"
+        )
 
         app.generate_metadata_for_selected(
             creds=MagicMock(),
@@ -2320,14 +2351,20 @@ class TestGenerateMetadataForSelected:
             }
             return True
 
-        mocker.patch.object(app, "sync_paper_metadata")
+        mocker.patch.object(metadata_generation, "sync_paper_metadata")
         mocker.patch.object(
-            app, "generate_metadata_for_paper", side_effect=fake_generate
+            metadata_generation,
+            "generate_metadata_for_paper",
+            side_effect=fake_generate,
         )
         mocker.patch.object(
-            app, "upload_file_to_folder", side_effect=[RuntimeError("boom"), None]
+            metadata_generation,
+            "upload_file_to_folder",
+            side_effect=[RuntimeError("boom"), None],
         )
-        mock_upload_index = mocker.patch.object(app, "upload_library_index")
+        mock_upload_index = mocker.patch.object(
+            metadata_generation, "upload_library_index"
+        )
 
         app.generate_metadata_for_selected(
             creds=MagicMock(),
@@ -2361,9 +2398,13 @@ class TestGenerateMetadataForSelected:
         )
         (tmp_path / pid).mkdir(parents=True)
         (tmp_path / pid / "paper.pdf").write_bytes(b"pdf-bytes")
-        mocker.patch.object(app, "sync_paper_metadata")
-        mocker.patch.object(app, "generate_metadata_for_paper", return_value=False)
-        mock_upload_index = mocker.patch.object(app, "upload_library_index")
+        mocker.patch.object(metadata_generation, "sync_paper_metadata")
+        mocker.patch.object(
+            metadata_generation, "generate_metadata_for_paper", return_value=False
+        )
+        mock_upload_index = mocker.patch.object(
+            metadata_generation, "upload_library_index"
+        )
 
         app.generate_metadata_for_selected(
             creds=MagicMock(),
@@ -2401,13 +2442,17 @@ class TestGenerateMetadataForSelected:
             }
             return True
 
-        mocker.patch.object(app, "sync_paper_metadata")
+        mocker.patch.object(metadata_generation, "sync_paper_metadata")
         mocker.patch.object(
-            app, "generate_metadata_for_paper", side_effect=fake_generate
+            metadata_generation,
+            "generate_metadata_for_paper",
+            side_effect=fake_generate,
         )
-        mocker.patch.object(app, "upload_file_to_folder")
+        mocker.patch.object(metadata_generation, "upload_file_to_folder")
         mocker.patch.object(
-            app, "upload_library_index", side_effect=RuntimeError("network blip")
+            metadata_generation,
+            "upload_library_index",
+            side_effect=RuntimeError("network blip"),
         )
 
         app.generate_metadata_for_selected(
@@ -3068,13 +3113,17 @@ class TestMainMetadataView:
         mocker.patch.object(app, "sync_paper_metadata", return_value=True)
         (tmp_path / pid).mkdir(parents=True, exist_ok=True)
         (tmp_path / pid / "paper.pdf").write_bytes(b"pdf-bytes")
-        mocker.patch.object(app, "extract_pdf_text", return_value="paper text")
+        mocker.patch.object(
+            metadata_generation, "extract_pdf_text", return_value="paper text"
+        )
         generated = GeneratedMetadata(
             title="Gen Title", abstract="Gen Abstract", tags=["ai", "nlp"]
         )
-        mocker.patch.object(app, "generate_paper_metadata", return_value=generated)
-        mocker.patch.object(app, "embed_text", return_value=[0.1] * 384)
-        mocker.patch.object(app, "find_similar_papers", return_value=[])
+        mocker.patch.object(
+            metadata_generation, "generate_paper_metadata", return_value=generated
+        )
+        mocker.patch.object(metadata_generation, "embed_text", return_value=[0.1] * 384)
+        mocker.patch.object(metadata_generation, "find_similar_papers", return_value=[])
         fake_st.button.side_effect = lambda label, **kw: label == "✨ Generate metadata"
         fake_st.form_submit_button.return_value = False
 
@@ -3115,14 +3164,16 @@ class TestMainMetadataView:
         mocker.patch.object(app, "sync_paper_metadata", return_value=True)
         (tmp_path / pid).mkdir(parents=True, exist_ok=True)
         (tmp_path / pid / "paper.pdf").write_bytes(b"pdf-bytes")
-        mocker.patch.object(app, "extract_pdf_text", return_value="paper text")
+        mocker.patch.object(
+            metadata_generation, "extract_pdf_text", return_value="paper text"
+        )
         mock_generate = mocker.patch.object(
-            app,
+            metadata_generation,
             "generate_paper_metadata",
             return_value=GeneratedMetadata(title="T", abstract="A", tags=["ai"]),
         )
-        mocker.patch.object(app, "embed_text", return_value=[0.1] * 384)
-        mocker.patch.object(app, "find_similar_papers", return_value=[])
+        mocker.patch.object(metadata_generation, "embed_text", return_value=[0.1] * 384)
+        mocker.patch.object(metadata_generation, "find_similar_papers", return_value=[])
         fake_st.button.side_effect = lambda label, **kw: label == "✨ Generate metadata"
         fake_st.form_submit_button.return_value = False
         assert entry.tags == []
@@ -3142,9 +3193,13 @@ class TestMainMetadataView:
         (tmp_path / pid).mkdir(parents=True, exist_ok=True)
         (tmp_path / pid / "paper.pdf").write_bytes(b"pdf-bytes")
         mocker.patch.object(
-            app, "extract_pdf_text", side_effect=ValueError("Could not read PDF: bad")
+            metadata_generation,
+            "extract_pdf_text",
+            side_effect=ValueError("Could not read PDF: bad"),
         )
-        mock_generate = mocker.patch.object(app, "generate_paper_metadata")
+        mock_generate = mocker.patch.object(
+            metadata_generation, "generate_paper_metadata"
+        )
         fake_st.button.side_effect = lambda label, **kw: label == "✨ Generate metadata"
         fake_st.form_submit_button.return_value = False
 
@@ -3167,9 +3222,11 @@ class TestMainMetadataView:
         mocker.patch.object(app, "sync_paper_metadata", return_value=True)
         (tmp_path / pid).mkdir(parents=True, exist_ok=True)
         (tmp_path / pid / "paper.pdf").write_bytes(b"pdf-bytes")
-        mocker.patch.object(app, "extract_pdf_text", return_value="")
-        mock_generate = mocker.patch.object(app, "generate_paper_metadata")
-        mock_embed = mocker.patch.object(app, "embed_text")
+        mocker.patch.object(metadata_generation, "extract_pdf_text", return_value="")
+        mock_generate = mocker.patch.object(
+            metadata_generation, "generate_paper_metadata"
+        )
+        mock_embed = mocker.patch.object(metadata_generation, "embed_text")
         fake_st.button.side_effect = lambda label, **kw: label == "✨ Generate metadata"
         fake_st.form_submit_button.return_value = False
 
@@ -3192,9 +3249,11 @@ class TestMainMetadataView:
         mocker.patch.object(app, "sync_paper_metadata", return_value=True)
         (tmp_path / pid).mkdir(parents=True, exist_ok=True)
         (tmp_path / pid / "paper.pdf").write_bytes(b"pdf-bytes")
-        mocker.patch.object(app, "extract_pdf_text", return_value="paper text")
         mocker.patch.object(
-            app,
+            metadata_generation, "extract_pdf_text", return_value="paper text"
+        )
+        mocker.patch.object(
+            metadata_generation,
             "generate_paper_metadata",
             side_effect=app.HFTokenMissingError("Set HF_TOKEN"),
         )
@@ -3217,9 +3276,13 @@ class TestMainMetadataView:
         mocker.patch.object(app, "sync_paper_metadata", return_value=True)
         (tmp_path / pid).mkdir(parents=True, exist_ok=True)
         (tmp_path / pid / "paper.pdf").write_bytes(b"pdf-bytes")
-        mocker.patch.object(app, "extract_pdf_text", return_value="paper text")
         mocker.patch.object(
-            app, "generate_paper_metadata", side_effect=RuntimeError("boom")
+            metadata_generation, "extract_pdf_text", return_value="paper text"
+        )
+        mocker.patch.object(
+            metadata_generation,
+            "generate_paper_metadata",
+            side_effect=RuntimeError("boom"),
         )
         fake_st.button.side_effect = lambda label, **kw: label == "✨ Generate metadata"
         fake_st.form_submit_button.return_value = False
@@ -3243,9 +3306,13 @@ class TestMainMetadataView:
         mocker.patch.object(app, "sync_paper_metadata", return_value=True)
         (tmp_path / pid).mkdir(parents=True, exist_ok=True)
         (tmp_path / pid / "paper.pdf").write_bytes(b"pdf-bytes")
-        mocker.patch.object(app, "extract_pdf_text", return_value="paper text")
         mocker.patch.object(
-            app, "generate_paper_metadata", side_effect=_make_402_error()
+            metadata_generation, "extract_pdf_text", return_value="paper text"
+        )
+        mocker.patch.object(
+            metadata_generation,
+            "generate_paper_metadata",
+            side_effect=_make_402_error(),
         )
         fake_st.button.side_effect = lambda label, **kw: label == "✨ Generate metadata"
         fake_st.form_submit_button.return_value = False
@@ -3269,12 +3336,14 @@ class TestMainMetadataView:
         mocker.patch.object(app, "sync_paper_metadata", return_value=True)
         (tmp_path / pid).mkdir(parents=True, exist_ok=True)
         (tmp_path / pid / "paper.pdf").write_bytes(b"pdf-bytes")
-        mocker.patch.object(app, "extract_pdf_text", return_value="paper text")
+        mocker.patch.object(
+            metadata_generation, "extract_pdf_text", return_value="paper text"
+        )
         response = httpx.Response(
             status_code=500, request=httpx.Request("POST", "https://example.com")
         )
         mocker.patch.object(
-            app,
+            metadata_generation,
             "generate_paper_metadata",
             side_effect=HfHubHTTPError("Internal error", response=response),
         )
@@ -3305,12 +3374,18 @@ class TestMainMetadataView:
         mocker.patch.object(app, "sync_paper_metadata", return_value=True)
         (tmp_path / pid).mkdir(parents=True, exist_ok=True)
         (tmp_path / pid / "paper.pdf").write_bytes(b"pdf-bytes")
-        mocker.patch.object(app, "extract_pdf_text", return_value="paper text")
+        mocker.patch.object(
+            metadata_generation, "extract_pdf_text", return_value="paper text"
+        )
         generated = GeneratedMetadata(
             title="Gen Title", abstract="Gen Abstract", tags=["ai"]
         )
-        mocker.patch.object(app, "generate_paper_metadata", return_value=generated)
-        mocker.patch.object(app, "embed_text", side_effect=_make_402_error())
+        mocker.patch.object(
+            metadata_generation, "generate_paper_metadata", return_value=generated
+        )
+        mocker.patch.object(
+            metadata_generation, "embed_text", side_effect=_make_402_error()
+        )
         fake_st.button.side_effect = lambda label, **kw: label == "✨ Generate metadata"
         fake_st.form_submit_button.return_value = False
 
@@ -3343,12 +3418,18 @@ class TestMainMetadataView:
         mocker.patch.object(app, "sync_paper_metadata", return_value=True)
         (tmp_path / pid).mkdir(parents=True, exist_ok=True)
         (tmp_path / pid / "paper.pdf").write_bytes(b"pdf-bytes")
-        mocker.patch.object(app, "extract_pdf_text", return_value="paper text")
+        mocker.patch.object(
+            metadata_generation, "extract_pdf_text", return_value="paper text"
+        )
         generated = GeneratedMetadata(
             title="New Title", abstract="New Abstract", tags=[]
         )
-        mocker.patch.object(app, "generate_paper_metadata", return_value=generated)
-        mocker.patch.object(app, "embed_text", side_effect=RuntimeError("boom"))
+        mocker.patch.object(
+            metadata_generation, "generate_paper_metadata", return_value=generated
+        )
+        mocker.patch.object(
+            metadata_generation, "embed_text", side_effect=RuntimeError("boom")
+        )
         fake_st.button.side_effect = lambda label, **kw: label == "✨ Generate metadata"
         fake_st.form_submit_button.return_value = False
 
@@ -3373,11 +3454,17 @@ class TestMainMetadataView:
         mocker.patch.object(app, "sync_paper_metadata", return_value=True)
         (tmp_path / pid).mkdir(parents=True, exist_ok=True)
         (tmp_path / pid / "paper.pdf").write_bytes(b"pdf-bytes")
-        mocker.patch.object(app, "extract_pdf_text", return_value="paper text")
-        generated = GeneratedMetadata(title="T", abstract="A", tags=[])
-        mocker.patch.object(app, "generate_paper_metadata", return_value=generated)
         mocker.patch.object(
-            app, "embed_text", side_effect=app.HFTokenMissingError("Set HF_TOKEN")
+            metadata_generation, "extract_pdf_text", return_value="paper text"
+        )
+        generated = GeneratedMetadata(title="T", abstract="A", tags=[])
+        mocker.patch.object(
+            metadata_generation, "generate_paper_metadata", return_value=generated
+        )
+        mocker.patch.object(
+            metadata_generation,
+            "embed_text",
+            side_effect=app.HFTokenMissingError("Set HF_TOKEN"),
         )
         fake_st.button.side_effect = lambda label, **kw: label == "✨ Generate metadata"
         fake_st.form_submit_button.return_value = False
@@ -3405,14 +3492,18 @@ class TestMainMetadataView:
         mocker.patch.object(app, "sync_paper_metadata", return_value=True)
         (tmp_path / pid).mkdir(parents=True, exist_ok=True)
         (tmp_path / pid / "paper.pdf").write_bytes(b"pdf-bytes")
-        mocker.patch.object(app, "extract_pdf_text", return_value="paper text")
+        mocker.patch.object(
+            metadata_generation, "extract_pdf_text", return_value="paper text"
+        )
         generated = GeneratedMetadata(title="T", abstract="A", tags=[])
-        mocker.patch.object(app, "generate_paper_metadata", return_value=generated)
+        mocker.patch.object(
+            metadata_generation, "generate_paper_metadata", return_value=generated
+        )
         response = httpx.Response(
             status_code=500, request=httpx.Request("POST", "https://example.com")
         )
         mocker.patch.object(
-            app,
+            metadata_generation,
             "embed_text",
             side_effect=HfHubHTTPError("Internal error", response=response),
         )
