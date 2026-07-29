@@ -218,25 +218,42 @@ def main() -> None:
                 )
             if uploaded_files:
                 if st.button("Upload"):
-                    with st.spinner("Uploading to Google Drive..."):
-                        try:
-                            all_succeeded = upload_papers(creds, uploaded_files)
-                        finally:
-                            upload_library_index(
-                                creds,
-                                st.session_state.current_papers_id,
-                                st.session_state.index,
-                            )
-                            st.session_state.last_sync_time = None
-                        st.session_state.uploader_key += 1
-                        if all_succeeded:
-                            st.success("Uploaded successfully!")
-                            st.rerun()
-                        else:
-                            st.warning(
-                                "Some files failed to upload. See the errors above; "
-                                "re-select the failed files to retry."
-                            )
+                    file_count = len(uploaded_files)
+                    progress = st.progress(0.0, text=f"Uploading (0/{file_count})...")
+
+                    def on_progress(i: int, total: int, filename: str) -> None:
+                        """Advances the upload progress bar after each file.
+
+                        Args:
+                            i (int): The 1-based index of the file just processed.
+                            total (int): The total number of files in the batch.
+                            filename (str): The name of the file just processed.
+                        """
+                        progress.progress(
+                            i / total, text=f"Uploading ({i}/{total}): {filename}"
+                        )
+
+                    try:
+                        all_succeeded = upload_papers(
+                            creds, uploaded_files, on_progress=on_progress
+                        )
+                    finally:
+                        progress.empty()
+                        upload_library_index(
+                            creds,
+                            st.session_state.current_papers_id,
+                            st.session_state.index,
+                        )
+                        st.session_state.last_sync_time = None
+                    st.session_state.uploader_key += 1
+                    if all_succeeded:
+                        st.success("Uploaded successfully!")
+                        st.rerun()
+                    else:
+                        st.warning(
+                            "Some files failed to upload. See the errors above; "
+                            "re-select the failed files to retry."
+                        )
 
         with st.expander("Library Papers", expanded=True):
             # A paper's checkbox stays checked in session state even while
