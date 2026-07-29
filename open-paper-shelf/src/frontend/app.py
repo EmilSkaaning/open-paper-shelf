@@ -316,8 +316,9 @@ def generate_metadata_for_paper(pid: str, local_pdf_path: Path) -> bool:
 
     Returns:
         bool: True if a draft (full or text-only) was staged, False if
-        generation was skipped or the title/abstract/tags call itself
-        failed (in which case an error/warning has already been shown).
+        the PDF couldn't be read, generation was skipped, or the
+        title/abstract/tags call itself failed (in which case an
+        error/warning has already been shown).
 
     Sets:
         `st.session_state["hf_quota_exceeded"]`: True if either HF call
@@ -327,7 +328,11 @@ def generate_metadata_for_paper(pid: str, local_pdf_path: Path) -> bool:
         stop the batch rather than retrying more calls doomed to fail the
         same way.
     """
-    pdf_text = extract_pdf_text(local_pdf_path)
+    try:
+        pdf_text = extract_pdf_text(local_pdf_path)
+    except ValueError as e:
+        st.error(str(e))
+        return False
     if not pdf_text.strip():
         st.warning(
             "Could not extract text from this PDF (it may be scanned/"

@@ -260,7 +260,8 @@ def generate_paper_metadata(
 
     Raises:
         HFTokenMissingError: If no client is given and no HF token is set.
-        ValueError: If the model's response is not valid JSON.
+        ValueError: If the model's response is not valid JSON, or is valid
+            JSON that isn't a JSON object (e.g. a bare string or array).
         Exception: Propagates any Hugging Face API error surviving retries.
     """
     active_client = client or get_inference_client()
@@ -279,6 +280,10 @@ def generate_paper_metadata(
         raise ValueError(
             f"Hugging Face returned a non-JSON response: {content!r}"
         ) from e
+    if not isinstance(payload, dict):
+        raise ValueError(
+            f"Hugging Face returned a JSON value that isn't an object: {content!r}"
+        )
 
     title = str(payload.get("title", "")).strip()
     abstract = str(payload.get("abstract", "")).strip()

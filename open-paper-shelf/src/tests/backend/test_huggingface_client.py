@@ -370,6 +370,14 @@ class TestGeneratePaperMetadata:
         with pytest.raises(ValueError, match="non-JSON response"):
             generate_paper_metadata("paper text", client=client, sleep_fn=MagicMock())
 
+    @pytest.mark.parametrize("content", ['["title", "abstract"]', '"just a string"'])
+    def test_raises_value_error_on_non_object_json(self, content: str) -> None:
+        """Test valid JSON that isn't an object raises ValueError, not AttributeError."""
+        client = MagicMock()
+        client.chat_completion.return_value = _make_chat_response(content)
+        with pytest.raises(ValueError, match="isn't an object"):
+            generate_paper_metadata("paper text", client=client, sleep_fn=MagicMock())
+
     def test_passes_existing_tags_through_to_build_combined_prompt_messages(
         self, mocker: MockerFixture
     ) -> None:

@@ -3130,6 +3130,31 @@ class TestMainMetadataView:
 
         mock_generate.assert_called_once_with("paper text", existing_tags=["ai", "nlp"])
 
+    def test_generate_button_reports_unreadable_pdf_error(
+        self, fake_st: MagicMock, mocker: MockerFixture, tmp_path: Path
+    ) -> None:
+        """Test a corrupt/unreadable PDF surfaces an error instead of crashing."""
+        pid = "5" * 32
+        self._select_paper(fake_st, mocker, tmp_path, pid)
+        mocker.patch.object(app, "sync_paper_metadata", return_value=True)
+        (tmp_path / pid).mkdir(parents=True, exist_ok=True)
+        (tmp_path / pid / "paper.pdf").write_bytes(b"pdf-bytes")
+        mocker.patch.object(
+            app, "extract_pdf_text", side_effect=ValueError("Could not read PDF: bad")
+        )
+        mock_generate = mocker.patch.object(app, "generate_paper_metadata")
+        fake_st.button.side_effect = lambda label, **kw: label == "✨ Generate metadata"
+        fake_st.form_submit_button.return_value = False
+
+        app.main()
+
+        mock_generate.assert_not_called()
+        assert any(
+            "Could not read PDF" in str(call.args)
+            for call in fake_st.error.call_args_list
+        )
+        assert f"generated_{pid}" not in fake_st.session_state
+
     def test_generate_button_empty_pdf_text_skips_api_calls(
         self, fake_st: MagicMock, mocker: MockerFixture, tmp_path: Path
     ) -> None:
