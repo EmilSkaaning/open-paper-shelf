@@ -126,3 +126,40 @@ The agent must not push. If splitting into multiple commits (Step 1b), the agent
   * `WIP` (not a commit)
   * `changed some stuff` (tells reviewers nothing)
   * `feat: implemented the new de novo alphafold model weight enumeration system` (way over 50 chars)
+
+---
+
+## 4. ECC Agent Orchestration
+
+The [ECC](https://github.com/affaan-m/ECC) plugin marketplace is enabled for this repository and
+provides specialized agents/skills. Use them proactively for the domain tasks below — they
+supplement the `commit-code` workflow in Section 2 (quality gates, staging discipline, and
+Conventional Commits still govern the actual commit; ECC does not replace any of that).
+
+| Task | ECC skill / agent |
+|------|--------------------|
+| Plan a feature or refactor | `ecc:plan` skill / `ecc:planner` agent |
+| Architecture or scalability decisions | `ecc:architect` agent |
+| TDD (red-green-refactor) | `ecc:tdd-guide` agent, `ecc:python-testing` / `ecc:tdd-workflow` skills |
+| Python code review | `ecc:python-review` skill / `ecc:python-reviewer` agent |
+| FastAPI backend review | `ecc:fastapi-review` skill / `ecc:fastapi-reviewer` agent |
+| Security review | `ecc:security-review` skill / `ecc:security-reviewer` agent |
+| Build or type errors | `ecc:build-fix` skill / `ecc:build-error-resolver` agent |
+| Dead code cleanup | `ecc:refactor-clean` skill / `ecc:refactor-cleaner` agent |
+| Docs or codemaps | `ecc:update-docs` / `ecc:update-codemaps` skills / `ecc:doc-updater` agent |
+
+Before Step 3 (Quality checks) of `commit-code`, run the reviewer skill(s) relevant to the files
+touched (`ecc:python-review`, `ecc:fastapi-review`, `ecc:security-review`) as an additional pass —
+this is on top of the mandatory `ruff`/`pyrefly` gates, not a substitute for them.
+
+## 5. Security Guidelines
+
+* **No hardcoded secrets**: Google OAuth client secrets, API keys, and tokens must never be
+  committed. `token.json` and `credentials.json` stay gitignored; only `credentials.example.json`
+  is tracked.
+* **Boundary validation**: All external input is validated via Pydantic models at API boundaries
+  (see Section 1's "Input Verification").
+* **No sensitive data in errors**: Error messages returned to the FastAPI or Streamlit UI must not
+  leak file paths, credentials, or stack traces.
+* **On a suspected leak or vulnerability**: stop, run `ecc:security-review`, fix CRITICAL/HIGH
+  findings, and rotate any exposed secrets before continuing other work.
