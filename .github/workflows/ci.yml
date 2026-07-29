@@ -39,7 +39,7 @@ jobs:
     - name: Run full-codebase Skylos scan (report-only, not a merge gate)
       run: |
         echo "Report-only: tracks the full Skylos backlog, does not block merges." | tee -a $GITHUB_STEP_SUMMARY
-        uv run poe skylos-check | tee -a $GITHUB_STEP_SUMMARY
+        uv run poe skylos-check | tee -a $GITHUB_STEP_SUMMARY || true
 
   test-backend:
     runs-on: ubuntu-latest
