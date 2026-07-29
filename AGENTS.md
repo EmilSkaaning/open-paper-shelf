@@ -129,25 +129,22 @@ If a split makes sense, the agent must inform the user of the proposed grouping 
 For each changed Python file, the agent must apply the `func-documentation` standards described in Section 3. The agent must re-run `git diff` after this step to ensure documentation changes are staged together with the code changes in Step 4.
 
 ### Step 3 — Quality checks
-The agent must run the following checks. If either fails, the agent must report the errors to the user and stop — the agent must not commit broken code.
-
-*Ruff (format + lint):*
+The agent must run all checks via the aggregate `poe` task:
 ```bash
-uv run ruff format --check .
-uv run ruff check .
+uv run poe check
 ```
-
-*Type checking (pyrefly):*
-```bash
-uv run pyrefly check
-```
+This runs, in order: `ruff-format-check`, `ruff-check`, `pyrefly-check`, `vulture-check`, and
+`skylos-check`. If Ruff, Pyrefly, or Vulture fail, the agent must report the errors to the user and
+stop — the agent must not commit broken code. Skylos (`skylos . -a --confidence 80`) runs in
+report-only mode and is not a merge gate — review anything it surfaces in files you touched and
+route it to the tracked Skylos backlog issue rather than blocking the commit on it.
 
 If checks fail, the agent should offer to auto-fix what can be fixed automatically:
-* `uv run ruff format .` — fixes formatting
-* `uv run ruff check --fix .` — fixes auto-fixable lint issues
-* Pyrefly errors must be fixed manually.
+* `uv run poe ruff-format` — fixes formatting
+* `uv run poe ruff-check-fix` — fixes auto-fixable lint issues
+* Pyrefly and Vulture errors must be fixed manually.
 
-The agent must re-run checks after any auto-fix before proceeding.
+The agent must re-run `uv run poe check` after any auto-fix before proceeding.
 
 ### Step 4 — Stage files
 The agent must stage only the files relevant to the logical change, including any documentation files updated in Step 2. The agent should prefer explicit file paths over `git add .` to avoid accidentally including unrelated or sensitive files.

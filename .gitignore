@@ -21,6 +21,10 @@ __pycache__/
 # pytest
 .pytest_cache/
 .coverage
+.testmondata
+
+# vulture / skylos
+.skylos/
 
 # Agentic / Superpowers files
 docs/superpowers/
