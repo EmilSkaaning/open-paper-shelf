@@ -1814,6 +1814,42 @@ class TestMainUploadFlow:
         fake_st.spinner.assert_not_called()
         mock_upload_index.assert_called_once()
 
+    def test_progress_bar_stays_visible_until_after_index_upload(
+        self,
+        fake_st: MagicMock,
+        mocker: MockerFixture,
+        stop_rerun: type[BaseException],
+    ) -> None:
+        """Regression test: the progress bar must not be cleared until after
+        upload_library_index() finishes, so the UI never looks frozen with
+        no loading indicator while the index syncs to Drive (Jules review
+        finding on PR #35)."""
+        fake_st.session_state.current_lib_id = "lib_123"
+        fake_st.session_state.current_papers_id = "papers_123"
+        fake_st.session_state.root_id = "root_123"
+        fake_st.session_state.index = LibraryIndex()
+        fake_st.session_state.selected_paper = None
+        files = [make_uploaded_file("a.pdf")]
+        fake_st.file_uploader.return_value = files
+        fake_st.button.side_effect = lambda label, **kw: label == "Upload"
+        mocker.patch.object(app, "st_keyup", return_value="")
+        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
+        mocker.patch.object(app, "upload_papers", return_value=True)
+        call_order: list[str] = []
+        mocker.patch.object(
+            app,
+            "upload_library_index",
+            side_effect=lambda *a, **kw: call_order.append("upload_library_index"),
+        )
+        mock_progress = MagicMock()
+        mock_progress.empty.side_effect = lambda: call_order.append("progress.empty")
+        fake_st.progress.return_value = mock_progress
+
+        with pytest.raises(stop_rerun):
+            app.main()
+
+        assert call_order == ["upload_library_index", "progress.empty"]
+
 
 class TestMainDeleteFlow:
     """Test suite for main()'s sidebar icon-bar delete flow."""

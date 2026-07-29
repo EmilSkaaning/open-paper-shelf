@@ -238,12 +238,12 @@ def main() -> None:
                             creds, uploaded_files, on_progress=on_progress
                         )
                     finally:
-                        progress.empty()
                         upload_library_index(
                             creds,
                             st.session_state.current_papers_id,
                             st.session_state.index,
                         )
+                        progress.empty()
                         st.session_state.last_sync_time = None
                     st.session_state.uploader_key += 1
                     if all_succeeded:
