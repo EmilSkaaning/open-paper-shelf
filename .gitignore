@@ -32,3 +32,6 @@ token.json
 credentials.json
 # Data
 papers/
+
+# Local-only agent reference (not for commit)
+ECC_MANUAL.md
