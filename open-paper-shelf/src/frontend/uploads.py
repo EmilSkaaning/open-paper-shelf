@@ -1,9 +1,10 @@
 """Uploading new papers to Google Drive and the in-memory library index."""
 
+import logging
 import tempfile
 import uuid
 from pathlib import Path
-from typing import Sequence
+from typing import Callable, Optional, Sequence
 
 import streamlit as st
 from google.oauth2.credentials import Credentials
@@ -23,6 +24,8 @@ from frontend.constants import (
     PDF_MIME_TYPE,
 )
 from frontend.text_utils import strip_pdf_suffix
+
+logger = logging.getLogger(__name__)
 
 
 class UploadedPaperName(BaseModel):
@@ -102,19 +105,28 @@ def _upload_paper_files(
     )
 
 
-def upload_papers(creds: Credentials, uploaded_files: Sequence[UploadedFile]) -> bool:
+def upload_papers(
+    creds: Credentials,
+    uploaded_files: Sequence[UploadedFile],
+    on_progress: Optional[Callable[[int, int, str], None]] = None,
+) -> bool:
     """Uploads each file to Drive and records it in the in-memory index.
 
     Args:
         creds (Credentials): The Google OAuth credentials.
         uploaded_files (Sequence[UploadedFile]): The PDF files selected by the
             user via Streamlit's file uploader.
+        on_progress (Optional[Callable[[int, int, str], None]]): Optional
+            callback invoked after each file is processed (whether it
+            succeeded or failed), receiving the 1-based file index, the
+            total file count, and that file's name.
 
     Returns:
         True if every file uploaded successfully, False if any failed.
     """
+    total = len(uploaded_files)
     all_succeeded = True
-    for uploaded_file in uploaded_files:
+    for i, uploaded_file in enumerate(uploaded_files):
         try:
             validated_name = UploadedPaperName(name=uploaded_file.name).name
             title = strip_pdf_suffix(validated_name)
@@ -132,4 +144,12 @@ def upload_papers(creds: Credentials, uploaded_files: Sequence[UploadedFile]) ->
         except Exception as e:
             st.error(f"Failed to upload {uploaded_file.name}: {e}")
             all_succeeded = False
+        finally:
+            if on_progress is not None:
+                try:
+                    on_progress(i + 1, total, uploaded_file.name)
+                except Exception:
+                    logger.exception(
+                        "on_progress callback failed for %s", uploaded_file.name
+                    )
     return all_succeeded
