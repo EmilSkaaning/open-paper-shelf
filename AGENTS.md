@@ -1,27 +1,71 @@
 # Agent Developer Guidelines
 
-This document governs how work is done and how function/class documentation and Git commits are carried out in the `open-paper-shelf` repository.
+This document governs how work is done in the `open-paper-shelf` repository — coding style,
+testing, and how function/class documentation and Git commits are carried out. Sections 1–4 and
+7–8 are adapted from [ECC](https://github.com/affaan-m/ECC)'s `AGENTS.md`/`CLAUDE.md`, pruned to
+this repo's actual stack (a single Python project: FastAPI backend, Streamlit frontend,
+pytest/ruff/pyrefly via `uv`).
 
-## 1. General Guidelines
+## 1. Core Principles
+
+1. **Agent-First** — delegate to ECC's specialized agents/skills for domain tasks (see Section 5).
+2. **Test-Driven** — write tests before implementation; 80%+ coverage required (see Section 4).
+3. **Security-First** — never compromise on security; validate all inputs (see Section 3 and Section 6).
+4. **Immutability** — prefer creating new objects over mutating existing ones (see Section 3).
+5. **Plan Before Execute** — plan complex features or refactors before writing code (`ecc:plan`).
+
+## 2. Environment
 
 ### Python Virtual Environment
 * Always execute python commands and tools using `uv` to ensure proper environment isolation.
 * Example: `uv run pytest` or `uv run ruff format .`
 
-### Coding & Documentation Standards (`func-documentation` skill)
+## 3. Coding Style
+
+**Immutability:** Prefer returning new objects/copies over mutating in place — e.g. Pydantic
+models and dataclasses should default to immutable (`frozen=True`) where practical, and functions
+should return new values rather than mutate their arguments.
+
+**File organization:** Many small, focused files over few large ones — ~200–400 lines typical,
+800 max. Organize by feature/domain (`backend/`, `frontend/`), not by type.
+
+**Error handling:** Handle errors at every level. Provide user-friendly messages in the Streamlit
+UI; log detailed context server-side in the FastAPI backend. Never silently swallow errors.
+
+**Code quality checklist:** Functions small (<50 lines); no nesting deeper than 4 levels; no
+hardcoded values; readable, well-named identifiers.
+
+### Type Hints & Docstrings (`func-documentation` skill)
 * **Type Hints**: Add or update type hints for any new or modified functions/classes. All variables and functions must be fully type-hinted. Avoid `typing.Any` — use it only when no more specific type is possible (e.g. truly dynamic third-party data), and justify its use with an inline comment.
 * **Docstrings**: Provide clean docstrings describing parameters, return values, and exceptions for any new or modified functions/classes. **Use the Google docstring format strictly.**
 * **Input Verification**: Use Pydantic models for incoming data structures and API endpoint validation.
 * **Exclusions**: Skip files where the changes are purely deletions or trivial (e.g. config, constants, `__init__.py`).
 
-### Testing & Quality Assurance
-* **Unit Test Coverage**: Ensure 80% unit test coverage for all new and existing backend functions.
+## 4. Testing Requirements
+
+**Minimum coverage:** 80% for all new and existing backend functions.
+
+**Required test types:**
+1. **Unit tests** — individual functions, utilities, components.
+2. **Integration tests** — FastAPI endpoints, Google Drive / HuggingFace client boundaries.
+
+E2E/browser tests are not currently part of this repo's toolchain (no Playwright/Selenium setup)
+— add them only if that infrastructure is introduced later.
+
+**TDD workflow (mandatory):**
+1. Write the test first (RED) — it should FAIL.
+2. Write the minimal implementation (GREEN) — it should PASS.
+3. Refactor (IMPROVE) — verify coverage is still 80%+.
+
+**Troubleshooting failures:** check test isolation → verify mocks → fix the implementation (not
+the test, unless the test itself is wrong).
+
+**Pytest conventions:**
 * **Structured Tests**: Group similar tests under test classes.
 * **Parametrization**: Use `@pytest.mark.parametrize` for screening over large settings to keep test code clean.
 * **Fixtures**: Information used multiple times should be extracted into `conftest.py` files as pytest fixtures.
 * **Mocking**: Use `pytest-mock` for mocking external dependencies (e.g., file system, APIs).
-* **Execution**: Verify your changes by running unit tests before making any commit.
-* Run tests using poe task runner or pytest:
+* **Execution**: Verify your changes by running unit tests before making any commit:
   ```bash
   uv run poe test
   # or
@@ -30,7 +74,43 @@ This document governs how work is done and how function/class documentation and 
 
 ---
 
-## 2. Core Workflow: commit-code
+## 5. ECC Agent Orchestration
+
+The [ECC](https://github.com/affaan-m/ECC) plugin marketplace is enabled for this repository and
+provides specialized agents/skills. Use them proactively for the domain tasks below — they
+supplement the `commit-code` workflow in Section 7 (quality gates, staging discipline, and
+commit-message rules in Section 8 still govern the actual commit; ECC does not replace any of
+that).
+
+| Task | ECC skill / agent |
+|------|--------------------|
+| Plan a feature or refactor | `ecc:plan` skill / `ecc:planner` agent |
+| Architecture or scalability decisions | `ecc:architect` agent |
+| TDD (red-green-refactor) | `ecc:tdd-guide` agent, `ecc:python-testing` / `ecc:tdd-workflow` skills |
+| Python code review | `ecc:python-review` skill / `ecc:python-reviewer` agent |
+| FastAPI backend review | `ecc:fastapi-review` skill / `ecc:fastapi-reviewer` agent |
+| Security review | `ecc:security-review` skill / `ecc:security-reviewer` agent |
+| Build or type errors | `ecc:build-fix` skill / `ecc:build-error-resolver` agent |
+| Dead code cleanup | `ecc:refactor-clean` skill / `ecc:refactor-cleaner` agent |
+| Docs or codemaps | `ecc:update-docs` / `ecc:update-codemaps` skills / `ecc:doc-updater` agent |
+
+Before Step 3 (Quality checks) of `commit-code`, run the reviewer skill(s) relevant to the files
+touched (`ecc:python-review`, `ecc:fastapi-review`, `ecc:security-review`) as an additional pass —
+this is on top of the mandatory `ruff`/`pyrefly` gates, not a substitute for them.
+
+## 6. Security Guidelines
+
+* **No hardcoded secrets**: Google OAuth client secrets, API keys, and tokens must never be
+  committed. `token.json` and `credentials.json` stay gitignored; only `credentials.example.json`
+  is tracked.
+* **Boundary validation**: All external input is validated via Pydantic models at API boundaries
+  (see Section 3's "Input Verification").
+* **No sensitive data in errors**: Error messages returned to the FastAPI or Streamlit UI must not
+  leak file paths, credentials, or stack traces.
+* **On a suspected leak or vulnerability**: stop, run `ecc:security-review`, fix CRITICAL/HIGH
+  findings, and rotate any exposed secrets before continuing other work.
+
+## 7. Core Workflow: commit-code
 
 Use this workflow whenever committing changes or saving work.
 
@@ -46,7 +126,7 @@ The agent must inspect the full diff across all changed files (not just one file
 If a split makes sense, the agent must inform the user of the proposed grouping and commit order before proceeding, and repeat Steps 2–6 (stage, message, commit) once per group. If everything belongs to one logical change, the agent should proceed as a single commit.
 
 ### Step 2 — Update documentation
-For each changed Python file, the agent must apply the `func-documentation` standards described in the general guidelines. The agent must re-run `git diff` after this step to ensure documentation changes are staged together with the code changes in Step 4.
+For each changed Python file, the agent must apply the `func-documentation` standards described in Section 3. The agent must re-run `git diff` after this step to ensure documentation changes are staged together with the code changes in Step 4.
 
 ### Step 3 — Quality checks
 The agent must run the following checks. If either fails, the agent must report the errors to the user and stop — the agent must not commit broken code.
@@ -74,14 +154,13 @@ The agent must stage only the files relevant to the logical change, including an
 If untracked files exist that are unrelated to the change, the agent must leave them unstaged.
 
 ### Step 5 — Write the commit message
-The agent must use [Conventional Commits](https://www.conventionalcommits.org/) format:
+The agent must use ECC's commit format:
 ```
-<type>(<scope>): <short description>
+<type>: <short description>
 
 [optional body]
 ```
 * **Types**: feat, fix, refactor, chore, docs, test, ci, perf
-* **Scope**: the module, pipeline, or component affected
 * **Short description**: imperative mood, lowercase, no trailing period
 
 The agent must construct the message, then show it to the user for confirmation before committing.
@@ -90,17 +169,18 @@ The agent must construct the message, then show it to the user for confirmation 
 The agent must execute the commit using the agreed message:
 ```bash
 git commit -m "$(cat <<'EOF'
-type(scope): short description
+type: short description
 
 Optional body here.
 EOF
 )"
 ```
-The agent must not push. If splitting into multiple commits (Step 1b), the agent must repeat Steps 4–6 for each remaining group before finishing.
+The agent must not push unless the user explicitly asks. If splitting into multiple commits (Step 1b), the agent must repeat Steps 4–6 for each remaining group before finishing.
 
----
+**PR workflow (when a PR is requested):** analyze the full commit history for the branch → draft a
+comprehensive summary → include a test plan → push with the `-u` flag.
 
-## 3. Commit Message Rules & Examples
+## 8. Commit Message Rules & Examples
 
 ### Hard Rules — Never Break These:
 
@@ -115,10 +195,10 @@ The agent must not push. If splitting into multiple commits (Step 1b), the agent
 ### Examples
 
 * **Good**:
-  * `feat(de_novo): enumerate all 15 alphafold model weights`
-  * `fix(estrous): correct tissue mask path for wt samples`
-  * `refactor(auth): replace session tokens with short-lived JWTs`
-  * `chore(deps): bump modal to 0.67.0`
+  * `feat: enumerate all 15 alphafold model weights`
+  * `fix: correct tissue mask path for wt samples`
+  * `refactor: replace session tokens with short-lived JWTs`
+  * `chore: bump modal to 0.67.0`
 
 * **Bad**:
   * `update code` (generic, meaningless)
