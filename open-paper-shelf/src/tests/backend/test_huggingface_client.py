@@ -434,6 +434,20 @@ class TestEmbedText:
         result = embed_text("some text", client=client, sleep_fn=MagicMock())
         assert result == [2.0] * EMBEDDING_DIM
 
+    def test_unwraps_batch_dim_before_mean_pooling(self) -> None:
+        """Test a batched per-token (3D) response - a list containing one
+        2D per-token matrix - has the batch dim stripped before pooling,
+        instead of crashing in zip(*rows)."""
+        client = MagicMock()
+        client.feature_extraction.return_value = [
+            [
+                [1.0] * EMBEDDING_DIM,
+                [3.0] * EMBEDDING_DIM,
+            ]
+        ]
+        result = embed_text("some text", client=client, sleep_fn=MagicMock())
+        assert result == [2.0] * EMBEDDING_DIM
+
     def test_uses_tolist_for_ndarray_like_response(self) -> None:
         """Test an ndarray-like response is converted via .tolist()."""
         client = MagicMock()

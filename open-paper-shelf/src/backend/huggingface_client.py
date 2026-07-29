@@ -5,7 +5,7 @@ import os
 import re
 import time
 from pathlib import Path
-from typing import Callable, List, Optional, Sequence, TypeVar
+from typing import Callable, List, Optional, Sequence, Tuple, TypeVar
 
 from huggingface_hub import InferenceClient
 from huggingface_hub.errors import HfHubHTTPError
@@ -95,8 +95,9 @@ def extract_pdf_text(pdf_path: Path, max_chars: int = MAX_EXTRACTED_CHARS) -> st
         total_chars = 0
         # Stop once enough raw text is collected to fill max_chars, rather
         # than extracting every page of a long document just to discard
-        # most of it below - cleaning only ever shrinks text, so this still
-        # yields a full max_chars of cleaned output.
+        # most of it below. Cleaning (e.g. dropping a trailing References/
+        # Bibliography section) can shrink the text further, so the final
+        # cleaned+truncated output may end up shorter than max_chars.
         for page in reader.pages:
             page_text = page.extract_text() or ""
             chunks.append(page_text)
@@ -335,6 +336,13 @@ def embed_text(
     )
     vector = result.tolist() if hasattr(result, "tolist") else list(result)
 
+    # Some feature-extraction endpoints wrap the per-token (2D) response in
+    # an extra batch dimension (3D: a single-element list containing the 2D
+    # matrix) - unwrap that before pooling, or zip(*rows) below would zip
+    # over the single 2D row instead of over tokens.
+    if vector and isinstance(vector[0], list) and isinstance(vector[0][0], list):
+        vector = vector[0]
+
     # Mean-pool a per-token (2D) response down to a single sentence vector,
     # in pure Python so this module doesn't need its own numpy dependency.
     while vector and isinstance(vector[0], list):
@@ -380,7 +388,7 @@ def find_similar_papers(
     index: LibraryIndex,
     exclude_pid: Optional[str] = None,
     threshold: float = DEFAULT_DUPLICATE_THRESHOLD,
-) -> List[tuple]:
+) -> List[Tuple[str, str, float]]:
     """Finds papers in the library whose embedding is similar to `embedding`.
 
     Args:
