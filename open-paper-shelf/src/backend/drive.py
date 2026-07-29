@@ -8,10 +8,13 @@ from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
 from pydantic import ValidationError
 import json
+import logging
 import tempfile
 import uuid
 
 from backend.models import LibraryIndex
+
+logger = logging.getLogger(__name__)
 
 # googleapiclient.discovery.build() returns a dynamically-generated Resource
 # object with no static type; the client library builds its API surface at
@@ -254,6 +257,92 @@ def get_library_index_file(
     return None
 
 
+def _merge_remote_papers(
+    service: DriveService,
+    file_info: DriveMetadata,
+    index: LibraryIndex,
+    deleted_pids: set[str] | None,
+) -> None:
+    """Merges papers present in the remote index but missing locally into `index`.
+
+    A paper only present in the remote index (e.g. uploaded from another
+    device) is added to `index.papers` in place, unless it's in
+    `deleted_pids` (deleted locally in this same operation, so it must not
+    be resurrected from the stale remote copy). A corrupted or unreadable
+    remote index is logged and skipped rather than blocking the upload.
+
+    Args:
+        service (DriveService): The Google Drive API v3 resource service.
+        file_info (DriveMetadata): The existing remote index file's `id`/
+            `modifiedTime` metadata, as returned by `get_library_index_file`.
+        index (LibraryIndex): The local library index; entries are added to
+            its `papers` dict in place.
+        deleted_pids (set[str] | None): Paper IDs deleted locally that must
+            not be merged back from the remote index.
+
+    Raises:
+        HttpError: If fetching the remote index fails for a reason other
+            than the file not existing (HTTP 404).
+    """
+    try:
+        request = service.files().get_media(fileId=file_info["id"])
+        remote_bytes = request.execute()
+        remote_data = json.loads(remote_bytes.decode("utf-8"))
+        remote_index = LibraryIndex(**remote_data)
+        pids_to_ignore = deleted_pids or set()
+        for pid, p in remote_index.papers.items():
+            if pid not in index.papers and pid not in pids_to_ignore:
+                index.papers[pid] = p
+    except HttpError as e:
+        if e.resp.status != 404:
+            raise
+    except (json.JSONDecodeError, ValidationError) as e:
+        logger.warning(
+            "Skipping corrupted remote index for file %s: %s", file_info["id"], e
+        )
+
+
+def _write_index_file(
+    service: DriveService,
+    papers_folder_id: str,
+    index: LibraryIndex,
+    file_info: DriveMetadata,
+) -> None:
+    """Serializes `index` to a temp file and uploads it as id-mapping.json.
+
+    Creates the remote file if `file_info` is empty (no existing index),
+    otherwise updates the existing file it identifies.
+
+    Args:
+        service (DriveService): The Google Drive API v3 resource service.
+        papers_folder_id (str): The Google Drive folder ID to create the
+            index file in, if it doesn't already exist.
+        index (LibraryIndex): The library index data model to serialize.
+        file_info (DriveMetadata): The existing remote index file's `id`
+            metadata, or empty if no index file exists yet.
+    """
+    with tempfile.NamedTemporaryFile(
+        mode="w", delete=False, suffix=".json", encoding="utf-8"
+    ) as tmp:
+        tmp_path = Path(tmp.name)
+        tmp.write(index.model_dump_json(indent=2))
+
+    try:
+        media = MediaFileUpload(
+            str(tmp_path), mimetype="application/json", resumable=True
+        )
+        if file_info:
+            service.files().update(fileId=file_info["id"], media_body=media).execute()
+        else:
+            file_metadata = {"name": "id-mapping.json", "parents": [papers_folder_id]}
+            service.files().create(
+                body=file_metadata, media_body=media, fields="id"
+            ).execute()
+    finally:
+        if tmp_path.exists():
+            tmp_path.unlink(missing_ok=True)
+
+
 def upload_library_index(
     creds: Credentials,
     papers_folder_id: str,
@@ -279,41 +368,9 @@ def upload_library_index(
     file_info = get_library_index_file(creds, papers_folder_id)
 
     if file_info:
-        try:
-            request = service.files().get_media(fileId=file_info["id"])
-            remote_bytes = request.execute()
-            remote_data = json.loads(remote_bytes.decode("utf-8"))
-            remote_index = LibraryIndex(**remote_data)
-            pids_to_ignore = deleted_pids or set()
-            for pid, p in remote_index.papers.items():
-                if pid not in index.papers and pid not in pids_to_ignore:
-                    index.papers[pid] = p
-        except HttpError as e:
-            if e.resp.status != 404:
-                raise
-        except (json.JSONDecodeError, ValidationError):
-            pass
+        _merge_remote_papers(service, file_info, index, deleted_pids)
 
-    with tempfile.NamedTemporaryFile(
-        mode="w", delete=False, suffix=".json", encoding="utf-8"
-    ) as tmp:
-        tmp_path = Path(tmp.name)
-        tmp.write(index.model_dump_json(indent=2))
-
-    try:
-        media = MediaFileUpload(
-            str(tmp_path), mimetype="application/json", resumable=True
-        )
-        if file_info:
-            service.files().update(fileId=file_info["id"], media_body=media).execute()
-        else:
-            file_metadata = {"name": "id-mapping.json", "parents": [papers_folder_id]}
-            service.files().create(
-                body=file_metadata, media_body=media, fields="id"
-            ).execute()
-    finally:
-        if tmp_path.exists():
-            tmp_path.unlink(missing_ok=True)
+    _write_index_file(service, papers_folder_id, index, file_info or {})
 
 
 def create_paper_folder(

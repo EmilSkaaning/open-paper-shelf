@@ -453,19 +453,23 @@ def persist_generated_metadata(
         except Exception:
             meta = PaperMetadata(title=paper_info.title)
 
-    meta.title = strip_pdf_suffix(draft["title"]) or meta.title
-    meta.abstract = draft["abstract"]
-    meta.tags = draft["tags"]
-    meta.embedding = draft["embedding"]
+    meta = meta.model_copy(
+        update={
+            "title": strip_pdf_suffix(draft["title"]) or meta.title,
+            "abstract": draft["abstract"],
+            "tags": draft["tags"],
+            "embedding": draft["embedding"],
+        }
+    )
 
     local_meta_path.write_text(meta.model_dump_json(indent=2), encoding="utf-8")
     upload_file_to_folder(
         creds, paper_info.folder_id, local_meta_path, "meta.json", "application/json"
     )
 
-    paper_info.title = meta.title
-    paper_info.tags = meta.tags
-    paper_info.embedding = meta.embedding
+    paper_info = paper_info.model_copy(
+        update={"title": meta.title, "tags": meta.tags, "embedding": meta.embedding}
+    )
     index.papers[pid] = paper_info
 
     st.session_state.pop(f"generated_{pid}", None)
@@ -1252,15 +1256,21 @@ def main() -> None:
                 if st.form_submit_button(
                     "Save Changes", disabled=not metadata_available
                 ):
-                    meta.title = strip_pdf_suffix(new_title or "")
-                    meta.abstract = new_abstract or ""
-                    meta.tags = [t.strip() for t in tags_str.split(",") if t.strip()]
-                    meta.status = cast(
-                        Literal["Unread", "Reading", "Read", "TODO"], status
+                    meta = meta.model_copy(
+                        update={
+                            "title": strip_pdf_suffix(new_title or ""),
+                            "abstract": new_abstract or "",
+                            "tags": [
+                                t.strip() for t in tags_str.split(",") if t.strip()
+                            ],
+                            "status": cast(
+                                Literal["Unread", "Reading", "Read", "TODO"], status
+                            ),
+                            "citation": citation,
+                            "notes": notes,
+                            "embedding": draft.get("embedding", meta.embedding),
+                        }
                     )
-                    meta.citation = citation
-                    meta.notes = notes
-                    meta.embedding = draft.get("embedding", meta.embedding)
 
                     local_meta_path.write_text(
                         meta.model_dump_json(indent=2), encoding="utf-8"
@@ -1274,10 +1284,14 @@ def main() -> None:
                             "application/json",
                         )
 
-                        paper_info.title = meta.title
-                        paper_info.tags = meta.tags
-                        paper_info.status = meta.status
-                        paper_info.embedding = meta.embedding
+                        paper_info = paper_info.model_copy(
+                            update={
+                                "title": meta.title,
+                                "tags": meta.tags,
+                                "status": meta.status,
+                                "embedding": meta.embedding,
+                            }
+                        )
                         st.session_state.index.papers[pid] = paper_info
                         upload_library_index(
                             creds,

@@ -1063,7 +1063,9 @@ class TestGetDuplicatePids:
 
         first = app.get_duplicate_pids(index)
         call_count_after_first = spy.call_count
-        index.papers[pid2].embedding = [0.0, 1.0, 0.0]
+        index.papers[pid2] = index.papers[pid2].model_copy(
+            update={"embedding": [0.0, 1.0, 0.0]}
+        )
         second = app.get_duplicate_pids(index)
 
         assert first == {pid1, pid2}
@@ -3336,7 +3338,8 @@ class TestMainMetadataView:
         re-generation's embedding call fails - only the new text is staged."""
         pid = "8b" * 16
         entry = self._select_paper(fake_st, mocker, tmp_path, pid)
-        entry.embedding = [0.9] * 384
+        entry = entry.model_copy(update={"embedding": [0.9] * 384})
+        fake_st.session_state.index.papers[pid] = entry
         mocker.patch.object(app, "sync_paper_metadata", return_value=True)
         (tmp_path / pid).mkdir(parents=True, exist_ok=True)
         (tmp_path / pid / "paper.pdf").write_bytes(b"pdf-bytes")
