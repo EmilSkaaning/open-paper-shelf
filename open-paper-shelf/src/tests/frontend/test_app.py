@@ -1001,6 +1001,75 @@ class TestGetDuplicatePids:
         )
         assert app.get_duplicate_pids(index) == set()
 
+    def test_unchanged_index_reuses_cached_result_without_recomputing(
+        self, fake_st: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """Test calling get_duplicate_pids twice with an index whose
+        embeddings haven't changed reuses the cached result instead of
+        rerunning the O(N^2) similarity scan."""
+        pid1, pid2 = "a" * 32, "b" * 32
+        index = LibraryIndex(
+            papers={
+                pid1: PaperIndexEntry(
+                    title="One",
+                    pdf_file_id="p1",
+                    meta_file_id="m1",
+                    folder_id="f1",
+                    embedding=[1.0, 0.0, 0.0],
+                ),
+                pid2: PaperIndexEntry(
+                    title="Two",
+                    pdf_file_id="p2",
+                    meta_file_id="m2",
+                    folder_id="f2",
+                    embedding=[1.0, 0.0, 0.0],
+                ),
+            }
+        )
+        spy = mocker.spy(app, "find_similar_papers")
+
+        first = app.get_duplicate_pids(index)
+        call_count_after_first = spy.call_count
+        second = app.get_duplicate_pids(index)
+
+        assert first == second == {pid1, pid2}
+        assert spy.call_count == call_count_after_first
+
+    def test_changed_embedding_invalidates_cache_and_recomputes(
+        self, fake_st: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """Test changing a paper's embedding between calls invalidates the
+        cached result rather than returning stale duplicate pids."""
+        pid1, pid2 = "a" * 32, "b" * 32
+        index = LibraryIndex(
+            papers={
+                pid1: PaperIndexEntry(
+                    title="One",
+                    pdf_file_id="p1",
+                    meta_file_id="m1",
+                    folder_id="f1",
+                    embedding=[1.0, 0.0, 0.0],
+                ),
+                pid2: PaperIndexEntry(
+                    title="Two",
+                    pdf_file_id="p2",
+                    meta_file_id="m2",
+                    folder_id="f2",
+                    embedding=[1.0, 0.0, 0.0],
+                ),
+            }
+        )
+        spy = mocker.spy(app, "find_similar_papers")
+
+        first = app.get_duplicate_pids(index)
+        call_count_after_first = spy.call_count
+        index.papers[pid2].embedding = [0.0, 1.0, 0.0]
+        second = app.get_duplicate_pids(index)
+
+        assert first == {pid1, pid2}
+        assert second == set()
+        assert spy.call_count > call_count_after_first
+
 
 class TestGetMissingMetadataPids:
     """Test suite for get_missing_metadata_pids."""
@@ -2892,6 +2961,26 @@ class TestMainMetadataView:
         local_meta_path.write_text(
             json.dumps({"title": "A Paper", "abstract": "Existing abstract."})
         )
+        mock_generate = mocker.patch.object(app, "generate_metadata_for_paper")
+        fake_st.button.side_effect = lambda label, **kw: label == "✨ Generate metadata"
+        fake_st.form_submit_button.return_value = False
+
+        app.main()
+
+        assert fake_st.session_state[f"confirm_regenerate_{pid}"] is True
+        mock_generate.assert_not_called()
+
+    def test_generate_button_stages_confirm_when_form_has_unsaved_edits(
+        self, fake_st: MagicMock, mocker: MockerFixture, tmp_path: Path
+    ) -> None:
+        """Test clicking Generate metadata while the title field has an
+        unsaved edit (no saved abstract/tags yet) stages a confirmation
+        instead of generating immediately, so the edit isn't silently
+        discarded when the draft overwrites the title_{pid} widget state."""
+        pid = "c3" * 16
+        self._select_paper(fake_st, mocker, tmp_path, pid)
+        mocker.patch.object(app, "sync_paper_metadata", return_value=True)
+        fake_st.session_state[f"title_{pid}"] = "An Unsaved Edited Title"
         mock_generate = mocker.patch.object(app, "generate_metadata_for_paper")
         fake_st.button.side_effect = lambda label, **kw: label == "✨ Generate metadata"
         fake_st.form_submit_button.return_value = False

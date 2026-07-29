@@ -647,6 +647,16 @@ def get_duplicate_pids(index: LibraryIndex) -> set[str]:
     paper regardless of when its embedding was generated or whether the
     user has navigated away and back.
 
+    The underlying pairwise comparison is O(N^2) in the number of papers,
+    but this is called on every Streamlit rerun (i.e. on every click or
+    keystroke anywhere in the app), so the result is cached in
+    `st.session_state` under a signature of every paper's embedding
+    content. `st.session_state.index` is typically the same object mutated
+    in place across reruns, so caching by object identity wouldn't detect
+    embedding changes - the signature is recomputed each call (an O(N)
+    operation) and only triggers the expensive O(N^2) scan when it
+    actually differs from the last cached signature.
+
     Args:
         index: The library index to scan.
 
@@ -655,12 +665,25 @@ def get_duplicate_pids(index: LibraryIndex) -> set[str]:
         elsewhere in the index, per `find_similar_papers`'s default
         threshold.
     """
-    return {
+    signature = tuple(
+        sorted(
+            (pid, tuple(entry.embedding))
+            for pid, entry in index.papers.items()
+            if entry.embedding
+        )
+    )
+    cached = st.session_state.get("_duplicate_pids_cache")
+    if cached is not None and cached[0] == signature:
+        return cached[1]
+
+    result = {
         pid
         for pid, entry in index.papers.items()
         if entry.embedding
         and find_similar_papers(entry.embedding, index, exclude_pid=pid)
     }
+    st.session_state["_duplicate_pids_cache"] = (signature, result)
+    return result
 
 
 def get_missing_metadata_pids(index: LibraryIndex) -> set[str]:
@@ -1157,7 +1180,14 @@ def main() -> None:
                 disabled=not pdf_available,
                 help=GENERATE_METADATA_HELP,
             ):
-                if meta.abstract or meta.tags:
+                has_unsaved_edits = (
+                    st.session_state.get(f"title_{pid}", meta.title) != meta.title
+                    or st.session_state.get(f"abstract_{pid}", meta.abstract)
+                    != meta.abstract
+                    or st.session_state.get(f"tags_{pid}", ", ".join(meta.tags))
+                    != ", ".join(meta.tags)
+                )
+                if meta.abstract or meta.tags or has_unsaved_edits:
                     st.session_state[f"confirm_regenerate_{pid}"] = True
                 else:
                     with st.spinner("Generating metadata with Hugging Face..."):
@@ -1166,8 +1196,8 @@ def main() -> None:
 
             if st.session_state.get(f"confirm_regenerate_{pid}"):
                 st.warning(
-                    "This paper already has generated metadata. Regenerate "
-                    "and overwrite the draft?"
+                    "This paper already has generated metadata or unsaved "
+                    "edits. Regenerate and overwrite them?"
                 )
                 regen_col, cancel_regen_col = st.columns(2)
                 with regen_col:
