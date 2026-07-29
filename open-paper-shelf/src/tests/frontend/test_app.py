@@ -1850,6 +1850,41 @@ class TestMainUploadFlow:
 
         assert call_order == ["upload_library_index", "progress.empty"]
 
+    def test_progress_cleared_even_if_index_upload_raises(
+        self,
+        fake_st: MagicMock,
+        mocker: MockerFixture,
+    ) -> None:
+        """Regression test: if upload_library_index() raises, the progress
+        bar must still be cleared and last_sync_time still reset, instead of
+        being left frozen on screen under Streamlit's error traceback
+        (Jules review finding on PR #35)."""
+        fake_st.session_state.current_lib_id = "lib_123"
+        fake_st.session_state.current_papers_id = "papers_123"
+        fake_st.session_state.root_id = "root_123"
+        fake_st.session_state.index = LibraryIndex()
+        fake_st.session_state.selected_paper = None
+        fake_st.session_state.last_sync_time = "t0"
+        files = [make_uploaded_file("a.pdf")]
+        fake_st.file_uploader.return_value = files
+        fake_st.button.side_effect = lambda label, **kw: label == "Upload"
+        mocker.patch.object(app, "st_keyup", return_value="")
+        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
+        mocker.patch.object(app, "upload_papers", return_value=True)
+        mocker.patch.object(
+            app,
+            "upload_library_index",
+            side_effect=RuntimeError("network blip"),
+        )
+        mock_progress = MagicMock()
+        fake_st.progress.return_value = mock_progress
+
+        with pytest.raises(RuntimeError, match="network blip"):
+            app.main()
+
+        mock_progress.empty.assert_called_once()
+        assert fake_st.session_state.last_sync_time is None
+
 
 class TestMainDeleteFlow:
     """Test suite for main()'s sidebar icon-bar delete flow."""
