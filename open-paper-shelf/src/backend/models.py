@@ -4,6 +4,9 @@ from typing import List, Literal
 
 from pydantic import BaseModel, Field
 
+ReadingStatus = Literal["Unread", "Reading", "Read", "TODO"]
+"""A paper's reading status, shared by `PaperMetadata` and `PaperIndexEntry`."""
+
 
 class PaperMetadata(BaseModel):
     """Metadata for a paper in the library.
@@ -20,12 +23,14 @@ class PaperMetadata(BaseModel):
             generated yet.
     """
 
+    model_config = {"frozen": True}
+
     title: str
     abstract: str = ""
     tags: List[str] = Field(default_factory=list)
     notes: str = ""
     citation: str = ""
-    status: Literal["Unread", "Reading", "Read", "TODO"] = "Unread"
+    status: ReadingStatus = "Unread"
     embedding: List[float] = Field(default_factory=list)
 
 
@@ -51,12 +56,14 @@ class PaperIndexEntry(BaseModel):
             linearly with library size once every paper has an embedding.
     """
 
+    model_config = {"frozen": True}
+
     title: str
     pdf_file_id: str
     meta_file_id: str
     folder_id: str
     tags: List[str] = Field(default_factory=list)
-    status: Literal["Unread", "Reading", "Read", "TODO"] = "Unread"
+    status: ReadingStatus = "Unread"
     embedding: List[float] = Field(default_factory=list)
 
 
@@ -66,5 +73,7 @@ class LibraryIndex(BaseModel):
     Attributes:
         papers: Mapping of unique paper ID to its PaperIndexEntry.
     """
+
+    model_config = {"frozen": True}
 
     papers: dict[str, PaperIndexEntry] = Field(default_factory=dict)

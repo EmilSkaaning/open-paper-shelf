@@ -7,6 +7,11 @@ import pytest
 from pytest_mock import MockerFixture
 
 import frontend.app as app
+import frontend.auth as auth
+import frontend.library as library
+import frontend.library_filters as library_filters
+import frontend.metadata_generation as metadata_generation
+import frontend.uploads as uploads
 
 
 class FakeSessionState(dict):
@@ -114,4 +119,12 @@ def fake_st(mocker: MockerFixture) -> MagicMock:
     mock_st.rerun.side_effect = StopRerun
     mock_st.columns.side_effect = _columns_side_effect
     mocker.patch.object(app, "st", mock_st)
+    # Each of these modules independently does `import streamlit as st`, so
+    # patching app.st alone doesn't reach their calls - every module that
+    # calls st.* internally needs the same fake patched onto its own binding.
+    mocker.patch.object(auth, "st", mock_st)
+    mocker.patch.object(uploads, "st", mock_st)
+    mocker.patch.object(metadata_generation, "st", mock_st)
+    mocker.patch.object(library, "st", mock_st)
+    mocker.patch.object(library_filters, "st", mock_st)
     return mock_st

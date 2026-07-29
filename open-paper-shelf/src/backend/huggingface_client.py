@@ -24,6 +24,10 @@ MAX_RETRIES: int = 3
 RETRY_DELAY_SECONDS: float = 2.0
 DEFAULT_DUPLICATE_THRESHOLD: float = 0.90
 MAX_TAGS: int = 8
+REFERENCES_SEARCH_OFFSET: int = 500
+"""Character offset to start searching for a References/Bibliography heading
+from, skipping a paper's front matter where the term is unlikely to appear
+as a section heading."""
 
 
 class HFTokenMissingError(RuntimeError):
@@ -41,6 +45,8 @@ class GeneratedMetadata(BaseModel):
         abstract: Suggested abstract/TL;DR.
         tags: Suggested tag strings.
     """
+
+    model_config = {"frozen": True}
 
     title: str
     abstract: str
@@ -63,9 +69,13 @@ def _clean_extracted_text(text: str) -> str:
         The cleaned text, stripped of leading/trailing whitespace.
     """
     text = re.sub(r"-\n(?=\w)", "", text)
-    match = re.search(r"\n\s*(references|bibliography)\s*\n", text[500:], re.IGNORECASE)
+    match = re.search(
+        r"\n\s*(references|bibliography)\s*\n",
+        text[REFERENCES_SEARCH_OFFSET:],
+        re.IGNORECASE,
+    )
     if match:
-        text = text[: 500 + match.start()]
+        text = text[: REFERENCES_SEARCH_OFFSET + match.start()]
     text = re.sub(r"[ \t]{2,}", " ", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
@@ -237,6 +247,50 @@ def _extract_json_object(content: str) -> str:
     return stripped
 
 
+def _parse_generated_metadata(content: str) -> GeneratedMetadata:
+    """Parses a chat model's raw response into validated generated metadata.
+
+    Args:
+        content: The raw response content from the generation call.
+
+    Returns:
+        A GeneratedMetadata with the parsed title, abstract, and up to
+        `MAX_TAGS` deduplicated (case-insensitive) tags.
+
+    Raises:
+        ValueError: If the response is not valid JSON, or is valid JSON
+            that isn't a JSON object (e.g. a bare string or array).
+    """
+    try:
+        payload = json.loads(_extract_json_object(content))
+    except json.JSONDecodeError as e:
+        raise ValueError(
+            f"Hugging Face returned a non-JSON response: {content!r}"
+        ) from e
+    if not isinstance(payload, dict):
+        raise ValueError(
+            f"Hugging Face returned a JSON value that isn't an object: {content!r}"
+        )
+
+    title = str(payload.get("title", "")).strip()
+    abstract = str(payload.get("abstract", "")).strip()
+    raw_tags = payload.get("tags", [])
+    if not isinstance(raw_tags, list):
+        raw_tags = []
+
+    seen: set[str] = set()
+    tags: List[str] = []
+    for tag in raw_tags:
+        stripped = str(tag).strip()
+        if stripped and stripped.lower() not in seen:
+            seen.add(stripped.lower())
+            tags.append(stripped)
+        if len(tags) >= MAX_TAGS:
+            break
+
+    return GeneratedMetadata(title=title, abstract=abstract, tags=tags)
+
+
 def generate_paper_metadata(
     pdf_text: str,
     model: str = DEFAULT_GENERATION_MODEL,
@@ -275,34 +329,7 @@ def generate_paper_metadata(
         sleep_fn=sleep_fn,
     )
     content = (response.choices[0].message.content or "").strip()
-    try:
-        payload = json.loads(_extract_json_object(content))
-    except json.JSONDecodeError as e:
-        raise ValueError(
-            f"Hugging Face returned a non-JSON response: {content!r}"
-        ) from e
-    if not isinstance(payload, dict):
-        raise ValueError(
-            f"Hugging Face returned a JSON value that isn't an object: {content!r}"
-        )
-
-    title = str(payload.get("title", "")).strip()
-    abstract = str(payload.get("abstract", "")).strip()
-    raw_tags = payload.get("tags", [])
-    if not isinstance(raw_tags, list):
-        raw_tags = []
-
-    seen: set[str] = set()
-    tags: List[str] = []
-    for tag in raw_tags:
-        stripped = str(tag).strip()
-        if stripped and stripped.lower() not in seen:
-            seen.add(stripped.lower())
-            tags.append(stripped)
-        if len(tags) >= MAX_TAGS:
-            break
-
-    return GeneratedMetadata(title=title, abstract=abstract, tags=tags)
+    return _parse_generated_metadata(content)
 
 
 def embed_text(
