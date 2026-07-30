@@ -23,14 +23,18 @@ from backend.models import LibraryIndex, PaperIndexEntry, PaperMetadata
 from tests.frontend.conftest import make_uploaded_file
 
 
-def _real_pdf_bytes() -> bytes:
-    """Builds real, parseable single-page PDF bytes via pypdf (not a mock).
+def _real_pdf_bytes(pages: int = 1) -> bytes:
+    """Builds real, parseable PDF bytes via pypdf (not a mock).
+
+    Args:
+        pages: The number of blank pages to include.
 
     Returns:
         bytes: The serialized PDF's raw bytes.
     """
     writer = PdfWriter()
-    writer.add_blank_page(width=200, height=200)
+    for _ in range(pages):
+        writer.add_blank_page(width=200, height=200)
     buf = io.BytesIO()
     writer.write(buf)
     return buf.getvalue()
@@ -3941,15 +3945,16 @@ class TestPdfEditedCopy:
         assert any("/paper.pdf" in call and "iframe" in call for call in markdown_calls)
         assert not any("paper_edited.pdf" in call for call in markdown_calls)
 
-    def test_uploading_valid_annotated_pdf_persists_and_updates_index(
+    def test_uploading_valid_annotated_pdf_auto_persists_and_updates_index(
         self,
         fake_st: MagicMock,
         mocker: MockerFixture,
         tmp_path: Path,
         stop_rerun: type[BaseException],
     ) -> None:
-        """Test that uploading a valid re-annotated PDF persists it as the
-        edited copy, updates the in-memory index with the new
+        """Test that uploading a valid re-annotated PDF automatically
+        persists it as the edited copy - no separate save button click
+        required - updates the in-memory index with the new
         edited_pdf_file_id, and re-syncs the library index to Drive."""
         pid = "e" * 32
         _select_paper(fake_st, mocker, tmp_path, pid)
@@ -3965,9 +3970,6 @@ class TestPdfEditedCopy:
             uploaded_edit
             if kw.get("key", "").startswith(f"annotated_upload_{pid}")
             else None
-        )
-        fake_st.button.side_effect = lambda label, **kw: (
-            kw.get("key") == f"save_annotated_btn_{pid}"
         )
 
         with pytest.raises(stop_rerun):
@@ -3996,19 +3998,96 @@ class TestPdfEditedCopy:
             if kw.get("key", "").startswith(f"annotated_upload_{pid}")
             else None
         )
-        fake_st.button.side_effect = lambda label, **kw: (
-            kw.get("key") == f"save_annotated_btn_{pid}"
-        )
 
         app.main()
 
         assert any(
-            "Could not save annotated PDF" in str(call.args)
+            "Could not sync annotated PDF" in str(call.args)
             for call in fake_st.error.call_args_list
         )
         mock_upload_file.assert_not_called()
         mock_upload_index.assert_not_called()
         assert fake_st.session_state.index.papers[pid].edited_pdf_file_id == ""
+
+    def test_repeated_invalid_upload_keeps_erroring_each_rerun(
+        self, fake_st: MagicMock, mocker: MockerFixture, tmp_path: Path
+    ) -> None:
+        """Regression test: a failed sync attempt must not be silently
+        marked as "already synced" - the same invalid file left in the
+        uploader must keep surfacing the error on every rerun, not just the
+        first one, so a failure is never masked once its content hash has
+        been seen."""
+        pid = "i" * 32
+        _select_paper(fake_st, mocker, tmp_path, pid)
+        mocker.patch.object(app, "sync_paper_metadata", return_value=True)
+        mocker.patch.object(app, "upload_library_index")
+        mocker.patch("frontend.pdf_upload.upload_file_to_folder")
+        fake_st.form_submit_button.return_value = False
+        uploaded_edit = make_uploaded_file("not-a-pdf.pdf", content=b"garbage")
+        fake_st.file_uploader.side_effect = lambda label, **kw: (
+            uploaded_edit
+            if kw.get("key", "").startswith(f"annotated_upload_{pid}")
+            else None
+        )
+
+        app.main()
+        app.main()
+
+        assert (
+            sum(
+                1
+                for call in fake_st.error.call_args_list
+                if "Could not sync annotated PDF" in str(call.args)
+            )
+            == 2
+        )
+
+    def test_transient_drive_failure_retries_and_succeeds_on_next_rerun(
+        self,
+        fake_st: MagicMock,
+        mocker: MockerFixture,
+        tmp_path: Path,
+        stop_rerun: type[BaseException],
+    ) -> None:
+        """Regression test: if the Drive upload itself fails (e.g. a
+        transient network error) after local validation/write succeeds, the
+        content must NOT be marked as synced - a later rerun with the same
+        bytes must retry and be able to succeed once the transient failure
+        clears, rather than being silently skipped forever."""
+        pid = "j" * 32
+        _select_paper(fake_st, mocker, tmp_path, pid)
+        mocker.patch.object(app, "sync_paper_metadata", return_value=True)
+        mock_upload_index = mocker.patch.object(app, "upload_library_index")
+        mock_upload_file = mocker.patch(
+            "frontend.pdf_upload.upload_file_to_folder",
+            side_effect=[RuntimeError("network blip"), "edited-id-6"],
+        )
+        real_pdf_bytes = _real_pdf_bytes()
+        uploaded_edit = make_uploaded_file("annotated.pdf", content=real_pdf_bytes)
+        fake_st.file_uploader.side_effect = lambda label, **kw: (
+            uploaded_edit
+            if kw.get("key", "").startswith(f"annotated_upload_{pid}")
+            else None
+        )
+        fake_st.form_submit_button.return_value = False
+
+        app.main()
+
+        assert any(
+            "Could not sync annotated PDF" in str(call.args)
+            for call in fake_st.error.call_args_list
+        )
+        mock_upload_index.assert_not_called()
+        assert fake_st.session_state.index.papers[pid].edited_pdf_file_id == ""
+
+        with pytest.raises(stop_rerun):
+            app.main()
+
+        assert mock_upload_file.call_count == 2
+        mock_upload_index.assert_called_once()
+        assert fake_st.session_state.index.papers[pid].edited_pdf_file_id == (
+            "edited-id-6"
+        )
 
     def test_second_rerun_with_cached_upload_does_not_reprocess(
         self,
@@ -4018,10 +4097,11 @@ class TestPdfEditedCopy:
         stop_rerun: type[BaseException],
     ) -> None:
         """Regression test: st.file_uploader keeps the uploaded file in
-        widget state across reruns until its key changes. Without a
-        click-gate and key rotation, the script run right after a
-        successful save would see the same cached file again and re-upload
-        it to Drive forever."""
+        widget state across reruns unrelated to this upload (e.g. clicking
+        "Generate metadata"). Without content-hash gating, every such rerun
+        would see the same cached file again and re-upload it to Drive
+        forever - this proves a second run with identical bytes does not
+        re-sync."""
         pid = "g" * 32
         _select_paper(fake_st, mocker, tmp_path, pid)
         mocker.patch.object(app, "sync_paper_metadata", return_value=True)
@@ -4038,19 +4118,60 @@ class TestPdfEditedCopy:
         )
         fake_st.form_submit_button.return_value = False
 
-        fake_st.button.side_effect = lambda label, **kw: (
-            kw.get("key") == f"save_annotated_btn_{pid}"
-        )
         with pytest.raises(stop_rerun):
             app.main()
         mock_upload_file.assert_called_once()
         mock_upload_index.assert_called_once()
 
         # Second script run: the widget still reports the same cached file
-        # (its key hasn't changed from the caller's point of view in this
-        # test double), but the user did not click Save again.
-        fake_st.button.side_effect = lambda label, **kw: False
+        # with identical bytes (e.g. the user clicked an unrelated button).
         app.main()
 
         mock_upload_file.assert_called_once()
         mock_upload_index.assert_called_once()
+
+    def test_reuploading_different_bytes_syncs_again(
+        self,
+        fake_st: MagicMock,
+        mocker: MockerFixture,
+        tmp_path: Path,
+        stop_rerun: type[BaseException],
+    ) -> None:
+        """Test that re-uploading genuinely different annotated bytes for
+        the same paper (e.g. the user annotated further and re-exported)
+        triggers another sync, even though the widget was not cleared or
+        re-keyed in between."""
+        pid = "h" * 32
+        _select_paper(fake_st, mocker, tmp_path, pid)
+        mocker.patch.object(app, "sync_paper_metadata", return_value=True)
+        mock_upload_index = mocker.patch.object(app, "upload_library_index")
+        mock_upload_file = mocker.patch(
+            "frontend.pdf_upload.upload_file_to_folder",
+            side_effect=["edited-id-4", "edited-id-5"],
+        )
+        first_bytes = _real_pdf_bytes()
+        second_bytes = _real_pdf_bytes(pages=2)
+        uploaded_edit = make_uploaded_file("annotated.pdf", content=first_bytes)
+        fake_st.file_uploader.side_effect = lambda label, **kw: (
+            uploaded_edit
+            if kw.get("key", "").startswith(f"annotated_upload_{pid}")
+            else None
+        )
+        fake_st.form_submit_button.return_value = False
+
+        with pytest.raises(stop_rerun):
+            app.main()
+        mock_upload_file.assert_called_once()
+
+        # User re-annotated and re-exported: the same widget now reports
+        # different bytes.
+        uploaded_edit.getvalue.return_value = second_bytes
+
+        with pytest.raises(stop_rerun):
+            app.main()
+
+        assert mock_upload_file.call_count == 2
+        assert mock_upload_index.call_count == 2
+        assert fake_st.session_state.index.papers[pid].edited_pdf_file_id == (
+            "edited-id-5"
+        )

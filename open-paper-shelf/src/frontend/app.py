@@ -1,3 +1,4 @@
+import hashlib
 import html
 import json
 import os
@@ -516,42 +517,42 @@ def main() -> None:
                     "Highlight or comment using your browser's built-in PDF "
                     "tools (supported in current Chrome/Firefox; not every "
                     "browser has this), then download the annotated file and "
-                    "upload it below to save it."
+                    "upload it below - it syncs to Drive automatically."
                 )
-                edited_uploader_key = f"edited_uploader_key_{pid}"
-                if edited_uploader_key not in st.session_state:
-                    st.session_state[edited_uploader_key] = 0
                 uploaded_edit = st.file_uploader(
                     "Upload annotated PDF",
                     type="pdf",
-                    key=(
-                        f"annotated_upload_{pid}_"
-                        f"{st.session_state[edited_uploader_key]}"
-                    ),
+                    key=f"annotated_upload_{pid}",
                 )
-                if uploaded_edit is not None and st.button(
-                    "Save annotated PDF", key=f"save_annotated_btn_{pid}"
-                ):
-                    try:
-                        paper_info = persist_edited_pdf(
-                            creds,
-                            paper_info,
-                            local_edited_path,
-                            uploaded_edit.getvalue(),
-                        )
-                        st.session_state.index.papers[pid] = paper_info
-                        upload_library_index(
-                            creds,
-                            st.session_state.current_papers_id,
-                            st.session_state.index,
-                        )
-                        # Rotate the widget key so the uploaded file doesn't
-                        # linger in Streamlit's widget state and get
-                        # reprocessed on the next script run.
-                        st.session_state[edited_uploader_key] += 1
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"Could not save annotated PDF: {e}")
+                if uploaded_edit is not None:
+                    synced_hash_key = f"edited_synced_hash_{pid}"
+                    content = uploaded_edit.getvalue()
+                    content_hash = hashlib.sha256(content).hexdigest()
+                    if st.session_state.get(synced_hash_key) != content_hash:
+                        # Gate on content hash, not a button click: the
+                        # uploader widget keeps returning the same file
+                        # across unrelated reruns (e.g. clicking "Generate
+                        # metadata"), so without this the same bytes would
+                        # be re-uploaded to Drive every rerun. The hash is
+                        # only recorded once the sync fully succeeds - if it
+                        # fails partway (e.g. the Drive upload itself), the
+                        # content stays unmarked so the next rerun retries
+                        # instead of silently treating it as synced.
+                        try:
+                            paper_info = persist_edited_pdf(
+                                creds, paper_info, local_edited_path, content
+                            )
+                            st.session_state.index.papers[pid] = paper_info
+                            upload_library_index(
+                                creds,
+                                st.session_state.current_papers_id,
+                                st.session_state.index,
+                            )
+                            st.session_state[synced_hash_key] = content_hash
+                            st.success("Synced annotated PDF to Drive.")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Could not sync annotated PDF: {e}")
             else:
                 st.warning("PDF could not be loaded from Drive.")
 
