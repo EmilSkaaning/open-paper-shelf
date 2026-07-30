@@ -434,6 +434,109 @@ class TestUploadPapers:
         assert "cleanup failed" in fake_st.error.call_args_list[0][0][0]
         assert "boom" in fake_st.error.call_args_list[1][0][0]
 
+    def test_on_progress_called_once_per_file_with_index_total_and_name(
+        self, fake_st: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """Test on_progress is invoked once per file, in order, each call
+        carrying the 1-based index, the total file count, and that file's
+        own name - regardless of whether the upload succeeded."""
+        fake_st.session_state.current_papers_id = "papers_123"
+        fake_st.session_state.index = LibraryIndex()
+        files = [make_uploaded_file("a.pdf"), make_uploaded_file("b.pdf")]
+        mocker.patch.object(
+            uploads, "create_paper_folder", side_effect=["folder1", "folder2"]
+        )
+        mocker.patch.object(
+            uploads,
+            "upload_file_to_folder",
+            side_effect=["pdf1", "meta1", "pdf2", "meta2"],
+        )
+        on_progress = MagicMock()
+
+        app.upload_papers(
+            creds=MagicMock(), uploaded_files=files, on_progress=on_progress
+        )
+
+        assert on_progress.call_args_list == [
+            mocker.call(1, 2, "a.pdf"),
+            mocker.call(2, 2, "b.pdf"),
+        ]
+
+    def test_on_progress_still_called_after_a_failed_file(
+        self, fake_st: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """Regression test: a failed file must not stall progress reporting -
+        on_progress must still fire for it so the caller's progress bar keeps
+        advancing through the whole batch."""
+        fake_st.session_state.current_papers_id = "papers_123"
+        fake_st.session_state.index = LibraryIndex()
+        files = [make_uploaded_file("a.pdf"), make_uploaded_file("b.pdf")]
+        mocker.patch.object(
+            uploads,
+            "create_paper_folder",
+            side_effect=["folder1", RuntimeError("boom")],
+        )
+        mocker.patch.object(
+            uploads, "upload_file_to_folder", side_effect=["pdf1", "meta1"]
+        )
+        on_progress = MagicMock()
+
+        app.upload_papers(
+            creds=MagicMock(), uploaded_files=files, on_progress=on_progress
+        )
+
+        assert on_progress.call_args_list == [
+            mocker.call(1, 2, "a.pdf"),
+            mocker.call(2, 2, "b.pdf"),
+        ]
+
+    def test_on_progress_failure_does_not_abort_remaining_files(
+        self, fake_st: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """Regression test: a broken on_progress callback (e.g. a stale
+        Streamlit widget) must not abort the batch - remaining files must
+        still be uploaded and on_progress must still be attempted for each."""
+        fake_st.session_state.current_papers_id = "papers_123"
+        fake_st.session_state.index = LibraryIndex()
+        files = [make_uploaded_file("a.pdf"), make_uploaded_file("b.pdf")]
+        mocker.patch.object(
+            uploads, "create_paper_folder", side_effect=["folder1", "folder2"]
+        )
+        mocker.patch.object(
+            uploads,
+            "upload_file_to_folder",
+            side_effect=["pdf1", "meta1", "pdf2", "meta2"],
+        )
+        on_progress = MagicMock(side_effect=RuntimeError("widget gone"))
+
+        result = app.upload_papers(
+            creds=MagicMock(), uploaded_files=files, on_progress=on_progress
+        )
+
+        assert result is True
+        assert len(fake_st.session_state.index.papers) == 2
+        assert on_progress.call_args_list == [
+            mocker.call(1, 2, "a.pdf"),
+            mocker.call(2, 2, "b.pdf"),
+        ]
+
+    def test_on_progress_defaults_to_none_and_is_optional(
+        self, fake_st: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """Regression test: callers that don't pass on_progress (e.g. all the
+        pre-existing tests above) must keep working unchanged."""
+        fake_st.session_state.current_papers_id = "papers_123"
+        fake_st.session_state.index = LibraryIndex()
+        files = [make_uploaded_file("a.pdf")]
+        mocker.patch.object(uploads, "create_paper_folder", return_value="folder1")
+        mocker.patch.object(
+            uploads, "upload_file_to_folder", side_effect=["pdf1", "meta1"]
+        )
+
+        result = app.upload_papers(creds=MagicMock(), uploaded_files=files)
+
+        assert result is True
+
 
 class TestSyncPaperMetadata:
     """Test suite for sync_paper_metadata."""
@@ -1662,6 +1765,125 @@ class TestMainUploadFlow:
         fake_st.warning.assert_called_once()
         fake_st.success.assert_not_called()
         fake_st.rerun.assert_not_called()
+
+    def test_upload_shows_determinate_progress_bar_not_spinner(
+        self,
+        fake_st: MagicMock,
+        mocker: MockerFixture,
+        stop_rerun: type[BaseException],
+    ) -> None:
+        """Regression test: uploading must show a determinate st.progress
+        bar keyed to file count/name (updated via upload_papers'
+        on_progress callback), not an indeterminate st.spinner, and must
+        clear the bar once the batch finishes."""
+        fake_st.session_state.current_lib_id = "lib_123"
+        fake_st.session_state.current_papers_id = "papers_123"
+        fake_st.session_state.root_id = "root_123"
+        fake_st.session_state.index = LibraryIndex()
+        fake_st.session_state.selected_paper = None
+        files = [make_uploaded_file("a.pdf"), make_uploaded_file("b.pdf")]
+        fake_st.file_uploader.return_value = files
+        fake_st.button.side_effect = lambda label, **kw: label == "Upload"
+        mocker.patch.object(app, "st_keyup", return_value="")
+        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
+        mock_upload_index = mocker.patch.object(app, "upload_library_index")
+
+        def fake_upload_papers(
+            creds: object,
+            uploaded_files: object,
+            on_progress: Any = None,
+        ) -> bool:
+            if on_progress is not None:
+                on_progress(1, 2, "a.pdf")
+                on_progress(2, 2, "b.pdf")
+            return True
+
+        mocker.patch.object(app, "upload_papers", side_effect=fake_upload_papers)
+        mock_progress = MagicMock()
+        fake_st.progress.return_value = mock_progress
+
+        with pytest.raises(stop_rerun):
+            app.main()
+
+        fake_st.progress.assert_called_once_with(0.0, text="Uploading (0/2)...")
+        assert mock_progress.progress.call_args_list == [
+            mocker.call(0.5, text="Uploading (1/2): a.pdf"),
+            mocker.call(1.0, text="Uploading (2/2): b.pdf"),
+        ]
+        mock_progress.empty.assert_called_once()
+        fake_st.spinner.assert_not_called()
+        mock_upload_index.assert_called_once()
+
+    def test_progress_bar_stays_visible_until_after_index_upload(
+        self,
+        fake_st: MagicMock,
+        mocker: MockerFixture,
+        stop_rerun: type[BaseException],
+    ) -> None:
+        """Regression test: the progress bar must not be cleared until after
+        upload_library_index() finishes, so the UI never looks frozen with
+        no loading indicator while the index syncs to Drive (Jules review
+        finding on PR #35)."""
+        fake_st.session_state.current_lib_id = "lib_123"
+        fake_st.session_state.current_papers_id = "papers_123"
+        fake_st.session_state.root_id = "root_123"
+        fake_st.session_state.index = LibraryIndex()
+        fake_st.session_state.selected_paper = None
+        files = [make_uploaded_file("a.pdf")]
+        fake_st.file_uploader.return_value = files
+        fake_st.button.side_effect = lambda label, **kw: label == "Upload"
+        mocker.patch.object(app, "st_keyup", return_value="")
+        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
+        mocker.patch.object(app, "upload_papers", return_value=True)
+        call_order: list[str] = []
+        mocker.patch.object(
+            app,
+            "upload_library_index",
+            side_effect=lambda *a, **kw: call_order.append("upload_library_index"),
+        )
+        mock_progress = MagicMock()
+        mock_progress.empty.side_effect = lambda: call_order.append("progress.empty")
+        fake_st.progress.return_value = mock_progress
+
+        with pytest.raises(stop_rerun):
+            app.main()
+
+        assert call_order == ["upload_library_index", "progress.empty"]
+
+    def test_progress_cleared_even_if_index_upload_raises(
+        self,
+        fake_st: MagicMock,
+        mocker: MockerFixture,
+    ) -> None:
+        """Regression test: if upload_library_index() raises, the progress
+        bar must still be cleared and last_sync_time still reset, instead of
+        being left frozen on screen under Streamlit's error traceback
+        (Jules review finding on PR #35)."""
+        fake_st.session_state.current_lib_id = "lib_123"
+        fake_st.session_state.current_papers_id = "papers_123"
+        fake_st.session_state.root_id = "root_123"
+        fake_st.session_state.index = LibraryIndex()
+        fake_st.session_state.selected_paper = None
+        fake_st.session_state.last_sync_time = "t0"
+        files = [make_uploaded_file("a.pdf")]
+        fake_st.file_uploader.return_value = files
+        fake_st.button.side_effect = lambda label, **kw: label == "Upload"
+        mocker.patch.object(app, "st_keyup", return_value="")
+        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
+        mocker.patch.object(app, "upload_papers", return_value=True)
+        mocker.patch.object(
+            app,
+            "upload_library_index",
+            side_effect=RuntimeError("network blip"),
+        )
+        mock_progress = MagicMock()
+        fake_st.progress.return_value = mock_progress
+
+        with pytest.raises(RuntimeError, match="network blip"):
+            app.main()
+
+        mock_progress.empty.assert_called_once()
+        assert fake_st.session_state.last_sync_time is None
 
 
 class TestMainDeleteFlow:
