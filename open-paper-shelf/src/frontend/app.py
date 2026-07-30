@@ -29,6 +29,7 @@ from backend.models import LibraryIndex, PaperMetadata  # noqa: E402
 from frontend.auth import authenticate_user  # noqa: E402
 from frontend.constants import (  # noqa: E402
     DEFAULT_FASTAPI_URL,
+    EDITED_PDF_FILENAME,
     GENERATE_METADATA_HELP,
     JSON_MIME_TYPE,
     LABEL_TO_STATUS,
@@ -54,6 +55,7 @@ from frontend.metadata_generation import (  # noqa: E402
     generate_metadata_for_selected,
     sync_paper_metadata,
 )
+from frontend.pdf_upload import persist_edited_pdf  # noqa: E402
 from frontend.text_utils import strip_pdf_suffix  # noqa: E402
 from frontend.uploads import upload_papers  # noqa: E402
 
@@ -472,12 +474,84 @@ def main() -> None:
         col_pdf, col_meta = st.columns([2, 1])
         with col_pdf:
             if pdf_available:
+                local_edited_path = local_paper_dir / EDITED_PDF_FILENAME
+                edited_available = local_edited_path.exists()
+                if paper_info.edited_pdf_file_id and not edited_available:
+                    try:
+                        download_file(
+                            creds, paper_info.edited_pdf_file_id, local_edited_path
+                        )
+                        edited_available = True
+                    except Exception as e:
+                        st.error(f"Failed to load edited PDF: {e}")
+
+                view_filename = PDF_FILENAME
+                if edited_available:
+                    view_choice = st.radio(
+                        "View",
+                        options=["Edited", "Raw"],
+                        horizontal=True,
+                        key=f"pdf_view_{pid}",
+                    )
+                    if view_choice == "Edited":
+                        view_filename = EDITED_PDF_FILENAME
+
                 base_url = os.environ.get("FASTAPI_URL", DEFAULT_FASTAPI_URL)
                 quoted_lib_id = urllib.parse.quote(st.session_state.current_lib_id)
                 quoted_pid = urllib.parse.quote(pid)
-                fastapi_url = f"{base_url.rstrip('/')}/papers/{quoted_lib_id}/{quoted_pid}/paper.pdf"
+                fastapi_url = (
+                    f"{base_url.rstrip('/')}/papers/{quoted_lib_id}/{quoted_pid}"
+                    f"/{view_filename}"
+                )
+                if view_filename == EDITED_PDF_FILENAME:
+                    # upload_file_to_folder reuses the same Drive file id on
+                    # re-upload, so the URL alone wouldn't change after a
+                    # second round of annotation - bust the browser's cache
+                    # with the local file's mtime.
+                    fastapi_url += f"?v={local_edited_path.stat().st_mtime_ns}"
                 pdf_display = f'<iframe src="{html.escape(fastapi_url)}" width="100%" height="750" style="border:none;" type="application/pdf"></iframe>'
                 st.markdown(pdf_display, unsafe_allow_html=True)
+
+                st.caption(
+                    "Highlight or comment using your browser's built-in PDF "
+                    "tools (supported in current Chrome/Firefox; not every "
+                    "browser has this), then download the annotated file and "
+                    "upload it below to save it."
+                )
+                edited_uploader_key = f"edited_uploader_key_{pid}"
+                if edited_uploader_key not in st.session_state:
+                    st.session_state[edited_uploader_key] = 0
+                uploaded_edit = st.file_uploader(
+                    "Upload annotated PDF",
+                    type="pdf",
+                    key=(
+                        f"annotated_upload_{pid}_"
+                        f"{st.session_state[edited_uploader_key]}"
+                    ),
+                )
+                if uploaded_edit is not None and st.button(
+                    "Save annotated PDF", key=f"save_annotated_btn_{pid}"
+                ):
+                    try:
+                        paper_info = persist_edited_pdf(
+                            creds,
+                            paper_info,
+                            local_edited_path,
+                            uploaded_edit.getvalue(),
+                        )
+                        st.session_state.index.papers[pid] = paper_info
+                        upload_library_index(
+                            creds,
+                            st.session_state.current_papers_id,
+                            st.session_state.index,
+                        )
+                        # Rotate the widget key so the uploaded file doesn't
+                        # linger in Streamlit's widget state and get
+                        # reprocessed on the next script run.
+                        st.session_state[edited_uploader_key] += 1
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Could not save annotated PDF: {e}")
             else:
                 st.warning("PDF could not be loaded from Drive.")
 

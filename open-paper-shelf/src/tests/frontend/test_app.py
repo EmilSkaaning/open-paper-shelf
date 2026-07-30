@@ -1,5 +1,6 @@
 """Unit tests for the Streamlit frontend application."""
 
+import io
 import json
 from pathlib import Path
 from typing import Any
@@ -8,6 +9,7 @@ from unittest.mock import MagicMock
 import httpx
 import pytest
 from huggingface_hub.errors import HfHubHTTPError
+from pypdf import PdfWriter
 from pytest_mock import MockerFixture
 
 import frontend.app as app
@@ -19,6 +21,19 @@ import frontend.uploads as uploads
 from backend.huggingface_client import GeneratedMetadata
 from backend.models import LibraryIndex, PaperIndexEntry, PaperMetadata
 from tests.frontend.conftest import make_uploaded_file
+
+
+def _real_pdf_bytes() -> bytes:
+    """Builds real, parseable single-page PDF bytes via pypdf (not a mock).
+
+    Returns:
+        bytes: The serialized PDF's raw bytes.
+    """
+    writer = PdfWriter()
+    writer.add_blank_page(width=200, height=200)
+    buf = io.BytesIO()
+    writer.write(buf)
+    return buf.getvalue()
 
 
 def _make_402_error() -> HfHubHTTPError:
@@ -2954,37 +2969,38 @@ class TestMainBulkGenerateFlow:
         assert fake_st.session_state.confirm_generate_pids is None
 
 
+def _select_paper(
+    fake_st: MagicMock, mocker: MockerFixture, tmp_path: Path, pid: str
+) -> PaperIndexEntry:
+    """Configures session state to open a single selected paper's view.
+
+    Args:
+        fake_st: The mocked streamlit module.
+        mocker: The pytest-mock fixture.
+        tmp_path: Pytest's per-test temporary directory.
+        pid: The paper id to select.
+
+    Returns:
+        PaperIndexEntry: The index entry registered for the paper.
+    """
+    entry = PaperIndexEntry(
+        title="A Paper", pdf_file_id="pdf1", meta_file_id="meta1", folder_id="f1"
+    )
+    fake_st.session_state.current_lib_id = "lib_123"
+    fake_st.session_state.current_papers_id = "papers_123"
+    fake_st.session_state.root_id = "root_123"
+    fake_st.session_state.index = LibraryIndex(papers={pid: entry})
+    fake_st.session_state.selected_paper = pid
+    fake_st.session_state.local_lib_dir = tmp_path
+    fake_st.file_uploader.return_value = None
+    mocker.patch.object(app, "st_keyup", return_value="")
+    mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
+    mocker.patch.object(app, "download_file")
+    return entry
+
+
 class TestMainMetadataView:
     """Test suite for main()'s paper detail / metadata editing view."""
-
-    def _select_paper(
-        self, fake_st: MagicMock, mocker: MockerFixture, tmp_path: Path, pid: str
-    ) -> PaperIndexEntry:
-        """Configures session state to open a single selected paper's view.
-
-        Args:
-            fake_st: The mocked streamlit module.
-            mocker: The pytest-mock fixture.
-            tmp_path: Pytest's per-test temporary directory.
-            pid: The paper id to select.
-
-        Returns:
-            PaperIndexEntry: The index entry registered for the paper.
-        """
-        entry = PaperIndexEntry(
-            title="A Paper", pdf_file_id="pdf1", meta_file_id="meta1", folder_id="f1"
-        )
-        fake_st.session_state.current_lib_id = "lib_123"
-        fake_st.session_state.current_papers_id = "papers_123"
-        fake_st.session_state.root_id = "root_123"
-        fake_st.session_state.index = LibraryIndex(papers={pid: entry})
-        fake_st.session_state.selected_paper = pid
-        fake_st.session_state.local_lib_dir = tmp_path
-        fake_st.file_uploader.return_value = None
-        mocker.patch.object(app, "st_keyup", return_value="")
-        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
-        mocker.patch.object(app, "download_file")
-        return entry
 
     def test_pdf_download_failure_shows_warning_without_crashing(
         self, fake_st: MagicMock, mocker: MockerFixture, tmp_path: Path
@@ -2994,7 +3010,7 @@ class TestMainMetadataView:
         viewer, instead of letting the exception propagate and crash the
         page."""
         pid = "a" * 32
-        self._select_paper(fake_st, mocker, tmp_path, pid)
+        _select_paper(fake_st, mocker, tmp_path, pid)
         mocker.patch.object(
             app, "download_file", side_effect=RuntimeError("network blip")
         )
@@ -3019,7 +3035,7 @@ class TestMainMetadataView:
         status value) must not crash the paper view - valid fields are kept
         and the title falls back to the index entry's title."""
         pid = "b" * 32
-        entry = self._select_paper(fake_st, mocker, tmp_path, pid)
+        entry = _select_paper(fake_st, mocker, tmp_path, pid)
         mocker.patch.object(app, "sync_paper_metadata", return_value=True)
         local_meta_path = tmp_path / pid / "meta.json"
         local_meta_path.parent.mkdir(parents=True, exist_ok=True)
@@ -3047,7 +3063,7 @@ class TestMainMetadataView:
         Drive, updates the index entry's title if it changed, and reruns so
         the sidebar reflects the new status/tags immediately."""
         pid = "c" * 32
-        self._select_paper(fake_st, mocker, tmp_path, pid)
+        _select_paper(fake_st, mocker, tmp_path, pid)
         mocker.patch.object(app, "sync_paper_metadata", return_value=True)
         mock_upload_file = mocker.patch.object(app, "upload_file_to_folder")
         mock_upload_index = mocker.patch.object(app, "upload_library_index")
@@ -3086,7 +3102,7 @@ class TestMainMetadataView:
         filters and status icon now read tags/status from the index
         instead of from each paper's meta.json."""
         pid = "f" * 32
-        self._select_paper(fake_st, mocker, tmp_path, pid)
+        _select_paper(fake_st, mocker, tmp_path, pid)
         mocker.patch.object(app, "sync_paper_metadata", return_value=True)
         mocker.patch.object(app, "upload_file_to_folder")
         mock_upload_index = mocker.patch.object(app, "upload_library_index")
@@ -3116,7 +3132,7 @@ class TestMainMetadataView:
         """Regression test: typing '.pdf' into the title field on save must
         not let it end up in the stored title."""
         pid = "9" * 32
-        self._select_paper(fake_st, mocker, tmp_path, pid)
+        _select_paper(fake_st, mocker, tmp_path, pid)
         mocker.patch.object(app, "sync_paper_metadata", return_value=True)
         mocker.patch.object(app, "upload_file_to_folder")
         mocker.patch.object(app, "upload_library_index")
@@ -3144,7 +3160,7 @@ class TestMainMetadataView:
         load error rather than crashing or being mistaken for a
         ValidationError."""
         pid = "d" * 32
-        self._select_paper(fake_st, mocker, tmp_path, pid)
+        _select_paper(fake_st, mocker, tmp_path, pid)
         mocker.patch.object(app, "sync_paper_metadata", return_value=True)
         local_meta_path = tmp_path / pid / "meta.json"
         local_meta_path.parent.mkdir(parents=True, exist_ok=True)
@@ -3162,7 +3178,7 @@ class TestMainMetadataView:
         """Test a failed metadata sync warns that editing is disabled,
         rather than silently allowing edits over unconfirmed data."""
         pid = "e" * 32
-        self._select_paper(fake_st, mocker, tmp_path, pid)
+        _select_paper(fake_st, mocker, tmp_path, pid)
         mocker.patch.object(app, "sync_paper_metadata", return_value=False)
         fake_st.form_submit_button.return_value = False
 
@@ -3179,7 +3195,7 @@ class TestMainMetadataView:
         """Test the Generate metadata button is disabled when the PDF
         could not be loaded, since generation needs the local PDF."""
         pid = "1" * 32
-        self._select_paper(fake_st, mocker, tmp_path, pid)
+        _select_paper(fake_st, mocker, tmp_path, pid)
         mocker.patch.object(
             app, "download_file", side_effect=RuntimeError("network blip")
         )
@@ -3201,7 +3217,7 @@ class TestMainMetadataView:
         """Test the Generate metadata button explains what it does and
         which Hugging Face models it calls."""
         pid = "9" * 32
-        self._select_paper(fake_st, mocker, tmp_path, pid)
+        _select_paper(fake_st, mocker, tmp_path, pid)
         mocker.patch.object(app, "sync_paper_metadata", return_value=True)
         fake_st.form_submit_button.return_value = False
 
@@ -3223,7 +3239,7 @@ class TestMainMetadataView:
         abstract/tags stages a confirmation instead of regenerating right
         away, so the existing draft isn't silently overwritten."""
         pid = "c1" * 16
-        self._select_paper(fake_st, mocker, tmp_path, pid)
+        _select_paper(fake_st, mocker, tmp_path, pid)
         mocker.patch.object(app, "sync_paper_metadata", return_value=True)
         local_meta_path = tmp_path / pid / "meta.json"
         local_meta_path.parent.mkdir(parents=True, exist_ok=True)
@@ -3247,7 +3263,7 @@ class TestMainMetadataView:
         instead of generating immediately, so the edit isn't silently
         discarded when the draft overwrites the title_{pid} widget state."""
         pid = "c3" * 16
-        self._select_paper(fake_st, mocker, tmp_path, pid)
+        _select_paper(fake_st, mocker, tmp_path, pid)
         mocker.patch.object(app, "sync_paper_metadata", return_value=True)
         fake_st.session_state[f"title_{pid}"] = "An Unsaved Edited Title"
         mock_generate = mocker.patch.object(app, "generate_metadata_for_paper")
@@ -3269,7 +3285,7 @@ class TestMainMetadataView:
         """Test clicking Regenerate on a staged confirmation actually
         generates and clears the confirmation state."""
         pid = "c2" * 16
-        self._select_paper(fake_st, mocker, tmp_path, pid)
+        _select_paper(fake_st, mocker, tmp_path, pid)
         mocker.patch.object(app, "sync_paper_metadata", return_value=True)
         local_meta_path = tmp_path / pid / "meta.json"
         local_meta_path.parent.mkdir(parents=True, exist_ok=True)
@@ -3301,7 +3317,7 @@ class TestMainMetadataView:
         """Test clicking Cancel on a staged confirmation clears it without
         generating anything."""
         pid = "c3" * 16
-        self._select_paper(fake_st, mocker, tmp_path, pid)
+        _select_paper(fake_st, mocker, tmp_path, pid)
         mocker.patch.object(app, "sync_paper_metadata", return_value=True)
         local_meta_path = tmp_path / pid / "meta.json"
         local_meta_path.parent.mkdir(parents=True, exist_ok=True)
@@ -3331,7 +3347,7 @@ class TestMainMetadataView:
         """Test clicking Generate metadata stages a draft (and duplicate
         matches) in session state and reruns, without touching Drive."""
         pid = "2" * 32
-        self._select_paper(fake_st, mocker, tmp_path, pid)
+        _select_paper(fake_st, mocker, tmp_path, pid)
         mocker.patch.object(app, "sync_paper_metadata", return_value=True)
         (tmp_path / pid).mkdir(parents=True, exist_ok=True)
         (tmp_path / pid / "paper.pdf").write_bytes(b"pdf-bytes")
@@ -3375,7 +3391,7 @@ class TestMainMetadataView:
         so it's biased toward reusing them instead of inventing new ones."""
         pid = "2b" * 16
         other_pid = "2c" * 16
-        entry = self._select_paper(fake_st, mocker, tmp_path, pid)
+        entry = _select_paper(fake_st, mocker, tmp_path, pid)
         fake_st.session_state.index.papers[other_pid] = PaperIndexEntry(
             title="Other Paper",
             pdf_file_id="pdf2",
@@ -3410,7 +3426,7 @@ class TestMainMetadataView:
     ) -> None:
         """Test a corrupt/unreadable PDF surfaces an error instead of crashing."""
         pid = "5" * 32
-        self._select_paper(fake_st, mocker, tmp_path, pid)
+        _select_paper(fake_st, mocker, tmp_path, pid)
         mocker.patch.object(app, "sync_paper_metadata", return_value=True)
         (tmp_path / pid).mkdir(parents=True, exist_ok=True)
         (tmp_path / pid / "paper.pdf").write_bytes(b"pdf-bytes")
@@ -3440,7 +3456,7 @@ class TestMainMetadataView:
         """Test that when no text can be extracted from the PDF, a warning
         is shown and no Hugging Face calls are made."""
         pid = "3" * 32
-        self._select_paper(fake_st, mocker, tmp_path, pid)
+        _select_paper(fake_st, mocker, tmp_path, pid)
         mocker.patch.object(app, "sync_paper_metadata", return_value=True)
         (tmp_path / pid).mkdir(parents=True, exist_ok=True)
         (tmp_path / pid / "paper.pdf").write_bytes(b"pdf-bytes")
@@ -3467,7 +3483,7 @@ class TestMainMetadataView:
     ) -> None:
         """Test a missing HF_TOKEN surfaces a specific, non-crashing error."""
         pid = "4" * 32
-        self._select_paper(fake_st, mocker, tmp_path, pid)
+        _select_paper(fake_st, mocker, tmp_path, pid)
         mocker.patch.object(app, "sync_paper_metadata", return_value=True)
         (tmp_path / pid).mkdir(parents=True, exist_ok=True)
         (tmp_path / pid / "paper.pdf").write_bytes(b"pdf-bytes")
@@ -3494,7 +3510,7 @@ class TestMainMetadataView:
     ) -> None:
         """Test a generic Hugging Face failure is reported without crashing."""
         pid = "5" * 32
-        self._select_paper(fake_st, mocker, tmp_path, pid)
+        _select_paper(fake_st, mocker, tmp_path, pid)
         mocker.patch.object(app, "sync_paper_metadata", return_value=True)
         (tmp_path / pid).mkdir(parents=True, exist_ok=True)
         (tmp_path / pid / "paper.pdf").write_bytes(b"pdf-bytes")
@@ -3524,7 +3540,7 @@ class TestMainMetadataView:
         """Test a 402 Payment Required error surfaces a quota-specific
         message and flags hf_quota_exceeded for bulk-loop callers."""
         pid = "6" * 32
-        self._select_paper(fake_st, mocker, tmp_path, pid)
+        _select_paper(fake_st, mocker, tmp_path, pid)
         mocker.patch.object(app, "sync_paper_metadata", return_value=True)
         (tmp_path / pid).mkdir(parents=True, exist_ok=True)
         (tmp_path / pid / "paper.pdf").write_bytes(b"pdf-bytes")
@@ -3554,7 +3570,7 @@ class TestMainMetadataView:
         """Test a non-402 HfHubHTTPError falls through to the generic
         failure message and does not set hf_quota_exceeded."""
         pid = "7" * 32
-        self._select_paper(fake_st, mocker, tmp_path, pid)
+        _select_paper(fake_st, mocker, tmp_path, pid)
         mocker.patch.object(app, "sync_paper_metadata", return_value=True)
         (tmp_path / pid).mkdir(parents=True, exist_ok=True)
         (tmp_path / pid / "paper.pdf").write_bytes(b"pdf-bytes")
@@ -3592,7 +3608,7 @@ class TestMainMetadataView:
         402 on the embedding call, instead of the whole draft being
         discarded."""
         pid = "8a" * 16
-        self._select_paper(fake_st, mocker, tmp_path, pid)
+        _select_paper(fake_st, mocker, tmp_path, pid)
         mocker.patch.object(app, "sync_paper_metadata", return_value=True)
         (tmp_path / pid).mkdir(parents=True, exist_ok=True)
         (tmp_path / pid / "paper.pdf").write_bytes(b"pdf-bytes")
@@ -3634,7 +3650,7 @@ class TestMainMetadataView:
         """Test a previously-computed embedding isn't blanked out when a
         re-generation's embedding call fails - only the new text is staged."""
         pid = "8b" * 16
-        entry = self._select_paper(fake_st, mocker, tmp_path, pid)
+        entry = _select_paper(fake_st, mocker, tmp_path, pid)
         entry = entry.model_copy(update={"embedding": [0.9] * 384})
         fake_st.session_state.index.papers[pid] = entry
         mocker.patch.object(app, "sync_paper_metadata", return_value=True)
@@ -3672,7 +3688,7 @@ class TestMainMetadataView:
         """Test the draft stays staged when the embedding call fails because
         no HF token is configured for it."""
         pid = "8c" * 16
-        self._select_paper(fake_st, mocker, tmp_path, pid)
+        _select_paper(fake_st, mocker, tmp_path, pid)
         mocker.patch.object(app, "sync_paper_metadata", return_value=True)
         (tmp_path / pid).mkdir(parents=True, exist_ok=True)
         (tmp_path / pid / "paper.pdf").write_bytes(b"pdf-bytes")
@@ -3710,7 +3726,7 @@ class TestMainMetadataView:
         through to the generic embed-failure warning without setting
         hf_quota_exceeded."""
         pid = "8d" * 16
-        self._select_paper(fake_st, mocker, tmp_path, pid)
+        _select_paper(fake_st, mocker, tmp_path, pid)
         mocker.patch.object(app, "sync_paper_metadata", return_value=True)
         (tmp_path / pid).mkdir(parents=True, exist_ok=True)
         (tmp_path / pid / "paper.pdf").write_bytes(b"pdf-bytes")
@@ -3747,7 +3763,7 @@ class TestMainMetadataView:
     ) -> None:
         """Test staged duplicate matches render a non-blocking warning."""
         pid = "6" * 32
-        self._select_paper(fake_st, mocker, tmp_path, pid)
+        _select_paper(fake_st, mocker, tmp_path, pid)
         mocker.patch.object(app, "sync_paper_metadata", return_value=True)
         fake_st.session_state[f"dupes_{pid}"] = [("other", "Other Paper", 0.95)]
         fake_st.form_submit_button.return_value = False
@@ -3764,7 +3780,7 @@ class TestMainMetadataView:
     ) -> None:
         """Test no duplicate warning is shown when nothing was staged."""
         pid = "7" * 32
-        self._select_paper(fake_st, mocker, tmp_path, pid)
+        _select_paper(fake_st, mocker, tmp_path, pid)
         mocker.patch.object(app, "sync_paper_metadata", return_value=True)
         fake_st.form_submit_button.return_value = False
 
@@ -3780,7 +3796,7 @@ class TestMainMetadataView:
         """Test the form fields prefill from a staged draft rather than the
         Drive-synced meta.json, since the draft holds the latest generation."""
         pid = "8" * 32
-        self._select_paper(fake_st, mocker, tmp_path, pid)
+        _select_paper(fake_st, mocker, tmp_path, pid)
         mocker.patch.object(app, "sync_paper_metadata", return_value=True)
         fake_st.session_state[f"generated_{pid}"] = {
             "title": "Draft Title",
@@ -3815,7 +3831,7 @@ class TestMainMetadataView:
         embedding to meta.json and the index, and clears the staged draft
         so a later plain edit isn't shadowed by a stale generation."""
         pid = "a1" * 16
-        self._select_paper(fake_st, mocker, tmp_path, pid)
+        _select_paper(fake_st, mocker, tmp_path, pid)
         mocker.patch.object(app, "sync_paper_metadata", return_value=True)
         mocker.patch.object(app, "upload_file_to_folder")
         mocker.patch.object(app, "upload_library_index")
@@ -3857,7 +3873,7 @@ class TestMainMetadataView:
         """Regression test: saving without ever clicking Generate must not
         touch abstract/embedding (no draft exists to pull from)."""
         pid = "b2" * 16
-        self._select_paper(fake_st, mocker, tmp_path, pid)
+        _select_paper(fake_st, mocker, tmp_path, pid)
         mocker.patch.object(app, "sync_paper_metadata", return_value=True)
         mocker.patch.object(app, "upload_file_to_folder")
         mocker.patch.object(app, "upload_library_index")
@@ -3877,3 +3893,164 @@ class TestMainMetadataView:
         saved = json.loads(local_meta_path.read_text(encoding="utf-8"))
         assert saved["abstract"] == ""
         assert saved["embedding"] == []
+
+
+class TestPdfEditedCopy:
+    """Test suite for the raw/edited PDF toggle and annotated-PDF upload."""
+
+    def test_edited_copy_present_defaults_to_edited_view_with_cache_buster(
+        self, fake_st: MagicMock, mocker: MockerFixture, tmp_path: Path
+    ) -> None:
+        """Test that when an edited copy exists locally, selecting "Edited"
+        on the toggle points the iframe at paper_edited.pdf with a
+        cache-busting query param (so re-annotating isn't masked by the
+        browser caching the same Drive file id/URL)."""
+        pid = "c" * 32
+        entry = _select_paper(fake_st, mocker, tmp_path, pid)
+        entry = entry.model_copy(update={"edited_pdf_file_id": "edited-id-1"})
+        fake_st.session_state.index.papers[pid] = entry
+        paper_dir = tmp_path / pid
+        paper_dir.mkdir(parents=True, exist_ok=True)
+        (paper_dir / "paper_edited.pdf").write_bytes(b"%PDF-1.4 edited")
+        mocker.patch.object(app, "sync_paper_metadata", return_value=True)
+        fake_st.form_submit_button.return_value = False
+        fake_st.radio.return_value = "Edited"
+
+        app.main()
+
+        markdown_calls = [str(call.args) for call in fake_st.markdown.call_args_list]
+        assert any(
+            "paper_edited.pdf?v=" in call and "iframe" in call
+            for call in markdown_calls
+        )
+
+    def test_no_edited_copy_offers_no_toggle_and_uses_raw(
+        self, fake_st: MagicMock, mocker: MockerFixture, tmp_path: Path
+    ) -> None:
+        """Test that with no edited copy yet, no raw/edited toggle is shown
+        and the iframe points at the untouched raw paper.pdf."""
+        pid = "d" * 32
+        _select_paper(fake_st, mocker, tmp_path, pid)
+        mocker.patch.object(app, "sync_paper_metadata", return_value=True)
+        fake_st.form_submit_button.return_value = False
+
+        app.main()
+
+        fake_st.radio.assert_not_called()
+        markdown_calls = [str(call.args) for call in fake_st.markdown.call_args_list]
+        assert any("/paper.pdf" in call and "iframe" in call for call in markdown_calls)
+        assert not any("paper_edited.pdf" in call for call in markdown_calls)
+
+    def test_uploading_valid_annotated_pdf_persists_and_updates_index(
+        self,
+        fake_st: MagicMock,
+        mocker: MockerFixture,
+        tmp_path: Path,
+        stop_rerun: type[BaseException],
+    ) -> None:
+        """Test that uploading a valid re-annotated PDF persists it as the
+        edited copy, updates the in-memory index with the new
+        edited_pdf_file_id, and re-syncs the library index to Drive."""
+        pid = "e" * 32
+        _select_paper(fake_st, mocker, tmp_path, pid)
+        mocker.patch.object(app, "sync_paper_metadata", return_value=True)
+        mock_upload_index = mocker.patch.object(app, "upload_library_index")
+        mocker.patch(
+            "frontend.pdf_upload.upload_file_to_folder", return_value="edited-id-2"
+        )
+        fake_st.form_submit_button.return_value = False
+        real_pdf_bytes = _real_pdf_bytes()
+        uploaded_edit = make_uploaded_file("annotated.pdf", content=real_pdf_bytes)
+        fake_st.file_uploader.side_effect = lambda label, **kw: (
+            uploaded_edit
+            if kw.get("key", "").startswith(f"annotated_upload_{pid}")
+            else None
+        )
+        fake_st.button.side_effect = lambda label, **kw: (
+            kw.get("key") == f"save_annotated_btn_{pid}"
+        )
+
+        with pytest.raises(stop_rerun):
+            app.main()
+
+        mock_upload_index.assert_called_once()
+        assert fake_st.session_state.index.papers[pid].edited_pdf_file_id == (
+            "edited-id-2"
+        )
+        assert (tmp_path / pid / "paper_edited.pdf").read_bytes() == real_pdf_bytes
+
+    def test_uploading_invalid_annotated_pdf_shows_error_without_updating_index(
+        self, fake_st: MagicMock, mocker: MockerFixture, tmp_path: Path
+    ) -> None:
+        """Test that uploading a non-PDF (or corrupted) file surfaces a
+        user-facing error and leaves the index/library sync untouched."""
+        pid = "f" * 32
+        _select_paper(fake_st, mocker, tmp_path, pid)
+        mocker.patch.object(app, "sync_paper_metadata", return_value=True)
+        mock_upload_index = mocker.patch.object(app, "upload_library_index")
+        mock_upload_file = mocker.patch("frontend.pdf_upload.upload_file_to_folder")
+        fake_st.form_submit_button.return_value = False
+        uploaded_edit = make_uploaded_file("not-a-pdf.pdf", content=b"garbage")
+        fake_st.file_uploader.side_effect = lambda label, **kw: (
+            uploaded_edit
+            if kw.get("key", "").startswith(f"annotated_upload_{pid}")
+            else None
+        )
+        fake_st.button.side_effect = lambda label, **kw: (
+            kw.get("key") == f"save_annotated_btn_{pid}"
+        )
+
+        app.main()
+
+        assert any(
+            "Could not save annotated PDF" in str(call.args)
+            for call in fake_st.error.call_args_list
+        )
+        mock_upload_file.assert_not_called()
+        mock_upload_index.assert_not_called()
+        assert fake_st.session_state.index.papers[pid].edited_pdf_file_id == ""
+
+    def test_second_rerun_with_cached_upload_does_not_reprocess(
+        self,
+        fake_st: MagicMock,
+        mocker: MockerFixture,
+        tmp_path: Path,
+        stop_rerun: type[BaseException],
+    ) -> None:
+        """Regression test: st.file_uploader keeps the uploaded file in
+        widget state across reruns until its key changes. Without a
+        click-gate and key rotation, the script run right after a
+        successful save would see the same cached file again and re-upload
+        it to Drive forever."""
+        pid = "g" * 32
+        _select_paper(fake_st, mocker, tmp_path, pid)
+        mocker.patch.object(app, "sync_paper_metadata", return_value=True)
+        mock_upload_index = mocker.patch.object(app, "upload_library_index")
+        mock_upload_file = mocker.patch(
+            "frontend.pdf_upload.upload_file_to_folder", return_value="edited-id-3"
+        )
+        real_pdf_bytes = _real_pdf_bytes()
+        uploaded_edit = make_uploaded_file("annotated.pdf", content=real_pdf_bytes)
+        fake_st.file_uploader.side_effect = lambda label, **kw: (
+            uploaded_edit
+            if kw.get("key", "").startswith(f"annotated_upload_{pid}")
+            else None
+        )
+        fake_st.form_submit_button.return_value = False
+
+        fake_st.button.side_effect = lambda label, **kw: (
+            kw.get("key") == f"save_annotated_btn_{pid}"
+        )
+        with pytest.raises(stop_rerun):
+            app.main()
+        mock_upload_file.assert_called_once()
+        mock_upload_index.assert_called_once()
+
+        # Second script run: the widget still reports the same cached file
+        # (its key hasn't changed from the caller's point of view in this
+        # test double), but the user did not click Save again.
+        fake_st.button.side_effect = lambda label, **kw: False
+        app.main()
+
+        mock_upload_file.assert_called_once()
+        mock_upload_index.assert_called_once()

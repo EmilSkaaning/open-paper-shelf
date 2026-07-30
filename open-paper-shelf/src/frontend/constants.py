@@ -28,6 +28,7 @@ LABEL_TO_STATUS: dict[str, str] = {
 }
 
 PDF_FILENAME: str = "paper.pdf"
+EDITED_PDF_FILENAME: str = "paper_edited.pdf"
 META_FILENAME: str = "meta.json"
 PDF_MIME_TYPE: str = "application/pdf"
 JSON_MIME_TYPE: str = "application/json"
