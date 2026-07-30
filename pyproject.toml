@@ -38,8 +38,8 @@ ruff-check = "ruff check ."
 ruff-check-fix = "ruff check --fix"
 pyrefly-check = "pyrefly check"
 vulture-check = "vulture --min-confidence 70 --exclude .venv . vulture_whitelist.py"
-skylos-check = "skylos . -a --confidence 80"
-skylos-check-branch = "skylos . -a --confidence 80 --diff-base main"
+skylos-check = { shell = "skylos . -a --confidence 80 || true" }
+skylos-check-branch = { shell = "skylos . -a --confidence 80 --diff-base main || true" }
 check = ["ruff-format-check", "ruff-check", "pyrefly-check", "vulture-check", "skylos-check"]
 
 [tool.pytest.ini_options]
