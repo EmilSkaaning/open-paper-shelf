@@ -75,3 +75,7 @@ uv run poe check       # ruff format/lint, pyrefly, vulture, skylos
 suite. See [AGENTS.md](AGENTS.md) for this repo's full commit workflow and
 coding standards, and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for backend
 internals, AI model defaults, and dev tooling (code-review-graph, pre-commit).
+
+## License
+
+This project is licensed under the [GNU Affero General Public License v3.0](LICENSE).
