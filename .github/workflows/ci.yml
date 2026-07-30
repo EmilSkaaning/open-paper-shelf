@@ -7,7 +7,25 @@ on:
     branches: [ "main" ]
 
 jobs:
-  test:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Set up uv
+      uses: astral-sh/setup-uv@v2
+
+    - name: Install dependencies
+      run: uv sync --frozen
+
+    - name: Run pre-commit (ruff, pyrefly, vulture, skylos branch-diff)
+      env:
+        SKIP: no-commit-to-branch
+      run: uv run pre-commit run --all-files
+
+  skylos-full:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
@@ -18,21 +36,57 @@ jobs:
     - name: Install dependencies
       run: uv sync --frozen
 
-    - name: Run pre-commit
-      env:
-        SKIP: no-commit-to-branch
-      run: uv run pre-commit run --all-files
+    - name: Run full-codebase Skylos scan (report-only, not a merge gate)
+      run: |
+        echo "Report-only: tracks the full Skylos backlog, does not block merges." | tee -a $GITHUB_STEP_SUMMARY
+        uv run poe skylos-check | tee -a $GITHUB_STEP_SUMMARY || true
+
+  test-backend:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up uv
+      uses: astral-sh/setup-uv@v2
+
+    - name: Install dependencies
+      run: uv sync --frozen
 
     - name: Cache testmon data
       uses: actions/cache@v4
       with:
         path: .testmondata
-        key: testmon-${{ runner.os }}-${{ github.ref_name }}-${{ github.sha }}
+        key: testmon-backend-${{ runner.os }}-${{ github.ref_name }}-${{ github.sha }}
         restore-keys: |
-          testmon-${{ runner.os }}-${{ github.ref_name }}-
-          testmon-${{ runner.os }}-main
+          testmon-backend-${{ runner.os }}-${{ github.ref_name }}-
+          testmon-backend-${{ runner.os }}-main
 
-    - name: Run tests with coverage
+    - name: Run backend tests with coverage
       run: |
         echo "Note: The test coverage provided is only taking changed files into account (using pytest-testmon)." | tee -a $GITHUB_STEP_SUMMARY
-        uv run pytest --testmon --cov=backend --cov-report=term-missing | tee -a $GITHUB_STEP_SUMMARY
+        uv run poe test-backend | tee -a $GITHUB_STEP_SUMMARY
+
+  test-frontend:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up uv
+      uses: astral-sh/setup-uv@v2
+
+    - name: Install dependencies
+      run: uv sync --frozen
+
+    - name: Cache testmon data
+      uses: actions/cache@v4
+      with:
+        path: .testmondata
+        key: testmon-frontend-${{ runner.os }}-${{ github.ref_name }}-${{ github.sha }}
+        restore-keys: |
+          testmon-frontend-${{ runner.os }}-${{ github.ref_name }}-
+          testmon-frontend-${{ runner.os }}-main
+
+    - name: Run frontend tests with coverage
+      run: |
+        echo "Note: The test coverage provided is only taking changed files into account (using pytest-testmon)." | tee -a $GITHUB_STEP_SUMMARY
+        uv run poe test-frontend | tee -a $GITHUB_STEP_SUMMARY
