@@ -2,6 +2,7 @@
 name = "open-paper-shelf"
 version = "0.1.0"
 description = "A front-end for papers backed by Google Drive"
+license = "AGPL-3.0-or-later"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
