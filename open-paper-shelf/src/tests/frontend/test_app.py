@@ -2738,8 +2738,8 @@ class TestMainBulkGenerateFlow:
         self, fake_st: MagicMock, mocker: MockerFixture
     ) -> None:
         """Test the bulk generate icon keeps its fixed "secondary" type
-        regardless of checkbox state, distinguishing it from the "primary"
-        delete icon by native styling alone (issue #23)."""
+        regardless of checkbox state, matching the other icon-bar buttons
+        (issue #23)."""
         pid = "a" * 32
         entry = PaperIndexEntry(
             title="Some Paper", pdf_file_id="pdf1", meta_file_id="meta1", folder_id="f1"
