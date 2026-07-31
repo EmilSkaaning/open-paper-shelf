@@ -3071,7 +3071,7 @@ class TestMainMetadataView:
         notes/citation/status could not be recovered - not silently
         dropped."""
         pid = "b" * 32
-        entry = self._select_paper(fake_st, mocker, tmp_path, pid)
+        entry = _select_paper(fake_st, mocker, tmp_path, pid)
         mocker.patch.object(app, "sync_paper_metadata", return_value=True)
         local_meta_path = tmp_path / pid / "meta.json"
         local_meta_path.parent.mkdir(parents=True, exist_ok=True)
