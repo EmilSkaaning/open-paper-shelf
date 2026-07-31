@@ -726,18 +726,18 @@ class TestAuthenticateUser:
             "Login with Google", "https://accounts.google.com/auth"
         )
 
-    def test_missing_credentials_file_is_reported(
+    def test_flow_creation_failure_is_reported(
         self, fake_st: MagicMock, mocker: MockerFixture
     ) -> None:
-        """Test a missing credentials.json surfaces a clear error instead of crashing."""
+        """Test a failure to build the OAuth flow surfaces a clear error instead of crashing."""
         mocker.patch.object(auth, "load_credentials_from_file", return_value=None)
-        mocker.patch.object(auth, "get_oauth_flow", side_effect=FileNotFoundError())
+        mocker.patch.object(auth, "get_oauth_flow", side_effect=RuntimeError("boom"))
 
         result = app.authenticate_user()
 
         assert result is None
         fake_st.error.assert_called_once()
-        assert "credentials.json" in fake_st.error.call_args[0][0]
+        assert "Could not start Google sign-in" in fake_st.error.call_args[0][0]
 
 
 class TestInitLibraryState:
