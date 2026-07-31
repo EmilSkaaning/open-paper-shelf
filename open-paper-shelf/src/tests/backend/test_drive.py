@@ -27,7 +27,6 @@ from backend.drive import (
     save_credentials,
     upload_file_to_folder,
     upload_library_index,
-    CREDENTIALS_PATH,
     OAUTH_FLOWS,
     REDIRECT_URI,
     SCOPES,
@@ -144,22 +143,16 @@ class TestGetOrCreateFolderEscaping:
 class TestGetOauthFlow:
     """Test suite for get_oauth_flow."""
 
-    def test_missing_credentials_file(self, mocker: MockerFixture) -> None:
-        """Test FileNotFoundError is raised when credentials.json is missing."""
-        mocker.patch("backend.drive.Path.exists", return_value=False)
-
-        with pytest.raises(FileNotFoundError, match="credentials.json not found"):
-            get_oauth_flow()
-
-    def test_flow_creation_success(self, mocker: MockerFixture) -> None:
-        """Test a Flow is built from the local client secrets file."""
-        mocker.patch("backend.drive.Path.exists", return_value=True)
-        mock_from_secrets = mocker.patch("backend.drive.Flow.from_client_secrets_file")
+    def test_uses_resolved_client_config(self, mocker: MockerFixture) -> None:
+        """Test a Flow is built from the resolved OAuth client config."""
+        sentinel_config = {"installed": {"client_id": "sentinel"}}
+        mocker.patch("backend.drive.get_client_config", return_value=sentinel_config)
+        mock_from_config = mocker.patch("backend.drive.Flow.from_client_config")
 
         get_oauth_flow()
 
-        mock_from_secrets.assert_called_once_with(
-            str(CREDENTIALS_PATH), scopes=SCOPES, redirect_uri=REDIRECT_URI
+        mock_from_config.assert_called_once_with(
+            sentinel_config, scopes=SCOPES, redirect_uri=REDIRECT_URI
         )
 
 
