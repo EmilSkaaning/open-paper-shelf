@@ -1,4 +1,3 @@
-import hashlib
 import html
 import json
 import os
@@ -56,7 +55,6 @@ from frontend.metadata_generation import (  # noqa: E402
     generate_metadata_for_selected,
     sync_paper_metadata,
 )
-from frontend.pdf_upload import persist_edited_pdf  # noqa: E402
 from frontend.text_utils import strip_pdf_suffix  # noqa: E402
 from frontend.uploads import upload_papers  # noqa: E402
 
@@ -486,73 +484,44 @@ def main() -> None:
                     except Exception as e:
                         st.error(f"Failed to load edited PDF: {e}")
 
-                view_filename = PDF_FILENAME
-                if edited_available:
-                    view_choice = st.radio(
-                        "View",
-                        options=["Edited", "Raw"],
-                        horizontal=True,
-                        key=f"pdf_view_{pid}",
-                    )
-                    if view_choice == "Edited":
-                        view_filename = EDITED_PDF_FILENAME
+                view_filename = (
+                    EDITED_PDF_FILENAME if edited_available else PDF_FILENAME
+                )
 
                 base_url = os.environ.get("FASTAPI_URL", DEFAULT_FASTAPI_URL)
                 quoted_lib_id = urllib.parse.quote(st.session_state.current_lib_id)
                 quoted_pid = urllib.parse.quote(pid)
-                fastapi_url = (
+                pdf_file_url = (
                     f"{base_url.rstrip('/')}/papers/{quoted_lib_id}/{quoted_pid}"
                     f"/{view_filename}"
                 )
                 if view_filename == EDITED_PDF_FILENAME:
                     # upload_file_to_folder reuses the same Drive file id on
                     # re-upload, so the URL alone wouldn't change after a
-                    # second round of annotation - bust the browser's cache
+                    # further round of annotation - bust the browser's cache
                     # with the local file's mtime.
-                    fastapi_url += f"?v={local_edited_path.stat().st_mtime_ns}"
-                pdf_display = f'<iframe src="{html.escape(fastapi_url)}" width="100%" height="750" style="border:none;" type="application/pdf"></iframe>'
+                    pdf_file_url += f"?v={local_edited_path.stat().st_mtime_ns}"
+
+                viewer_query = urllib.parse.urlencode(
+                    {
+                        "file": pdf_file_url,
+                        "libId": st.session_state.current_lib_id,
+                        "pid": pid,
+                    }
+                )
+                viewer_url = (
+                    f"{base_url.rstrip('/')}/pdfjs/web/viewer.html?{viewer_query}"
+                )
+                pdf_display = (
+                    f'<iframe src="{html.escape(viewer_url)}" width="100%" '
+                    'height="750" style="border:none;"></iframe>'
+                )
                 st.markdown(pdf_display, unsafe_allow_html=True)
 
                 st.caption(
-                    "Highlight or comment using your browser's built-in PDF "
-                    "tools (supported in current Chrome/Firefox; not every "
-                    "browser has this), then download the annotated file and "
-                    "upload it below - it syncs to Drive automatically."
+                    "Use the toolbar's highlight tool to annotate the PDF - "
+                    "your edits save to Drive automatically as you work."
                 )
-                uploaded_edit = st.file_uploader(
-                    "Upload annotated PDF",
-                    type="pdf",
-                    key=f"annotated_upload_{pid}",
-                )
-                if uploaded_edit is not None:
-                    synced_hash_key = f"edited_synced_hash_{pid}"
-                    content = uploaded_edit.getvalue()
-                    content_hash = hashlib.sha256(content).hexdigest()
-                    if st.session_state.get(synced_hash_key) != content_hash:
-                        # Gate on content hash, not a button click: the
-                        # uploader widget keeps returning the same file
-                        # across unrelated reruns (e.g. clicking "Generate
-                        # metadata"), so without this the same bytes would
-                        # be re-uploaded to Drive every rerun. The hash is
-                        # only recorded once the sync fully succeeds - if it
-                        # fails partway (e.g. the Drive upload itself), the
-                        # content stays unmarked so the next rerun retries
-                        # instead of silently treating it as synced.
-                        try:
-                            paper_info = persist_edited_pdf(
-                                creds, paper_info, local_edited_path, content
-                            )
-                            st.session_state.index.papers[pid] = paper_info
-                            upload_library_index(
-                                creds,
-                                st.session_state.current_papers_id,
-                                st.session_state.index,
-                            )
-                            st.session_state[synced_hash_key] = content_hash
-                            st.success("Synced annotated PDF to Drive.")
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"Could not sync annotated PDF: {e}")
             else:
                 st.warning("PDF could not be loaded from Drive.")
 
