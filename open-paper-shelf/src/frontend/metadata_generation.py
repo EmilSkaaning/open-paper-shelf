@@ -1,6 +1,7 @@
 """Generating, staging, and persisting Hugging Face-drafted paper metadata."""
 
 import json
+import logging
 import time
 from pathlib import Path
 from typing import Callable, Sequence
@@ -21,6 +22,8 @@ from backend.models import LibraryIndex, PaperIndexEntry, PaperMetadata
 from frontend.constants import BULK_GENERATE_DELAY_SECONDS
 from frontend.library_filters import get_all_tags
 from frontend.text_utils import strip_pdf_suffix
+
+logger = logging.getLogger(__name__)
 
 
 def sync_paper_metadata(
@@ -210,6 +213,14 @@ def persist_generated_metadata(
             data = json.loads(local_meta_path.read_text(encoding="utf-8"))
             meta = PaperMetadata(**data)
         except Exception:
+            logger.exception(
+                "Failed to load existing metadata from %s", local_meta_path
+            )
+            st.warning(
+                "Could not recover this paper's saved notes/citation/status - "
+                "the generated draft will be merged onto a blank metadata "
+                "entry instead."
+            )
             meta = PaperMetadata(title=paper_info.title)
 
     meta = meta.model_copy(
