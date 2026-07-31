@@ -272,10 +272,8 @@ def main() -> None:
             ]
             # Narrow columns with no gap keep the two icons adjacent instead
             # of centered in two full-width halves; the trailing column
-            # just absorbs the remaining space. Each icon gets a distinct
-            # native `type=` (primary/secondary/tertiary) so the three
-            # actions read as visually different weights instead of
-            # sharing one theme color.
+            # just absorbs the remaining space. All three icons use a fixed
+            # "secondary" type; no per-button background-color styling.
             icon_col1, icon_col2, icon_col3, _icon_spacer = st.columns(
                 [1, 1, 1, 7], gap=None
             )
@@ -284,7 +282,7 @@ def main() -> None:
                     "🗑️",
                     key="trash_icon",
                     help="Delete selected papers",
-                    type="primary" if checked_pids else "secondary",
+                    type="secondary",
                 ):
                     if checked_pids:
                         st.session_state.confirm_delete_pids = checked_pids
@@ -306,7 +304,7 @@ def main() -> None:
                     "🪄",
                     key="generate_missing_icon",
                     help="Generate metadata for every paper that doesn't have any yet",
-                    type="tertiary",
+                    type="secondary",
                 ):
                     missing_pids = list(
                         get_missing_metadata_pids(st.session_state.index)
