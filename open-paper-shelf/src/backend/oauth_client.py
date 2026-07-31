@@ -47,7 +47,7 @@ _BUNDLED_CLIENT_CONFIG: ClientConfig = {
     }
 }
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 CREDENTIALS_OVERRIDE_PATH = PROJECT_ROOT / "credentials.json"
 
 
