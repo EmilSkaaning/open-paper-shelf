@@ -5,6 +5,7 @@ from unittest.mock import MagicMock
 
 import pytest
 from pytest_mock import MockerFixture
+from pytest_socket import disable_socket, enable_socket
 
 import frontend.app as app
 import frontend.auth as auth
@@ -94,6 +95,20 @@ def clear_oauth_flows() -> Generator[None, None, None]:
     app.OAUTH_FLOWS.clear()
     yield
     app.OAUTH_FLOWS.clear()
+
+
+@pytest.fixture(autouse=True)
+def block_network_calls() -> Generator[None, None, None]:
+    """Blocks outbound socket calls for the duration of each frontend test.
+
+    Frontend tests stub every Google Drive / Hugging Face boundary call, so a
+    mock that fails to intercept (e.g. because it targets the wrong module
+    after a refactor) must fail fast and loudly instead of silently falling
+    through to a real network call.
+    """
+    disable_socket()
+    yield
+    enable_socket()
 
 
 @pytest.fixture
