@@ -13,6 +13,7 @@ import tempfile
 import uuid
 
 from backend.models import LibraryIndex
+from backend.oauth_client import get_client_config
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +31,6 @@ FOLDER_MIME_TYPE: str = "application/vnd.google-apps.folder"
 REDIRECT_URI: str = "http://localhost:8501/"
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
-CREDENTIALS_PATH = PROJECT_ROOT / "credentials.json"
 TOKEN_PATH = PROJECT_ROOT / "token.json"
 PAPERS_DIR = PROJECT_ROOT / "papers"
 
@@ -60,18 +60,16 @@ def add_oauth_flow(state: str, flow: Flow) -> None:
 
 
 def get_oauth_flow() -> Flow:
-    """Builds a new Google OAuth Flow from the local client secrets file.
+    """Builds a new Google OAuth Flow from the resolved OAuth client config.
+
+    Uses a self-hoster's override (env vars or a local credentials.json) if
+    present, otherwise falls back to the OAuth client bundled with the app.
 
     Returns:
         Flow: A new OAuth Flow configured with this app's scopes and redirect URI.
-
-    Raises:
-        FileNotFoundError: If credentials.json does not exist at CREDENTIALS_PATH.
     """
-    if not CREDENTIALS_PATH.exists():
-        raise FileNotFoundError("credentials.json not found.")
-    return Flow.from_client_secrets_file(
-        str(CREDENTIALS_PATH), scopes=SCOPES, redirect_uri=REDIRECT_URI
+    return Flow.from_client_config(
+        get_client_config(), scopes=SCOPES, redirect_uri=REDIRECT_URI
     )
 
 

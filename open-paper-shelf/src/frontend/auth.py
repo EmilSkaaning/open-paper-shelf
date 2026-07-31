@@ -74,10 +74,8 @@ def authenticate_user() -> Optional[Credentials]:
     if "auth_flow" not in st.session_state:
         try:
             flow = get_oauth_flow()
-        except FileNotFoundError:
-            st.error(
-                "credentials.json not found. Please provide valid Google Drive credentials."
-            )
+        except Exception as e:
+            st.error(f"Could not start Google sign-in: {e}")
             return None
         st.session_state.auth_flow = flow
         auth_url, state = flow.authorization_url(

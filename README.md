@@ -22,25 +22,31 @@ on top of them.
 
 ## Run It
 
-1. Set up Google Drive access: create OAuth credentials for a **Web
-   Application** in the [Google Cloud Console](https://console.cloud.google.com/)
-   with redirect URI `http://localhost:8501/`, then save them as
-   `credentials.json` in the project root (see `credentials.example.json` for
-   the expected shape).
-2. Install dependencies:
+1. Install dependencies:
    ```bash
    uv sync
    # or: pip install -e .
    ```
-3. Run the backend (serves PDFs to the UI):
+2. Run the backend (serves PDFs to the UI):
    ```bash
    uv run poe fastapi
    ```
-4. In a separate terminal, run the frontend:
+3. In a separate terminal, run the frontend:
    ```bash
    uv run poe streamlit
    ```
-5. Open the Streamlit URL it prints (typically `http://localhost:8501`).
+4. Open the Streamlit URL it prints (typically `http://localhost:8501`) and
+   click "Login with Google" to connect your own Google Drive.
+
+### Optional: bring your own Google OAuth client
+
+The app ships with its own Google OAuth client, so no Google Cloud setup is
+required. If you'd rather use your own OAuth client (e.g. for self-hosting
+under your own Google Cloud project), either:
+
+- Set `GOOGLE_OAUTH_CLIENT_ID` and `GOOGLE_OAUTH_CLIENT_SECRET`, or
+- Save your client's downloaded JSON as `credentials.json` in the project
+  root (see `credentials.example.json` for the expected shape).
 
 ### Optional: AI metadata generation
 
