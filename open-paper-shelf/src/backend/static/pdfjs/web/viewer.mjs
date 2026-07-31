@@ -758,7 +758,10 @@ const defaultOptions = {
     kind: OptionKind.API
   },
   cMapUrl: {
-    value: "../web/cmaps/",
+    // Loaded from jsDelivr's pdfjs-dist@4.10.38 npm package rather than
+    // vendored, to keep this repo small - see viewer.html for the engine
+    // script tag and its integrity hash.
+    value: "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/cmaps/",
     kind: OptionKind.API
   },
   disableAutoFetch: {
@@ -810,7 +813,7 @@ const defaultOptions = {
     kind: OptionKind.API
   },
   standardFontDataUrl: {
-    value: "../web/standard_fonts/",
+    value: "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/standard_fonts/",
     kind: OptionKind.API
   },
   useSystemFonts: {
@@ -827,7 +830,7 @@ const defaultOptions = {
     kind: OptionKind.WORKER
   },
   workerSrc: {
-    value: "../build/pdf.worker.mjs",
+    value: "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/build/pdf.worker.mjs",
     kind: OptionKind.WORKER
   }
 };
@@ -837,7 +840,7 @@ const defaultOptions = {
     kind: OptionKind.VIEWER
   };
   defaultOptions.sandboxBundleSrc = {
-    value: "../build/pdf.sandbox.mjs",
+    value: "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/build/pdf.sandbox.mjs",
     kind: OptionKind.VIEWER
   };
   defaultOptions.viewerCssTheme = {

@@ -29,7 +29,15 @@ See https://github.com/adobe-type-tools/cmap-resources
 
 <!-- This snippet is used in production (included from viewer.html) -->
 <link rel="resource" type="application/l10n" href="locale/locale.json">
-<script src="../build/pdf.mjs" type="module"></script>
+<!-- pdf.mjs (the core engine) is loaded from jsDelivr's pdfjs-dist@4.10.38
+     npm package rather than vendored, to keep this repo small. The version
+     is pinned in the URL and the integrity hash was computed locally from
+     the file this exact URL serves (see AGENTS.md/commit message for how
+     to regenerate it when bumping the version). viewer.mjs/viewer.css stay
+     local since pdf.js only ships the built standalone viewer app (with
+     the toolbar/highlight button we use) in its GitHub Release zip, not
+     via npm/jsDelivr. -->
+<script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/build/pdf.mjs" integrity="sha384-bo1KeVi0Qz/iFm9JcC8hzUlrxEuilsrU+KqlplfAHGgP9CBt+q1Gnjk4IJcVHK8X" crossorigin="anonymous" type="module"></script>
 
     <link rel="stylesheet" href="viewer.css">
 
