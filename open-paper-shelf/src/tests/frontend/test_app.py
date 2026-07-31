@@ -2275,7 +2275,9 @@ class TestPersistGeneratedMetadata:
     def test_falls_back_to_defaults_when_local_cache_is_corrupt(
         self, fake_st: MagicMock, mocker: MockerFixture, tmp_path: Path
     ) -> None:
-        """Test a corrupt local meta.json doesn't abort persistence."""
+        """Test a corrupt local meta.json doesn't abort persistence, and the
+        user is warned that the existing saved metadata could not be
+        recovered."""
         pid = "a" * 32
         entry = PaperIndexEntry(
             title="Old Title", pdf_file_id="p1", meta_file_id="m1", folder_id="f1"
@@ -2298,6 +2300,10 @@ class TestPersistGeneratedMetadata:
         assert result is True
         saved = json.loads(local_meta_path.read_text(encoding="utf-8"))
         assert saved["title"] == "New Title"
+        assert any(
+            "Could not recover" in str(call.args)
+            for call in fake_st.warning.call_args_list
+        )
 
 
 class TestGenerateMetadataForSelected:
@@ -3052,6 +3058,43 @@ class TestMainMetadataView:
 
         assert any(
             "recovering valid fields" in str(call.args)
+            for call in fake_st.warning.call_args_list
+        )
+        assert entry.title == "A Paper"
+
+    def test_falls_back_to_blank_form_when_field_recovery_itself_fails(
+        self, fake_st: MagicMock, mocker: MockerFixture, tmp_path: Path
+    ) -> None:
+        """Regression test: if recovering valid fields from an invalid
+        meta.json itself raises, the paper must fall back to a blank
+        metadata form AND the user must be warned that their saved
+        notes/citation/status could not be recovered - not silently
+        dropped."""
+        pid = "b" * 32
+        entry = self._select_paper(fake_st, mocker, tmp_path, pid)
+        mocker.patch.object(app, "sync_paper_metadata", return_value=True)
+        local_meta_path = tmp_path / pid / "meta.json"
+        local_meta_path.parent.mkdir(parents=True, exist_ok=True)
+        local_meta_path.write_text(
+            json.dumps({"title": "Cached Title", "status": "NotAStatus"})
+        )
+        fake_st.form_submit_button.return_value = False
+
+        real_paper_metadata = app.PaperMetadata
+        call_count = {"n": 0}
+
+        def fake_paper_metadata(**kwargs: Any) -> PaperMetadata:
+            call_count["n"] += 1
+            if call_count["n"] == 3:
+                raise RuntimeError("recovery boom")
+            return real_paper_metadata(**kwargs)
+
+        mocker.patch.object(app, "PaperMetadata", side_effect=fake_paper_metadata)
+
+        app.main()
+
+        assert any(
+            "Could not recover" in str(call.args)
             for call in fake_st.warning.call_args_list
         )
         assert entry.title == "A Paper"
