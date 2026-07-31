@@ -1918,12 +1918,12 @@ class TestMainDeleteFlow:
             for c in fake_st.button.call_args_list
             if c.kwargs.get("key") == "trash_icon"
         )
-        assert trash_call.kwargs.get("type") == "secondary"
+        assert trash_call.kwargs.get("type") == "primary"
 
-    def test_trash_icon_stays_secondary_when_a_paper_is_checked(
+    def test_trash_icon_stays_primary_when_a_paper_is_checked(
         self, fake_st: MagicMock, mocker: MockerFixture
     ) -> None:
-        """Test the bin icon keeps its fixed "secondary" type regardless of
+        """Test the bin icon keeps its fixed "primary" type regardless of
         checkbox state, even if the checked paper is currently hidden by a
         search/status/tag filter."""
         pid = "a" * 32
@@ -1948,7 +1948,7 @@ class TestMainDeleteFlow:
             for c in fake_st.button.call_args_list
             if c.kwargs.get("key") == "trash_icon"
         )
-        assert trash_call.kwargs.get("type") == "secondary"
+        assert trash_call.kwargs.get("type") == "primary"
 
     def test_trash_with_checked_paper_shows_confirmation(
         self, fake_st: MagicMock, mocker: MockerFixture
@@ -2739,7 +2739,8 @@ class TestMainBulkGenerateFlow:
     ) -> None:
         """Test the bulk generate icon keeps its fixed "secondary" type
         regardless of checkbox state, distinguishing it from the "primary"
-        delete icon by native styling alone (issue #23)."""
+        delete icon and the "tertiary" generate-missing icon by native
+        styling alone (issue #23)."""
         pid = "a" * 32
         entry = PaperIndexEntry(
             title="Some Paper", pdf_file_id="pdf1", meta_file_id="meta1", folder_id="f1"
@@ -2892,11 +2893,11 @@ class TestMainBulkGenerateFlow:
             for call in fake_st.info.call_args_list
         )
 
-    def test_generate_missing_icon_uses_secondary_type(
+    def test_generate_missing_icon_uses_tertiary_type(
         self, fake_st: MagicMock, mocker: MockerFixture
     ) -> None:
-        """Test the generate-missing icon renders as "secondary", the
-        same fixed type as the other two icon-bar buttons."""
+        """Test the generate-missing icon renders as "tertiary", distinct
+        from the "primary" delete and "secondary" bulk-generate icons."""
         pid = "a" * 32
         entry = PaperIndexEntry(
             title="Some Paper", pdf_file_id="pdf1", meta_file_id="meta1", folder_id="f1"
@@ -2918,7 +2919,7 @@ class TestMainBulkGenerateFlow:
             for c in fake_st.button.call_args_list
             if c.kwargs.get("key") == "generate_missing_icon"
         )
-        assert generate_missing_call.kwargs.get("type") == "secondary"
+        assert generate_missing_call.kwargs.get("type") == "tertiary"
 
     def test_confirming_bulk_generate_calls_generate_and_reruns(
         self,
