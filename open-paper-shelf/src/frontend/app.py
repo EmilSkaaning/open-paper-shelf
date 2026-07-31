@@ -272,11 +272,10 @@ def main() -> None:
             ]
             # Narrow columns with no gap keep the two icons adjacent instead
             # of centered in two full-width halves; the trailing column
-            # just absorbs the remaining space. Native Streamlit has no way
-            # to give one specific button a custom color (`type=` only
-            # offers theme-wide presets), so the delete and generate icons
-            # share the same "primary" red when active and are told apart
-            # by their emoji and tooltip instead.
+            # just absorbs the remaining space. Each icon gets a distinct
+            # native `type=` (primary/secondary/tertiary) so the three
+            # actions read as visually different weights instead of
+            # sharing one theme color.
             icon_col1, icon_col2, icon_col3, _icon_spacer = st.columns(
                 [1, 1, 1, 7], gap=None
             )
@@ -296,7 +295,7 @@ def main() -> None:
                     "✨",
                     key="bulk_generate_icon",
                     help=GENERATE_METADATA_HELP,
-                    type="primary" if checked_pids else "secondary",
+                    type="secondary",
                 ):
                     if checked_pids:
                         st.session_state.confirm_generate_pids = checked_pids
@@ -307,6 +306,7 @@ def main() -> None:
                     "🪄",
                     key="generate_missing_icon",
                     help="Generate metadata for every paper that doesn't have any yet",
+                    type="tertiary",
                 ):
                     missing_pids = list(
                         get_missing_metadata_pids(st.session_state.index)
