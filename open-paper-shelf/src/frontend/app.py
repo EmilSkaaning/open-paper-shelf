@@ -1,5 +1,6 @@
 import html
 import json
+import logging
 import os
 import re
 import urllib.parse
@@ -89,6 +90,8 @@ from frontend.metadata_generation import (  # noqa: E402,F401
     persist_generated_metadata as persist_generated_metadata,
 )
 
+
+logger = logging.getLogger(__name__)
 
 st.set_page_config(
     layout="wide",
@@ -465,6 +468,13 @@ def main() -> None:
                 try:
                     meta = PaperMetadata(**data)
                 except Exception:
+                    logger.exception(
+                        "Failed to recover valid fields from %s", local_meta_path
+                    )
+                    st.warning(
+                        "Could not recover this paper's saved notes/citation/"
+                        "status - showing a blank metadata form instead."
+                    )
                     meta = PaperMetadata(title=paper_info.title)
             except Exception as e:
                 st.error(f"Could not load metadata: {e}")
