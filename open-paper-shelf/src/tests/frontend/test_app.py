@@ -13,7 +13,6 @@ from pytest_mock import MockerFixture
 import frontend.app as app
 import frontend.auth as auth
 import frontend.library as library
-import frontend.library_filters as library_filters
 import frontend.metadata_generation as metadata_generation
 import frontend.uploads as uploads
 from backend.huggingface_client import GeneratedMetadata
