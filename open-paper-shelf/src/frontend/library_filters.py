@@ -5,7 +5,7 @@ from typing import Sequence
 
 import streamlit as st
 
-from backend.huggingface_client import find_similar_papers
+from backend.huggingface_client import DEFAULT_DUPLICATE_THRESHOLD
 from backend.models import LibraryIndex, PaperIndexEntry
 from frontend.constants import PAPER_ID_PATTERN
 
@@ -60,12 +60,36 @@ def get_duplicate_pids(index: LibraryIndex) -> set[str]:
     if cached is not None and cached[0] == signature:
         return cached[1]
 
-    result = {
-        pid
-        for pid, entry in index.papers.items()
-        if entry.embedding
-        and find_similar_papers(entry.embedding, index, exclude_pid=pid)
-    }
+    valid_papers = [
+        (pid, entry.embedding) for pid, entry in index.papers.items() if entry.embedding
+    ]
+    n = len(valid_papers)
+
+    # Pre-calculate normalized embeddings to avoid duplicate work in O(N^2) loops
+    normalized_embs = []
+    for _, emb in valid_papers:
+        norm = sum(x * x for x in emb) ** 0.5
+        if norm == 0.0:
+            normalized_embs.append(None)
+        else:
+            normalized_embs.append([x / norm for x in emb])
+
+    result = set()
+    for i in range(n):
+        emb1 = normalized_embs[i]
+        if emb1 is None:
+            continue
+
+        for j in range(i + 1, n):
+            emb2 = normalized_embs[j]
+            if emb2 is None:
+                continue
+
+            score = sum(x * y for x, y in zip(emb1, emb2))
+            if score >= DEFAULT_DUPLICATE_THRESHOLD:
+                result.add(valid_papers[i][0])
+                result.add(valid_papers[j][0])
+
     st.session_state["_duplicate_pids_cache"] = (signature, result)
     return result
 
