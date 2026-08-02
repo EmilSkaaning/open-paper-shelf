@@ -405,7 +405,9 @@ def main() -> None:
             with st.container(height=400):
                 if not filtered_papers:
                     if not st.session_state.index.papers:
-                        st.info("Your library is empty. Upload PDFs above to get started!")
+                        st.info(
+                            "Your library is empty. Upload PDFs above to get started!"
+                        )
                     else:
                         st.info("No papers match your search and filters.")
 
