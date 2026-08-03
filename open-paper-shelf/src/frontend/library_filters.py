@@ -1,7 +1,7 @@
 """Pure query/filter helpers over a LibraryIndex, for sidebar display."""
 
 import re
-from typing import Sequence
+from typing import Iterable, Sequence
 
 import streamlit as st
 
@@ -115,6 +115,8 @@ def filter_papers(
     search_query: str,
     status_filter: Sequence[str],
     tags_filter: Sequence[str],
+    duplicate_pids: Iterable[str] = (),
+    include_similar: bool = False,
 ) -> list[tuple[str, PaperIndexEntry]]:
     """Filters and sorts the library's papers for sidebar display.
 
@@ -123,24 +125,38 @@ def filter_papers(
             LibraryIndex.papers.
         search_query: Lowercased search text; a paper matches if its title
             contains this text.
-        status_filter: Statuses to restrict results to. Empty means no
-            status filtering.
+        status_filter: Statuses to restrict results to. Combined with
+            `include_similar` via OR: empty and `include_similar=False`
+            together mean no status filtering.
         tags_filter: Tags to restrict results to; a paper matches if it has
             at least one of these tags. Empty means no tag filtering.
+        duplicate_pids: Paper IDs currently flagged as having a similar-
+            embedding match elsewhere in the library (from
+            `get_duplicate_pids`), consulted only when `include_similar` is
+            True.
+        include_similar: If True, a paper also matches when its ID is in
+            `duplicate_pids`, regardless of `status_filter`. Lets a "⚠️
+            Similar" pseudo-option sit in the same multiselect as the real
+            statuses without being one itself - a paper's reading status
+            and its similar-embedding flag are independent.
 
     Returns:
         list[tuple[str, PaperIndexEntry]]: Matching (paper_id, entry) pairs,
         sorted by title. Entries whose key isn't a 32-character hex paper ID
         (e.g. a legacy/malformed index entry) are always skipped.
     """
+    duplicate_pid_set = set(duplicate_pids)
     matches: list[tuple[str, PaperIndexEntry]] = []
     for pid, p in papers.items():
         if not re.match(PAPER_ID_PATTERN, pid):
             continue
         if search_query not in p.title.lower():
             continue
-        if status_filter and p.status not in status_filter:
-            continue
+        if status_filter or include_similar:
+            status_matches = p.status in status_filter
+            similar_matches = include_similar and pid in duplicate_pid_set
+            if not (status_matches or similar_matches):
+                continue
         if tags_filter and not any(tag in p.tags for tag in tags_filter):
             continue
         matches.append((pid, p))
