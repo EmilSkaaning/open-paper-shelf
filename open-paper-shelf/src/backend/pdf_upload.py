@@ -212,13 +212,18 @@ def save_edited_pdf(
     # Network upload happens outside _index_lock: it doesn't touch shared
     # local index state, and holding the lock across a Drive round-trip
     # would serialize every concurrent autosave in this process.
-    updated_entry = persist_edited_pdf(creds, paper_info, local_edited_path, data)
+    stale_updated_entry = persist_edited_pdf(creds, paper_info, local_edited_path, data)
 
     with _index_lock:
         # Re-read rather than reuse the index captured above, since another
         # autosave may have updated id-mapping.json while this upload ran.
+        # Apply the new file id onto that fresh entry (not the pre-upload
+        # `paper_info`) so concurrent metadata edits aren't clobbered.
         index = LibraryIndex.model_validate_json(
             local_index_path.read_text(encoding="utf-8")
+        )
+        updated_entry = index.papers[pid].model_copy(
+            update={"edited_pdf_file_id": stale_updated_entry.edited_pdf_file_id}
         )
         updated_index = index.model_copy(
             update={"papers": {**index.papers, pid: updated_entry}}
