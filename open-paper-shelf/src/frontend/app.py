@@ -167,15 +167,17 @@ def main() -> None:
                     lib_id_to_delete = st.session_state.confirm_delete_lib_id
                     st.warning(
                         f"Delete library '{lib_options[lib_id_to_delete]}' and "
-                        "all its papers? This cannot be undone."
+                        "all its papers? This will move the library and all "
+                        "its papers to your Google Drive trash."
                     )
                     confirm_col, cancel_col = st.columns(2)
                     with confirm_col:
                         if st.button("Confirm", key="confirm_delete_lib_btn"):
                             try:
                                 delete_library(creds, lib_id_to_delete)
-                            except Exception as e:
-                                st.error(f"Failed to delete library: {e}")
+                            except Exception:
+                                logger.exception("Failed to delete library")
+                                st.error("Failed to delete library. Please try again.")
                             else:
                                 st.session_state.confirm_delete_lib_id = None
                                 st.rerun()

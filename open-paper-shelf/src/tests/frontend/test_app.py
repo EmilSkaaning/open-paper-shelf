@@ -1007,7 +1007,7 @@ class TestMainLibrarySelection:
         app.main()
 
         fake_st.error.assert_called_once()
-        assert "boom" in fake_st.error.call_args[0][0]
+        assert "boom" not in fake_st.error.call_args[0][0]
         assert fake_st.session_state.confirm_delete_lib_id == "lib1"
         fake_st.rerun.assert_not_called()
 
