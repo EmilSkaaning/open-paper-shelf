@@ -1587,6 +1587,66 @@ class TestMainLibraryView:
         assert f"btn_{pid_read}" in rendered_keys
         assert f"btn_{pid_unread}" not in rendered_keys
 
+    def test_shows_empty_library_message_when_no_papers(
+        self, fake_st: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """Test the "library is empty" message is shown when the library
+        has no papers at all, distinct from the no-matches message."""
+        fake_st.session_state.current_lib_id = "lib_123"
+        fake_st.session_state.current_papers_id = "papers_123"
+        fake_st.session_state.root_id = "root_123"
+        fake_st.session_state.index = LibraryIndex()
+        fake_st.session_state.selected_paper = None
+        fake_st.file_uploader.return_value = None
+        mocker.patch.object(app, "st_keyup", return_value="")
+        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
+
+        app.main()
+
+        assert any(
+            "Your library is empty" in str(call.args)
+            for call in fake_st.info.call_args_list
+        )
+        assert not any(
+            "No papers match" in str(call.args) for call in fake_st.info.call_args_list
+        )
+
+    def test_shows_no_match_message_when_filters_exclude_all_papers(
+        self, fake_st: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """Test the "no papers match" message is shown when the library has
+        papers but the current search/filters exclude every one of them,
+        distinct from the library-is-empty message."""
+        pid = "a" * 32
+        fake_st.session_state.current_lib_id = "lib_123"
+        fake_st.session_state.current_papers_id = "papers_123"
+        fake_st.session_state.root_id = "root_123"
+        fake_st.session_state.index = LibraryIndex(
+            papers={
+                pid: PaperIndexEntry(
+                    title="Some Paper",
+                    pdf_file_id="p1",
+                    meta_file_id="m1",
+                    folder_id="f1",
+                )
+            }
+        )
+        fake_st.session_state.selected_paper = None
+        fake_st.file_uploader.return_value = None
+        mocker.patch.object(app, "st_keyup", return_value="no-such-paper")
+        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
+
+        app.main()
+
+        assert any(
+            "No papers match your search and filters" in str(call.args)
+            for call in fake_st.info.call_args_list
+        )
+        assert not any(
+            "Your library is empty" in str(call.args)
+            for call in fake_st.info.call_args_list
+        )
+
     def test_stale_tags_filter_selection_is_dropped(
         self, fake_st: MagicMock, mocker: MockerFixture
     ) -> None:

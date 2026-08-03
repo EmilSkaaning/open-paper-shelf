@@ -403,6 +403,14 @@ def main() -> None:
             duplicate_pids = get_duplicate_pids(st.session_state.index)
 
             with st.container(height=400):
+                if not filtered_papers:
+                    if not st.session_state.index.papers:
+                        st.info(
+                            "Your library is empty. Upload PDFs above to get started!"
+                        )
+                    else:
+                        st.info("No papers match your search and filters.")
+
                 for pid, p in filtered_papers:
                     row_check, row_button = st.columns([1, 8])
                     with row_check:
