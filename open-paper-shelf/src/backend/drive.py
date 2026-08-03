@@ -246,43 +246,85 @@ def _list_children(service: DriveService, folder_id: str) -> List[DriveMetadata]
     return children
 
 
-def _trash_folder_recursive(service: DriveService, folder_id: str) -> None:
-    """Trashes a folder and all of its descendants, bottom-up.
-
-    Trashing (or deleting) a folder in one call is rejected by Drive with a
-    403 `appNotAuthorizedToChild` error whenever the app's `drive.file`
-    scope doesn't cover every nested child (e.g. items added to the folder
-    outside the app). Trashing each descendant explicitly, deepest first,
-    means only the specific items the app actually lacks access to fail,
-    instead of the whole operation being blocked.
+def _collect_ids_recursive(service: DriveService, folder_id: str) -> List[str]:
+    """Collects a folder's own ID plus every descendant's ID, depth-first.
 
     Args:
         service (DriveService): An authenticated Drive API client.
-        folder_id (str): The Google Drive file ID of the folder to trash.
+        folder_id (str): The Google Drive file ID of the folder to walk.
+
+    Returns:
+        List[str]: Descendant file IDs first, followed by `folder_id` last.
     """
+    ids: List[str] = []
     for child in _list_children(service, folder_id):
         if child.get("mimeType") == FOLDER_MIME_TYPE:
-            _trash_folder_recursive(service, child["id"])
+            ids.extend(_collect_ids_recursive(service, child["id"]))
         else:
-            service.files().update(fileId=child["id"], body={"trashed": True}).execute()
-    service.files().update(fileId=folder_id, body={"trashed": True}).execute()
+            ids.append(child["id"])
+    ids.append(folder_id)
+    return ids
+
+
+# Drive's batch endpoint accepts at most 100 sub-requests per HTTP call.
+BATCH_TRASH_CHUNK_SIZE = 100
+
+
+def _batch_trash(service: DriveService, file_ids: List[str]) -> None:
+    """Trashes a list of Drive file/folder IDs via batched HTTP requests.
+
+    Batching turns what would otherwise be one HTTP round-trip per file
+    into `ceil(len(file_ids) / BATCH_TRASH_CHUNK_SIZE)` round-trips, which
+    matters for libraries with many papers.
+
+    Args:
+        service (DriveService): An authenticated Drive API client.
+        file_ids (List[str]): The Google Drive file IDs to trash.
+
+    Raises:
+        HttpError: Re-raises the first per-item error encountered, if any
+            item in `file_ids` failed to trash (e.g. the app lacks
+            authorization for that specific item).
+    """
+    errors: Dict[str, HttpError] = {}
+
+    def _record_error(
+        request_id: str, _response: DriveMetadata, exception: Optional[HttpError]
+    ) -> None:
+        if exception is not None:
+            errors[request_id] = exception
+
+    for start in range(0, len(file_ids), BATCH_TRASH_CHUNK_SIZE):
+        batch = service.new_batch_http_request(callback=_record_error)
+        for file_id in file_ids[start : start + BATCH_TRASH_CHUNK_SIZE]:
+            batch.add(
+                service.files().update(fileId=file_id, body={"trashed": True}),
+                request_id=file_id,
+            )
+        batch.execute()
+
+    if errors:
+        raise next(iter(errors.values()))
 
 
 def delete_library(creds: Credentials, lib_id: str) -> None:
     """Trashes a library's folder (and its contents) in Google Drive.
 
-    Trashes descendants bottom-up rather than issuing a single top-level
-    delete/trash: the app's OAuth scope only grants write access to
-    files/folders it created directly, and Drive rejects an operation on a
-    folder with a 403 `appNotAuthorizedToChild` error unless the app also
-    has direct authorization over every nested child.
+    Walks the folder tree to collect every descendant's ID, then trashes
+    them all (plus the folder itself) via batched HTTP requests rather
+    than a single top-level call: a plain trash/delete on a folder is
+    rejected by Drive with a 403 `appNotAuthorizedToChild` error unless
+    the app's `drive.file` scope covers every nested child (e.g. items
+    added to the folder outside the app), so each item is trashed
+    individually to surface only genuinely inaccessible items as failures.
 
     Args:
         creds (Credentials): The Google OAuth credentials.
         lib_id (str): The Google Drive file ID of the library folder.
     """
     service: DriveService = build("drive", "v3", credentials=creds)
-    _trash_folder_recursive(service, lib_id)
+    file_ids = _collect_ids_recursive(service, lib_id)
+    _batch_trash(service, file_ids)
 
 
 def get_papers_folder(creds: Credentials, lib_id: str) -> str:
