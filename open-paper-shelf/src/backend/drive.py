@@ -260,6 +260,7 @@ def _merge_remote_papers(
     file_info: DriveMetadata,
     index: LibraryIndex,
     deleted_pids: set[str] | None,
+    own_pid_updates: set[str] | None = None,
 ) -> None:
     """Merges remote-only papers and backend-owned fields into `index`.
 
@@ -269,12 +270,15 @@ def _merge_remote_papers(
     be resurrected from the stale remote copy).
 
     For a paper present in both, `edited_pdf_file_id` is taken from the
-    remote copy whenever it differs. That field is written exclusively by
-    the backend's PDF-autosave path (`save_edited_pdf`), never by the
-    caller's in-memory index, so the local copy calling `upload_library_index`
-    (e.g. the frontend saving metadata) can only be stale for this field -
-    preferring its value would silently erase a concurrent autosave's Drive
-    reference. A corrupted or unreadable remote index is logged and skipped
+    remote copy whenever it differs, unless the paper's pid is in
+    `own_pid_updates` - the caller just authoritatively set that field
+    locally (e.g. `save_edited_pdf`'s own write, made moments before this
+    function fetched a remote copy that doesn't have it yet), so the local
+    value must win instead of being reverted to the stale remote one. For
+    every other caller (e.g. the frontend saving metadata, whose in-memory
+    index never touches this field), the remote copy is the only place a
+    concurrent backend autosave's Drive reference could live, so it must
+    win. A corrupted or unreadable remote index is logged and skipped
     rather than blocking the upload.
 
     Args:
@@ -285,6 +289,9 @@ def _merge_remote_papers(
             or updated in its `papers` dict in place.
         deleted_pids (set[str] | None): Paper IDs deleted locally that must
             not be merged back from the remote index.
+        own_pid_updates (set[str] | None): Paper IDs whose
+            `edited_pdf_file_id` the caller just authoritatively set locally
+            and which must not be overwritten by the remote copy.
 
     Raises:
         HttpError: If fetching the remote index fails for a reason other
@@ -296,13 +303,17 @@ def _merge_remote_papers(
         remote_data = json.loads(remote_bytes.decode("utf-8"))
         remote_index = LibraryIndex(**remote_data)
         pids_to_ignore = deleted_pids or set()
+        pids_owned_locally = own_pid_updates or set()
         for pid, p in remote_index.papers.items():
             if pid in pids_to_ignore:
                 continue
             local_entry = index.papers.get(pid)
             if local_entry is None:
                 index.papers[pid] = p
-            elif p.edited_pdf_file_id != local_entry.edited_pdf_file_id:
+            elif (
+                pid not in pids_owned_locally
+                and p.edited_pdf_file_id != local_entry.edited_pdf_file_id
+            ):
                 index.papers[pid] = local_entry.model_copy(
                     update={"edited_pdf_file_id": p.edited_pdf_file_id}
                 )
@@ -361,6 +372,7 @@ def upload_library_index(
     papers_folder_id: str,
     index: LibraryIndex,
     deleted_pids: set[str] | None = None,
+    own_pid_updates: set[str] | None = None,
 ) -> None:
     """Uploads the library index file (id-mapping.json) to Google Drive.
 
@@ -369,6 +381,10 @@ def upload_library_index(
         papers_folder_id (str): The Google Drive folder ID where the index should be uploaded.
         index (LibraryIndex): The library index data model to serialize and upload.
         deleted_pids (set[str] | None): A set of paper IDs that were deleted locally and should not be merged back from the remote index.
+        own_pid_updates (set[str] | None): Paper IDs whose `edited_pdf_file_id`
+            the caller just authoritatively set on `index` (e.g. the
+            backend's own PDF-autosave write) and which must win over
+            whatever the remote copy still has for that field.
 
     Returns:
         None
@@ -381,7 +397,7 @@ def upload_library_index(
     file_info = get_library_index_file(creds, papers_folder_id)
 
     if file_info:
-        _merge_remote_papers(service, file_info, index, deleted_pids)
+        _merge_remote_papers(service, file_info, index, deleted_pids, own_pid_updates)
 
     _write_index_file(service, papers_folder_id, index, file_info or {})
 

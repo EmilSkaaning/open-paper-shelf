@@ -248,6 +248,7 @@ class TestSaveEditedPdf:
         )
         assert saved_index["papers"][pid]["edited_pdf_file_id"] == "edited-id"
         mock_upload_index.assert_called_once()
+        assert mock_upload_index.call_args.kwargs["own_pid_updates"] == {pid}
 
     def test_rejects_path_traversal_lib_id_before_touching_disk(
         self, tmp_path: Path, mocker: MockerFixture

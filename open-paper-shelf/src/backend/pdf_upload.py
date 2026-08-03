@@ -218,6 +218,8 @@ def save_edited_pdf(
         )
 
         papers_folder_id = get_papers_folder(creds, lib_id)
-        upload_library_index(creds, papers_folder_id, updated_index)
+        upload_library_index(
+            creds, papers_folder_id, updated_index, own_pid_updates={pid}
+        )
 
     return updated_entry
