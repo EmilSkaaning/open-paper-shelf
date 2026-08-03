@@ -82,7 +82,7 @@ def get_duplicate_pids(index: LibraryIndex) -> set[str]:
 
         for j in range(i + 1, n):
             emb2 = normalized_embs[j]
-            if emb2 is None:
+            if emb2 is None or len(emb1) != len(emb2):
                 continue
 
             score = sum(x * y for x, y in zip(emb1, emb2))

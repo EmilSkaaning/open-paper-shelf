@@ -1092,6 +1092,30 @@ class TestGetDuplicatePids:
         )
         assert app.get_duplicate_pids(index) == set()
 
+    def test_mismatched_embedding_dimensions_are_not_flagged(self) -> None:
+        """Test two papers whose embeddings have different lengths are
+        excluded rather than compared via a truncated zip."""
+        pid1, pid2 = "a" * 32, "b" * 32
+        index = LibraryIndex(
+            papers={
+                pid1: PaperIndexEntry(
+                    title="One",
+                    pdf_file_id="p1",
+                    meta_file_id="m1",
+                    folder_id="f1",
+                    embedding=[1.0, 0.0, 0.0],
+                ),
+                pid2: PaperIndexEntry(
+                    title="Two",
+                    pdf_file_id="p2",
+                    meta_file_id="m2",
+                    folder_id="f2",
+                    embedding=[1.0, 0.0],
+                ),
+            }
+        )
+        assert app.get_duplicate_pids(index) == set()
+
     def test_below_threshold_match_is_excluded(self) -> None:
         """Test a lone paper whose embedding doesn't closely match any
         other paper's is not flagged."""
@@ -1141,16 +1165,15 @@ class TestGetDuplicatePids:
                 ),
             }
         )
-        # We can no longer spy on find_similar_papers since it's optimized out,
-        # but we can verify caching logic by seeing if the mock state was checked/set.
-        # However, the best way to verify the cache didn't recompute is simply that the result matches
-        # and the second call doesn't raise if we break the logic. We will just test that it works.
-
         first = app.get_duplicate_pids(index)
-        assert fake_st.session_state["_duplicate_pids_cache"] is not None
+        cache_after_first = fake_st.session_state["_duplicate_pids_cache"]
         second = app.get_duplicate_pids(index)
+        cache_after_second = fake_st.session_state["_duplicate_pids_cache"]
 
         assert first == second == {pid1, pid2}
+        # A cache hit returns early without writing to session_state again,
+        # so the cached tuple's identity is unchanged if no recompute happened.
+        assert cache_after_first is cache_after_second
 
     def test_changed_embedding_invalidates_cache_and_recomputes(
         self, fake_st: MagicMock, mocker: MockerFixture
