@@ -485,7 +485,7 @@ def main() -> None:
             except Exception as e:
                 st.error(f"Could not load metadata: {e}")
 
-        col_pdf, col_meta = st.columns([2, 1])
+        col_pdf, col_meta = st.columns([3.5, 1])
         with col_pdf:
             if pdf_available:
                 local_edited_path = local_paper_dir / EDITED_PDF_FILENAME
