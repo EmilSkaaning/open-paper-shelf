@@ -13,7 +13,6 @@ from pytest_mock import MockerFixture
 import frontend.app as app
 import frontend.auth as auth
 import frontend.library as library
-import frontend.library_filters as library_filters
 import frontend.metadata_generation as metadata_generation
 import frontend.uploads as uploads
 from backend.huggingface_client import GeneratedMetadata
@@ -1093,6 +1092,30 @@ class TestGetDuplicatePids:
         )
         assert app.get_duplicate_pids(index) == set()
 
+    def test_mismatched_embedding_dimensions_are_not_flagged(self) -> None:
+        """Test two papers whose embeddings have different lengths are
+        excluded rather than compared via a truncated zip."""
+        pid1, pid2 = "a" * 32, "b" * 32
+        index = LibraryIndex(
+            papers={
+                pid1: PaperIndexEntry(
+                    title="One",
+                    pdf_file_id="p1",
+                    meta_file_id="m1",
+                    folder_id="f1",
+                    embedding=[1.0, 0.0, 0.0],
+                ),
+                pid2: PaperIndexEntry(
+                    title="Two",
+                    pdf_file_id="p2",
+                    meta_file_id="m2",
+                    folder_id="f2",
+                    embedding=[1.0, 0.0],
+                ),
+            }
+        )
+        assert app.get_duplicate_pids(index) == set()
+
     def test_below_threshold_match_is_excluded(self) -> None:
         """Test a lone paper whose embedding doesn't closely match any
         other paper's is not flagged."""
@@ -1142,14 +1165,15 @@ class TestGetDuplicatePids:
                 ),
             }
         )
-        spy = mocker.spy(library_filters, "find_similar_papers")
-
         first = app.get_duplicate_pids(index)
-        call_count_after_first = spy.call_count
+        cache_after_first = fake_st.session_state["_duplicate_pids_cache"]
         second = app.get_duplicate_pids(index)
+        cache_after_second = fake_st.session_state["_duplicate_pids_cache"]
 
         assert first == second == {pid1, pid2}
-        assert spy.call_count == call_count_after_first
+        # A cache hit returns early without writing to session_state again,
+        # so the cached tuple's identity is unchanged if no recompute happened.
+        assert cache_after_first is cache_after_second
 
     def test_changed_embedding_invalidates_cache_and_recomputes(
         self, fake_st: MagicMock, mocker: MockerFixture
@@ -1175,18 +1199,18 @@ class TestGetDuplicatePids:
                 ),
             }
         )
-        spy = mocker.spy(library_filters, "find_similar_papers")
-
         first = app.get_duplicate_pids(index)
-        call_count_after_first = spy.call_count
+        cache_after_first = fake_st.session_state["_duplicate_pids_cache"]
+
         index.papers[pid2] = index.papers[pid2].model_copy(
             update={"embedding": [0.0, 1.0, 0.0]}
         )
         second = app.get_duplicate_pids(index)
+        cache_after_second = fake_st.session_state["_duplicate_pids_cache"]
 
         assert first == {pid1, pid2}
         assert second == set()
-        assert spy.call_count > call_count_after_first
+        assert cache_after_first[0] != cache_after_second[0]
 
 
 class TestGetMissingMetadataPids:
