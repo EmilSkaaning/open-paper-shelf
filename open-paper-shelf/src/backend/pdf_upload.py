@@ -10,6 +10,7 @@ syncs the change to the library's Google Drive index.
 
 import logging
 import re
+import threading
 from io import BytesIO
 from pathlib import Path
 
@@ -25,6 +26,12 @@ from backend.drive import (
 from backend.models import LibraryIndex, PaperIndexEntry
 
 logger = logging.getLogger(__name__)
+
+# Serializes id-mapping.json read-modify-write across concurrent autosaves
+# (e.g. multiple viewer tabs); this backend always runs as a single local
+# process, so a threading.Lock is sufficient without a cross-process file
+# lock.
+_index_lock = threading.Lock()
 
 PDF_MAGIC_BYTES: bytes = b"%PDF-"
 PDF_MIME_TYPE: str = "application/pdf"
@@ -173,28 +180,30 @@ def save_edited_pdf(
 
     local_lib_dir = PAPERS_DIR / lib_id
     local_index_path = local_lib_dir / INDEX_FILENAME
-    if not local_index_path.exists():
-        raise FileNotFoundError(f"No local library index for lib_id={lib_id!r}")
-    index = LibraryIndex.model_validate_json(
-        local_index_path.read_text(encoding="utf-8")
-    )
-    paper_info = index.papers.get(pid)
-    if paper_info is None:
-        raise KeyError(f"Unknown paper id {pid!r} in library {lib_id!r}")
 
-    local_paper_dir = local_lib_dir / pid
-    local_paper_dir.mkdir(parents=True, exist_ok=True)
-    local_edited_path = local_paper_dir / EDITED_PDF_FILENAME
+    with _index_lock:
+        if not local_index_path.exists():
+            raise FileNotFoundError(f"No local library index for lib_id={lib_id!r}")
+        index = LibraryIndex.model_validate_json(
+            local_index_path.read_text(encoding="utf-8")
+        )
+        paper_info = index.papers.get(pid)
+        if paper_info is None:
+            raise KeyError(f"Unknown paper id {pid!r} in library {lib_id!r}")
 
-    updated_entry = persist_edited_pdf(creds, paper_info, local_edited_path, data)
-    updated_index = index.model_copy(
-        update={"papers": {**index.papers, pid: updated_entry}}
-    )
-    local_index_path.write_text(
-        updated_index.model_dump_json(indent=2), encoding="utf-8"
-    )
+        local_paper_dir = local_lib_dir / pid
+        local_paper_dir.mkdir(parents=True, exist_ok=True)
+        local_edited_path = local_paper_dir / EDITED_PDF_FILENAME
 
-    papers_folder_id = get_papers_folder(creds, lib_id)
-    upload_library_index(creds, papers_folder_id, updated_index)
+        updated_entry = persist_edited_pdf(creds, paper_info, local_edited_path, data)
+        updated_index = index.model_copy(
+            update={"papers": {**index.papers, pid: updated_entry}}
+        )
+        local_index_path.write_text(
+            updated_index.model_dump_json(indent=2), encoding="utf-8"
+        )
+
+        papers_folder_id = get_papers_folder(creds, lib_id)
+        upload_library_index(creds, papers_folder_id, updated_index)
 
     return updated_entry
