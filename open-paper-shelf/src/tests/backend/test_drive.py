@@ -336,15 +336,16 @@ class TestCreateLibrary:
 class TestDeleteLibrary:
     """Test suite for delete_library."""
 
-    def test_trashes_library_folder_by_id(
+    def test_trashes_empty_library_folder_by_id(
         self, mock_build: MagicMock, mock_creds: MagicMock
     ) -> None:
-        """Test the library's folder is trashed (not hard-deleted) by its
-        Drive file id, since a hard delete is rejected by Drive's
+        """Test a childless library folder is trashed (not hard-deleted) by
+        its Drive file id, since a hard delete is rejected by Drive's
         appNotAuthorizedToChild check for folders with nested children the
         app didn't create directly."""
         mock_service = MagicMock()
         mock_build.return_value = mock_service
+        mock_service.files().list().execute.return_value = {"files": []}
 
         delete_library(mock_creds, "lib_123")
 
@@ -352,6 +353,38 @@ class TestDeleteLibrary:
             fileId="lib_123", body={"trashed": True}
         )
         mock_service.files().delete.assert_not_called()
+
+    def test_trashes_nested_children_before_the_folder_itself(
+        self, mock_build: MagicMock, mock_creds: MagicMock
+    ) -> None:
+        """Test every descendant is trashed bottom-up (deepest files and
+        subfolders first) before the library folder itself, so a Drive
+        appNotAuthorizedToChild check on the top-level folder isn't
+        triggered by still-present children."""
+        mock_service = MagicMock()
+        mock_build.return_value = mock_service
+        folder_mime = "application/vnd.google-apps.folder"
+        mock_service.files().list().execute.side_effect = [
+            {
+                "files": [
+                    {"id": "papers_folder", "mimeType": folder_mime},
+                    {"id": "top_file", "mimeType": "application/json"},
+                ]
+            },
+            {"files": [{"id": "nested_pdf", "mimeType": "application/pdf"}]},
+        ]
+
+        delete_library(mock_creds, "lib_123")
+
+        update_calls = [
+            call.kwargs for call in mock_service.files().update.call_args_list
+        ]
+        assert update_calls == [
+            {"fileId": "nested_pdf", "body": {"trashed": True}},
+            {"fileId": "papers_folder", "body": {"trashed": True}},
+            {"fileId": "top_file", "body": {"trashed": True}},
+            {"fileId": "lib_123", "body": {"trashed": True}},
+        ]
 
 
 class TestGetLibraryIndexFile:

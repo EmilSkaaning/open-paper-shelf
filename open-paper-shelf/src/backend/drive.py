@@ -215,22 +215,74 @@ def create_library(creds: Credentials, root_id: str, lib_name: str) -> Dict[str,
     return {"lib_id": lib_id, "lib_name": unique_name, "papers_id": papers_id}
 
 
+def _list_children(service: DriveService, folder_id: str) -> List[DriveMetadata]:
+    """Lists the direct, non-trashed children of a Drive folder.
+
+    Args:
+        service (DriveService): An authenticated Drive API client.
+        folder_id (str): The Google Drive file ID of the parent folder.
+
+    Returns:
+        List[DriveMetadata]: The `id`/`mimeType` metadata of each child.
+    """
+    query = f"'{folder_id}' in parents and trashed = false"
+    children: List[DriveMetadata] = []
+    page_token = None
+    while True:
+        results = (
+            service.files()
+            .list(
+                q=query,
+                spaces="drive",
+                fields="nextPageToken, files(id, mimeType)",
+                pageToken=page_token,
+            )
+            .execute()
+        )
+        children.extend(results.get("files", []))
+        page_token = results.get("nextPageToken")
+        if not page_token:
+            break
+    return children
+
+
+def _trash_folder_recursive(service: DriveService, folder_id: str) -> None:
+    """Trashes a folder and all of its descendants, bottom-up.
+
+    Trashing (or deleting) a folder in one call is rejected by Drive with a
+    403 `appNotAuthorizedToChild` error whenever the app's `drive.file`
+    scope doesn't cover every nested child (e.g. items added to the folder
+    outside the app). Trashing each descendant explicitly, deepest first,
+    means only the specific items the app actually lacks access to fail,
+    instead of the whole operation being blocked.
+
+    Args:
+        service (DriveService): An authenticated Drive API client.
+        folder_id (str): The Google Drive file ID of the folder to trash.
+    """
+    for child in _list_children(service, folder_id):
+        if child.get("mimeType") == FOLDER_MIME_TYPE:
+            _trash_folder_recursive(service, child["id"])
+        else:
+            service.files().update(fileId=child["id"], body={"trashed": True}).execute()
+    service.files().update(fileId=folder_id, body={"trashed": True}).execute()
+
+
 def delete_library(creds: Credentials, lib_id: str) -> None:
     """Trashes a library's folder (and its contents) in Google Drive.
 
-    Uses a trash update rather than a hard delete: the app's OAuth scope
-    only grants write access to files/folders it created directly, and a
-    hard `files().delete()` on a folder is rejected with a 403
-    `appNotAuthorizedToChild` error unless the app also has direct
-    authorization over every nested child. Trashing only requires write
-    access to the top-level folder itself.
+    Trashes descendants bottom-up rather than issuing a single top-level
+    delete/trash: the app's OAuth scope only grants write access to
+    files/folders it created directly, and Drive rejects an operation on a
+    folder with a 403 `appNotAuthorizedToChild` error unless the app also
+    has direct authorization over every nested child.
 
     Args:
         creds (Credentials): The Google OAuth credentials.
         lib_id (str): The Google Drive file ID of the library folder.
     """
     service: DriveService = build("drive", "v3", credentials=creds)
-    service.files().update(fileId=lib_id, body={"trashed": True}).execute()
+    _trash_folder_recursive(service, lib_id)
 
 
 def get_papers_folder(creds: Credentials, lib_id: str) -> str:
