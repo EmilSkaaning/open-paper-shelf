@@ -123,11 +123,46 @@ class TestPersistEditedPdf:
         mock_upload.assert_called_once()
         args, _ = mock_upload.call_args
         assert args[1] == "folder1"
-        assert args[2] == local_edited_path
+        # Uploaded from a staged temp file in the same directory, not
+        # local_edited_path itself - it's renamed into place only after a
+        # successful upload (see test_failed_upload_leaves_no_local_copy).
+        assert args[2].parent == local_edited_path.parent
+        assert args[2] != local_edited_path
         assert args[3] == EDITED_PDF_FILENAME
         assert args[4] == PDF_MIME_TYPE
         assert updated.edited_pdf_file_id == "edited-file-id"
         assert paper_info.edited_pdf_file_id == ""
+
+    def test_failed_upload_leaves_no_local_copy(
+        self, tmp_path: Path, mocker: MockerFixture
+    ) -> None:
+        """Regression test: if the Drive upload fails, the local cache must
+        not end up holding the new bytes without a matching
+        edited_pdf_file_id - that combination falsely tells a later load
+        that the edit is safely synced to Drive when it never was."""
+        mocker.patch(
+            "backend.pdf_upload.upload_file_to_folder",
+            side_effect=RuntimeError("upload failed"),
+        )
+        paper_info = PaperIndexEntry(
+            title="A Paper",
+            pdf_file_id="pdf1",
+            meta_file_id="meta1",
+            folder_id="folder1",
+        )
+        local_edited_path = tmp_path / EDITED_PDF_FILENAME
+        data = _real_pdf_bytes()
+
+        with pytest.raises(RuntimeError):
+            persist_edited_pdf(
+                creds=MagicMock(),
+                paper_info=paper_info,
+                local_edited_path=local_edited_path,
+                data=data,
+            )
+
+        assert not local_edited_path.exists()
+        assert list(tmp_path.iterdir()) == []
 
     def test_invalid_pdf_raises_before_write_or_upload(
         self, tmp_path: Path, mocker: MockerFixture

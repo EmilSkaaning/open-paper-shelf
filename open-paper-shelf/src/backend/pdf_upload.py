@@ -9,7 +9,9 @@ syncs the change to the library's Google Drive index.
 """
 
 import logging
+import os
 import re
+import tempfile
 import threading
 from io import BytesIO
 from pathlib import Path
@@ -115,10 +117,13 @@ def persist_edited_pdf(
     local_edited_path: Path,
     data: bytes,
 ) -> PaperIndexEntry:
-    """Validates, writes locally, and uploads an edited PDF's bytes.
+    """Validates, uploads, and locally caches an edited PDF's bytes.
 
     Nothing is written to disk or uploaded to Drive if `data` fails
-    validation.
+    validation. The bytes are staged in a sibling temp file and uploaded
+    from there; `local_edited_path` is only replaced with the new bytes
+    after the Drive upload succeeds, so a failed upload can't leave behind
+    a local copy that looks synced but was never persisted to Drive.
 
     Args:
         creds: The Google OAuth credentials.
@@ -135,14 +140,22 @@ def persist_edited_pdf(
         InvalidPdfError: If `data` is not a valid PDF.
     """
     validate_pdf_bytes(data)
-    local_edited_path.write_bytes(data)
-    file_id = upload_file_to_folder(
-        creds,
-        paper_info.folder_id,
-        local_edited_path,
-        EDITED_PDF_FILENAME,
-        PDF_MIME_TYPE,
-    )
+    local_edited_path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(dir=local_edited_path.parent)
+    tmp_path = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+        file_id = upload_file_to_folder(
+            creds,
+            paper_info.folder_id,
+            tmp_path,
+            EDITED_PDF_FILENAME,
+            PDF_MIME_TYPE,
+        )
+        os.replace(tmp_path, local_edited_path)
+    finally:
+        tmp_path.unlink(missing_ok=True)
     return paper_info.model_copy(update={"edited_pdf_file_id": file_id})
 
 
