@@ -2295,7 +2295,6 @@ class TestPersistGeneratedMetadata:
             "tags": ["nlp", "transformers"],
             "embedding": [0.1, 0.2],
         }
-        fake_st.session_state[f"dupes_{pid}"] = [("other", "Other Paper", 0.9)]
         mock_upload_file = mocker.patch.object(
             metadata_generation, "upload_file_to_folder"
         )
@@ -2318,7 +2317,6 @@ class TestPersistGeneratedMetadata:
         assert index.papers[pid].tags == ["nlp", "transformers"]
         assert index.papers[pid].embedding == [0.1, 0.2]
         assert f"generated_{pid}" not in fake_st.session_state
-        assert f"dupes_{pid}" not in fake_st.session_state
 
     def test_preserves_notes_citation_and_status_from_existing_local_cache(
         self, fake_st: MagicMock, mocker: MockerFixture, tmp_path: Path
@@ -3504,8 +3502,8 @@ class TestMainMetadataView:
         tmp_path: Path,
         stop_rerun: type[BaseException],
     ) -> None:
-        """Test clicking Generate metadata stages a draft (and duplicate
-        matches) in session state and reruns, without touching Drive."""
+        """Test clicking Generate metadata stages a draft in session state
+        and reruns, without touching Drive."""
         pid = "2" * 32
         _select_paper(fake_st, mocker, tmp_path, pid)
         mocker.patch.object(app, "sync_paper_metadata", return_value=True)
@@ -3521,7 +3519,6 @@ class TestMainMetadataView:
             metadata_generation, "generate_paper_metadata", return_value=generated
         )
         mocker.patch.object(metadata_generation, "embed_text", return_value=[0.1] * 384)
-        mocker.patch.object(metadata_generation, "find_similar_papers", return_value=[])
         fake_st.button.side_effect = lambda label, **kw: label == "✨ Generate metadata"
         fake_st.form_submit_button.return_value = False
 
@@ -3533,7 +3530,6 @@ class TestMainMetadataView:
         assert draft["abstract"] == "Gen Abstract"
         assert draft["tags"] == ["ai", "nlp"]
         assert draft["embedding"] == [0.1] * 384
-        assert fake_st.session_state[f"dupes_{pid}"] == []
         # Regression: the form's widget keys must be overwritten directly,
         # since Streamlit ignores value=... once a keyed widget has rendered.
         assert fake_st.session_state[f"title_{pid}"] == "Gen Title"
@@ -3571,7 +3567,6 @@ class TestMainMetadataView:
             return_value=GeneratedMetadata(title="T", abstract="A", tags=["ai"]),
         )
         mocker.patch.object(metadata_generation, "embed_text", return_value=[0.1] * 384)
-        mocker.patch.object(metadata_generation, "find_similar_papers", return_value=[])
         fake_st.button.side_effect = lambda label, **kw: label == "✨ Generate metadata"
         fake_st.form_submit_button.return_value = False
         assert entry.tags == []
@@ -3918,20 +3913,37 @@ class TestMainMetadataView:
             for call in fake_st.warning.call_args_list
         )
 
-    def test_duplicate_warning_rendered_when_dupes_present(
+    def test_duplicate_warning_rendered_from_persisted_embedding(
         self, fake_st: MagicMock, mocker: MockerFixture, tmp_path: Path
     ) -> None:
-        """Test staged duplicate matches render a non-blocking warning."""
+        """Test the duplicate warning is recomputed from the paper's
+        persisted embedding in the index, not from a staged `dupes_{pid}`
+        session-state key - so it renders on a plain reopen (no
+        generate/regenerate click in this render at all)."""
         pid = "6" * 32
-        _select_paper(fake_st, mocker, tmp_path, pid)
+        other_pid = "9" * 32
+        embedding = [0.1] * 384
+        entry = _select_paper(fake_st, mocker, tmp_path, pid)
+        other_entry = PaperIndexEntry(
+            title="Other Paper",
+            pdf_file_id="p2",
+            meta_file_id="m2",
+            folder_id="f2",
+            embedding=embedding,
+        )
+        fake_st.session_state.index = LibraryIndex(
+            papers={
+                pid: entry.model_copy(update={"embedding": embedding}),
+                other_pid: other_entry,
+            }
+        )
         mocker.patch.object(app, "sync_paper_metadata", return_value=True)
-        fake_st.session_state[f"dupes_{pid}"] = [("other", "Other Paper", 0.95)]
         fake_st.form_submit_button.return_value = False
 
         app.main()
 
         assert any(
-            "Other Paper" in str(call.args) and "95%" in str(call.args)
+            "Other Paper" in str(call.args) and "100%" in str(call.args)
             for call in fake_st.warning.call_args_list
         )
 
@@ -4021,7 +4033,6 @@ class TestMainMetadataView:
         assert saved["embedding"] == [0.3] * 384
         assert fake_st.session_state.index.papers[pid].embedding == [0.3] * 384
         assert f"generated_{pid}" not in fake_st.session_state
-        assert f"dupes_{pid}" not in fake_st.session_state
 
     def test_save_without_generate_leaves_embedding_and_abstract_unchanged(
         self,
@@ -4053,6 +4064,67 @@ class TestMainMetadataView:
         saved = json.loads(local_meta_path.read_text(encoding="utf-8"))
         assert saved["abstract"] == ""
         assert saved["embedding"] == []
+
+    def test_duplicate_warning_survives_save(
+        self,
+        fake_st: MagicMock,
+        mocker: MockerFixture,
+        tmp_path: Path,
+        stop_rerun: type[BaseException],
+    ) -> None:
+        """Regression test: a duplicate-embedding warning must still render
+        on the next render *after* Save Changes runs, since the underlying
+        duplicate embeddings remain in the index after saving - it must not
+        require re-staging a `dupes_{pid}` key that Save used to pop."""
+        pid = "c3" * 16
+        other_pid = "d4" * 16
+        embedding = [0.2] * 384
+        entry = _select_paper(fake_st, mocker, tmp_path, pid)
+        other_entry = PaperIndexEntry(
+            title="Other Paper",
+            pdf_file_id="p2",
+            meta_file_id="m2",
+            folder_id="f2",
+            embedding=embedding,
+        )
+        fake_st.session_state.index = LibraryIndex(
+            papers={pid: entry, other_pid: other_entry}
+        )
+        mocker.patch.object(app, "sync_paper_metadata", return_value=True)
+        mocker.patch.object(app, "upload_file_to_folder")
+        mocker.patch.object(app, "upload_library_index")
+        fake_st.session_state[f"generated_{pid}"] = {
+            "title": "A Paper",
+            "abstract": "Draft Abstract",
+            "tags": [],
+            "embedding": embedding,
+        }
+        fake_st.text_input.side_effect = lambda label, **kw: {
+            "Title": "A Paper",
+            "Tags (comma separated)": "",
+        }.get(label, kw.get("value", ""))
+        fake_st.text_area.side_effect = lambda label, **kw: {
+            "Abstract / TL;DR": "Draft Abstract",
+        }.get(label, kw.get("value", ""))
+        fake_st.selectbox.return_value = "📄 Unread"
+        fake_st.form_submit_button.return_value = True
+
+        with pytest.raises(stop_rerun):
+            app.main()
+
+        # Save has now popped the draft and persisted the embedding onto
+        # the index entry - render again to confirm the warning survives
+        # using only the persisted embedding, with no draft left staged.
+        assert f"generated_{pid}" not in fake_st.session_state
+        fake_st.warning.reset_mock()
+        fake_st.form_submit_button.return_value = False
+
+        app.main()
+
+        assert any(
+            "Other Paper" in str(call.args) and "100%" in str(call.args)
+            for call in fake_st.warning.call_args_list
+        )
 
 
 class TestPdfEditedCopy:
