@@ -205,11 +205,21 @@ def save_edited_pdf(
         if paper_info is None:
             raise KeyError(f"Unknown paper id {pid!r} in library {lib_id!r}")
 
-        local_paper_dir = local_lib_dir / pid
-        local_paper_dir.mkdir(parents=True, exist_ok=True)
-        local_edited_path = local_paper_dir / EDITED_PDF_FILENAME
+    local_paper_dir = local_lib_dir / pid
+    local_paper_dir.mkdir(parents=True, exist_ok=True)
+    local_edited_path = local_paper_dir / EDITED_PDF_FILENAME
 
-        updated_entry = persist_edited_pdf(creds, paper_info, local_edited_path, data)
+    # Network upload happens outside _index_lock: it doesn't touch shared
+    # local index state, and holding the lock across a Drive round-trip
+    # would serialize every concurrent autosave in this process.
+    updated_entry = persist_edited_pdf(creds, paper_info, local_edited_path, data)
+
+    with _index_lock:
+        # Re-read rather than reuse the index captured above, since another
+        # autosave may have updated id-mapping.json while this upload ran.
+        index = LibraryIndex.model_validate_json(
+            local_index_path.read_text(encoding="utf-8")
+        )
         updated_index = index.model_copy(
             update={"papers": {**index.papers, pid: updated_entry}}
         )
@@ -217,9 +227,7 @@ def save_edited_pdf(
             updated_index.model_dump_json(indent=2), encoding="utf-8"
         )
 
-        papers_folder_id = get_papers_folder(creds, lib_id)
-        upload_library_index(
-            creds, papers_folder_id, updated_index, own_pid_updates={pid}
-        )
+    papers_folder_id = get_papers_folder(creds, lib_id)
+    upload_library_index(creds, papers_folder_id, updated_index, own_pid_updates={pid})
 
     return updated_entry
