@@ -1,0 +1,3 @@
+## 2024-05-24 - Add empty states to filtered lists
+**Learning:** Adding empty states to filtered lists (like a paper library) when there are no matches is crucial for UX. Without it, users might be confused if the app is broken, loading, or if their search just didn't match anything. Differentiating between "the library is completely empty" and "no items match the current filters" provides actionable context.
+**Action:** Always include empty states for lists that can be filtered or searched, and tailor the message to the specific state (empty overall vs. empty due to filters).
