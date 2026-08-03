@@ -213,13 +213,12 @@ def main() -> None:
             st.session_state.uploader_key = 0
 
         with st.expander("Upload Paper(s)", expanded=False):
-            with st.container(height=150):
-                uploaded_files = st.file_uploader(
-                    "Choose PDF files",
-                    type="pdf",
-                    accept_multiple_files=True,
-                    key=str(st.session_state.uploader_key),
-                )
+            uploaded_files = st.file_uploader(
+                "Choose PDF files",
+                type="pdf",
+                accept_multiple_files=True,
+                key=str(st.session_state.uploader_key),
+            )
             if uploaded_files:
                 if st.button("Upload"):
                     file_count = len(uploaded_files)
@@ -486,7 +485,7 @@ def main() -> None:
             except Exception as e:
                 st.error(f"Could not load metadata: {e}")
 
-        col_pdf, col_meta = st.columns([2, 1])
+        col_pdf, col_meta = st.columns([3.5, 1])
         with col_pdf:
             if pdf_available:
                 local_edited_path = local_paper_dir / EDITED_PDF_FILENAME

@@ -1794,12 +1794,12 @@ class TestMainLibraryView:
 class TestMainUploadFlow:
     """Test suite for main()'s sidebar upload flow."""
 
-    def test_uploader_is_wrapped_in_expander_and_height_capped_container(
+    def test_uploader_is_wrapped_in_collapsed_expander(
         self, fake_st: MagicMock, mocker: MockerFixture
     ) -> None:
         """Test the uploader lives inside a collapsed-by-default expander,
-        with the file list itself inside a fixed-height container so
-        selecting many files doesn't grow the sidebar unbounded."""
+        with no nested fixed-height container competing with the file
+        uploader's own scroll area for uploaded-file lists."""
         fake_st.session_state.current_lib_id = "lib_123"
         fake_st.session_state.current_papers_id = "papers_123"
         fake_st.session_state.root_id = "root_123"
@@ -1813,7 +1813,7 @@ class TestMainUploadFlow:
 
         fake_st.expander.assert_any_call("Upload Paper(s)", expanded=False)
         fake_st.expander.assert_any_call("Library Papers", expanded=True)
-        assert any(
+        assert not any(
             call.kwargs.get("height") == 150
             for call in fake_st.container.call_args_list
         )
