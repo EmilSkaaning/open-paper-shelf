@@ -43,11 +43,12 @@ MAX_EDITED_PDF_BYTES: int = 50 * 1024 * 1024
 
 # Mirrors frontend.constants.PAPER_ID_PATTERN; duplicated (rather than
 # imported) so the backend package does not depend on the frontend package.
-PAPER_ID_PATTERN: str = r"^[a-f0-9]{32}$"
+PAPER_ID_PATTERN: str = r"^[a-f0-9]{32}\Z"
 # Google Drive file/folder IDs are alphanumeric plus '-'/'_'. Enforcing this
 # before lib_id/pid are used to build filesystem paths rejects path-traversal
 # payloads (e.g. "..", "/") before they ever reach the filesystem.
-DRIVE_ID_PATTERN: str = r"^[A-Za-z0-9_-]{10,100}$"
+# `\Z` (not `$`) so a trailing newline doesn't slip past validation.
+DRIVE_ID_PATTERN: str = r"^[A-Za-z0-9_-]{10,100}\Z"
 
 
 class InvalidPdfError(ValueError):
