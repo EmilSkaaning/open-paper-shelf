@@ -37,6 +37,7 @@ from frontend.constants import (  # noqa: E402
     META_FILENAME,
     PAPER_ID_PATTERN,
     PDF_FILENAME,
+    SIMILAR_FILTER_LABEL,
     STATUS_ICONS,
     STATUS_LABELS,
 )
@@ -324,12 +325,15 @@ def main() -> None:
             with status_col:
                 status_filter_labels = st.multiselect(
                     "Status",
-                    options=list(STATUS_LABELS.values()),
+                    options=list(STATUS_LABELS.values()) + [SIMILAR_FILTER_LABEL],
                     key="status_filter",
                 )
                 status_filter = [
-                    LABEL_TO_STATUS[label] for label in status_filter_labels
+                    LABEL_TO_STATUS[label]
+                    for label in status_filter_labels
+                    if label in LABEL_TO_STATUS
                 ]
+                include_similar_filter = SIMILAR_FILTER_LABEL in status_filter_labels
             with tags_col:
                 all_tags = get_all_tags(st.session_state.index)
                 # A previously selected tag may no longer exist (its last
@@ -396,11 +400,16 @@ def main() -> None:
             # never renders a now-deleted paper's row - clicking one would
             # otherwise select a pid missing from st.session_state.index.papers
             # and crash the main-area lookup with a KeyError.
-            filtered_papers = filter_papers(
-                st.session_state.index.papers, search_query, status_filter, tags_filter
-            )
-
             duplicate_pids = get_duplicate_pids(st.session_state.index)
+
+            filtered_papers = filter_papers(
+                st.session_state.index.papers,
+                search_query,
+                status_filter,
+                tags_filter,
+                duplicate_pids=duplicate_pids,
+                include_similar=include_similar_filter,
+            )
 
             with st.container(height=400):
                 if not filtered_papers:

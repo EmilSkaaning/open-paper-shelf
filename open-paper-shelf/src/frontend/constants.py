@@ -27,6 +27,13 @@ LABEL_TO_STATUS: dict[str, str] = {
     label: status for status, label in STATUS_LABELS.items()
 }
 
+# Not a ReadingStatus - a paper's reading status (Unread/Reading/Read/TODO)
+# and its similar-embedding flag are independent, so a paper can be e.g.
+# both "Unread" and duplicate-flagged at once. This is a pseudo-option added
+# to the status filter multiselect (alongside STATUS_LABELS) that filters by
+# `get_duplicate_pids` membership instead of by `status`.
+SIMILAR_FILTER_LABEL: str = "⚠️ Similar"
+
 PDF_FILENAME: str = "paper.pdf"
 EDITED_PDF_FILENAME: str = "paper_edited.pdf"
 META_FILENAME: str = "meta.json"
