@@ -2,7 +2,7 @@
 
 import json
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, List
 from unittest.mock import MagicMock
 
 import pytest
@@ -16,6 +16,7 @@ from backend.drive import (
     add_oauth_flow,
     create_library,
     create_paper_folder,
+    delete_library,
     delete_paper_folder,
     download_file,
     get_library_index_file,
@@ -330,6 +331,136 @@ class TestCreateLibrary:
         assert res["lib_id"] == "new_lib"
         assert res["papers_id"] == "new_papers"
         assert "TestLib" in res["lib_name"]
+
+
+def _install_fake_batch(
+    mock_service: MagicMock, failing_ids: frozenset[str] = frozenset()
+) -> Callable[[], List[str]]:
+    """Rigs a MagicMock Drive service's new_batch_http_request() to run
+    added requests synchronously against a fake in-process "batch", so
+    delete_library's batching logic can be exercised without a real Drive
+    API batch endpoint.
+
+    Args:
+        mock_service (MagicMock): The mocked Drive service to rig.
+        failing_ids (frozenset[str]): request_ids that should invoke the
+            batch callback with an HttpError instead of a success response.
+
+    Returns:
+        Callable[[], List[str]]: Call after delete_library() runs to get the
+        request_ids that were added to the batch(es), in call order.
+    """
+    added_ids: List[str] = []
+
+    def new_batch_http_request(callback: Any) -> MagicMock:
+        batch = MagicMock()
+
+        def add(_request: Any, request_id: str) -> None:
+            added_ids.append(request_id)
+
+        def execute() -> None:
+            for request_id in added_ids:
+                if request_id in failing_ids:
+                    resp = MagicMock(status=403)
+                    callback(request_id, None, HttpError(resp, b"forbidden"))
+                else:
+                    callback(request_id, {"id": request_id}, None)
+
+        batch.add.side_effect = add
+        batch.execute.side_effect = execute
+        return batch
+
+    mock_service.new_batch_http_request.side_effect = new_batch_http_request
+    return lambda: added_ids
+
+
+class TestDeleteLibrary:
+    """Test suite for delete_library."""
+
+    def test_trashes_empty_library_folder_by_id(
+        self, mock_build: MagicMock, mock_creds: MagicMock
+    ) -> None:
+        """Test a childless library folder is trashed (not hard-deleted) by
+        its Drive file id, via a single batched request, since a hard
+        delete is rejected by Drive's appNotAuthorizedToChild check for
+        folders with nested children the app didn't create directly."""
+        mock_service = MagicMock()
+        mock_build.return_value = mock_service
+        mock_service.files().list().execute.return_value = {"files": []}
+        get_added_ids = _install_fake_batch(mock_service)
+
+        delete_library(mock_creds, "lib_123")
+
+        assert get_added_ids() == ["lib_123"]
+        mock_service.files().delete.assert_not_called()
+
+    def test_trashes_all_descendants_and_the_folder_in_one_batch(
+        self, mock_build: MagicMock, mock_creds: MagicMock
+    ) -> None:
+        """Test every descendant plus the library folder itself is
+        collected up front and trashed via a single batch of requests,
+        instead of one HTTP round-trip per file."""
+        mock_service = MagicMock()
+        mock_build.return_value = mock_service
+        folder_mime = "application/vnd.google-apps.folder"
+        mock_service.files().list().execute.side_effect = [
+            {
+                "files": [
+                    {"id": "papers_folder", "mimeType": folder_mime},
+                    {"id": "top_file", "mimeType": "application/json"},
+                ]
+            },
+            {"files": [{"id": "nested_pdf", "mimeType": "application/pdf"}]},
+        ]
+        get_added_ids = _install_fake_batch(mock_service)
+
+        delete_library(mock_creds, "lib_123")
+
+        assert get_added_ids() == [
+            "nested_pdf",
+            "papers_folder",
+            "top_file",
+            "lib_123",
+        ]
+        mock_service.new_batch_http_request.assert_called_once()
+
+    def test_chunks_requests_when_over_the_batch_size_limit(
+        self, mock_build: MagicMock, mock_creds: MagicMock
+    ) -> None:
+        """Test a library with more items than Drive's per-batch request
+        limit is split across multiple batch() calls rather than failing
+        or silently dropping items."""
+        mock_service = MagicMock()
+        mock_build.return_value = mock_service
+        file_count = 150
+        mock_service.files().list().execute.return_value = {
+            "files": [
+                {"id": f"file_{i}", "mimeType": "application/pdf"}
+                for i in range(file_count)
+            ]
+        }
+        get_added_ids = _install_fake_batch(mock_service)
+
+        delete_library(mock_creds, "lib_123")
+
+        assert len(get_added_ids()) == file_count + 1
+        assert mock_service.new_batch_http_request.call_count == 2
+
+    def test_raises_the_underlying_error_when_an_item_cannot_be_trashed(
+        self, mock_build: MagicMock, mock_creds: MagicMock
+    ) -> None:
+        """Test a per-item Drive failure (e.g. the app lacking
+        authorization for that specific file) surfaces as an exception
+        instead of being silently swallowed."""
+        mock_service = MagicMock()
+        mock_build.return_value = mock_service
+        mock_service.files().list().execute.return_value = {
+            "files": [{"id": "unauthorized_file", "mimeType": "application/pdf"}]
+        }
+        _install_fake_batch(mock_service, failing_ids=frozenset({"unauthorized_file"}))
+
+        with pytest.raises(HttpError):
+            delete_library(mock_creds, "lib_123")
 
 
 class TestGetLibraryIndexFile:
