@@ -15,7 +15,6 @@ from pytest_mock import MockerFixture
 import frontend.app as app
 import frontend.auth as auth
 import frontend.library as library
-import frontend.library_filters as library_filters
 import frontend.metadata_generation as metadata_generation
 import frontend.uploads as uploads
 from backend.huggingface_client import GeneratedMetadata
@@ -1112,6 +1111,30 @@ class TestGetDuplicatePids:
         )
         assert app.get_duplicate_pids(index) == set()
 
+    def test_mismatched_embedding_dimensions_are_not_flagged(self) -> None:
+        """Test two papers whose embeddings have different lengths are
+        excluded rather than compared via a truncated zip."""
+        pid1, pid2 = "a" * 32, "b" * 32
+        index = LibraryIndex(
+            papers={
+                pid1: PaperIndexEntry(
+                    title="One",
+                    pdf_file_id="p1",
+                    meta_file_id="m1",
+                    folder_id="f1",
+                    embedding=[1.0, 0.0, 0.0],
+                ),
+                pid2: PaperIndexEntry(
+                    title="Two",
+                    pdf_file_id="p2",
+                    meta_file_id="m2",
+                    folder_id="f2",
+                    embedding=[1.0, 0.0],
+                ),
+            }
+        )
+        assert app.get_duplicate_pids(index) == set()
+
     def test_below_threshold_match_is_excluded(self) -> None:
         """Test a lone paper whose embedding doesn't closely match any
         other paper's is not flagged."""
@@ -1161,14 +1184,15 @@ class TestGetDuplicatePids:
                 ),
             }
         )
-        spy = mocker.spy(library_filters, "find_similar_papers")
-
         first = app.get_duplicate_pids(index)
-        call_count_after_first = spy.call_count
+        cache_after_first = fake_st.session_state["_duplicate_pids_cache"]
         second = app.get_duplicate_pids(index)
+        cache_after_second = fake_st.session_state["_duplicate_pids_cache"]
 
         assert first == second == {pid1, pid2}
-        assert spy.call_count == call_count_after_first
+        # A cache hit returns early without writing to session_state again,
+        # so the cached tuple's identity is unchanged if no recompute happened.
+        assert cache_after_first is cache_after_second
 
     def test_changed_embedding_invalidates_cache_and_recomputes(
         self, fake_st: MagicMock, mocker: MockerFixture
@@ -1194,18 +1218,18 @@ class TestGetDuplicatePids:
                 ),
             }
         )
-        spy = mocker.spy(library_filters, "find_similar_papers")
-
         first = app.get_duplicate_pids(index)
-        call_count_after_first = spy.call_count
+        cache_after_first = fake_st.session_state["_duplicate_pids_cache"]
+
         index.papers[pid2] = index.papers[pid2].model_copy(
             update={"embedding": [0.0, 1.0, 0.0]}
         )
         second = app.get_duplicate_pids(index)
+        cache_after_second = fake_st.session_state["_duplicate_pids_cache"]
 
         assert first == {pid1, pid2}
         assert second == set()
-        assert spy.call_count > call_count_after_first
+        assert cache_after_first[0] != cache_after_second[0]
 
 
 class TestGetMissingMetadataPids:
@@ -1581,6 +1605,66 @@ class TestMainLibraryView:
         rendered_keys = {c.kwargs.get("key") for c in fake_st.button.call_args_list}
         assert f"btn_{pid_read}" in rendered_keys
         assert f"btn_{pid_unread}" not in rendered_keys
+
+    def test_shows_empty_library_message_when_no_papers(
+        self, fake_st: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """Test the "library is empty" message is shown when the library
+        has no papers at all, distinct from the no-matches message."""
+        fake_st.session_state.current_lib_id = "lib_123"
+        fake_st.session_state.current_papers_id = "papers_123"
+        fake_st.session_state.root_id = "root_123"
+        fake_st.session_state.index = LibraryIndex()
+        fake_st.session_state.selected_paper = None
+        fake_st.file_uploader.return_value = None
+        mocker.patch.object(app, "st_keyup", return_value="")
+        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
+
+        app.main()
+
+        assert any(
+            "Your library is empty" in str(call.args)
+            for call in fake_st.info.call_args_list
+        )
+        assert not any(
+            "No papers match" in str(call.args) for call in fake_st.info.call_args_list
+        )
+
+    def test_shows_no_match_message_when_filters_exclude_all_papers(
+        self, fake_st: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """Test the "no papers match" message is shown when the library has
+        papers but the current search/filters exclude every one of them,
+        distinct from the library-is-empty message."""
+        pid = "a" * 32
+        fake_st.session_state.current_lib_id = "lib_123"
+        fake_st.session_state.current_papers_id = "papers_123"
+        fake_st.session_state.root_id = "root_123"
+        fake_st.session_state.index = LibraryIndex(
+            papers={
+                pid: PaperIndexEntry(
+                    title="Some Paper",
+                    pdf_file_id="p1",
+                    meta_file_id="m1",
+                    folder_id="f1",
+                )
+            }
+        )
+        fake_st.session_state.selected_paper = None
+        fake_st.file_uploader.return_value = None
+        mocker.patch.object(app, "st_keyup", return_value="no-such-paper")
+        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
+
+        app.main()
+
+        assert any(
+            "No papers match your search and filters" in str(call.args)
+            for call in fake_st.info.call_args_list
+        )
+        assert not any(
+            "Your library is empty" in str(call.args)
+            for call in fake_st.info.call_args_list
+        )
 
     def test_stale_tags_filter_selection_is_dropped(
         self, fake_st: MagicMock, mocker: MockerFixture
