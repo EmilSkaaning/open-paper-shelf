@@ -43,7 +43,12 @@ if (!libId || !pid) {
           `open-paper-shelf autosave: save failed (${response.status})`,
           await response.text().catch(() => "")
         );
-        scheduleRetry();
+        // 4xx means the request itself is invalid (e.g. oversized/corrupt
+        // PDF) and will fail identically on retry, so only retry on
+        // transient server-side failures.
+        if (response.status >= 500) {
+          scheduleRetry();
+        }
       } else {
         // annotationStorage's #modified flag only re-fires onSetModified on
         // a false->true transition, so it must be reset on every successful
