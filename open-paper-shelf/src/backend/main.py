@@ -46,7 +46,7 @@ class EditedPdfSavedResponse(BaseModel):
 # WARNING: Mounted without authentication, like the /papers static mount
 # above. Do not expose to public networks as-is.
 @app.post("/papers/{lib_id}/{pid}/edited", response_model=EditedPdfSavedResponse)
-async def save_edited_pdf_route(
+def save_edited_pdf_route(
     lib_id: str, pid: str, data: bytes = Body(..., media_type="application/pdf")
 ) -> EditedPdfSavedResponse:
     """Persists a browser-auto-saved, annotated PDF for one paper.
