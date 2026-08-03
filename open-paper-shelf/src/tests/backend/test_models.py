@@ -107,3 +107,40 @@ class TestPaperIndexEntry:
                 folder_id="folder1",
                 status="Archived",  # type: ignore[arg-type]
             )
+
+    def test_edited_pdf_file_id_defaults_empty(self) -> None:
+        """Test edited_pdf_file_id defaults to '' for entries created before
+        this field existed (e.g. parsed from an old id-mapping.json)."""
+        entry = PaperIndexEntry(
+            title="A Paper",
+            pdf_file_id="pdf1",
+            meta_file_id="meta1",
+            folder_id="folder1",
+        )
+        assert entry.edited_pdf_file_id == ""
+
+    def test_edited_pdf_file_id_custom_value(self) -> None:
+        """Test edited_pdf_file_id is stored as given when provided."""
+        entry = PaperIndexEntry(
+            title="A Paper",
+            pdf_file_id="pdf1",
+            meta_file_id="meta1",
+            folder_id="folder1",
+            edited_pdf_file_id="edited1",
+        )
+        assert entry.edited_pdf_file_id == "edited1"
+
+    def test_edited_pdf_file_id_update_via_model_copy(self) -> None:
+        """Test model_copy(update=...) sets edited_pdf_file_id on a new
+        frozen instance without mutating the original."""
+        entry = PaperIndexEntry(
+            title="A Paper",
+            pdf_file_id="pdf1",
+            meta_file_id="meta1",
+            folder_id="folder1",
+        )
+        updated = entry.model_copy(update={"edited_pdf_file_id": "edited2"})
+        assert updated.edited_pdf_file_id == "edited2"
+        assert entry.edited_pdf_file_id == ""
+        with pytest.raises(ValidationError):
+            entry.edited_pdf_file_id = "mutate"  # type: ignore[misc]

@@ -30,6 +30,7 @@ from backend.models import LibraryIndex, PaperMetadata  # noqa: E402
 from frontend.auth import authenticate_user  # noqa: E402
 from frontend.constants import (  # noqa: E402
     DEFAULT_FASTAPI_URL,
+    EDITED_PDF_FILENAME,
     GENERATE_METADATA_HELP,
     JSON_MIME_TYPE,
     LABEL_TO_STATUS,
@@ -488,12 +489,55 @@ def main() -> None:
         col_pdf, col_meta = st.columns([2, 1])
         with col_pdf:
             if pdf_available:
+                local_edited_path = local_paper_dir / EDITED_PDF_FILENAME
+                edited_available = local_edited_path.exists()
+                if paper_info.edited_pdf_file_id and not edited_available:
+                    try:
+                        download_file(
+                            creds, paper_info.edited_pdf_file_id, local_edited_path
+                        )
+                        edited_available = True
+                    except Exception as e:
+                        st.error(f"Failed to load edited PDF: {e}")
+
+                view_filename = (
+                    EDITED_PDF_FILENAME if edited_available else PDF_FILENAME
+                )
+
                 base_url = os.environ.get("FASTAPI_URL", DEFAULT_FASTAPI_URL)
                 quoted_lib_id = urllib.parse.quote(st.session_state.current_lib_id)
                 quoted_pid = urllib.parse.quote(pid)
-                fastapi_url = f"{base_url.rstrip('/')}/papers/{quoted_lib_id}/{quoted_pid}/paper.pdf"
-                pdf_display = f'<iframe src="{html.escape(fastapi_url)}" width="100%" height="750" style="border:none;" type="application/pdf"></iframe>'
+                pdf_file_url = (
+                    f"{base_url.rstrip('/')}/papers/{quoted_lib_id}/{quoted_pid}"
+                    f"/{view_filename}"
+                )
+                if view_filename == EDITED_PDF_FILENAME:
+                    # upload_file_to_folder reuses the same Drive file id on
+                    # re-upload, so the URL alone wouldn't change after a
+                    # further round of annotation - bust the browser's cache
+                    # with the local file's mtime.
+                    pdf_file_url += f"?v={local_edited_path.stat().st_mtime_ns}"
+
+                viewer_query = urllib.parse.urlencode(
+                    {
+                        "file": pdf_file_url,
+                        "libId": st.session_state.current_lib_id,
+                        "pid": pid,
+                    }
+                )
+                viewer_url = (
+                    f"{base_url.rstrip('/')}/pdfjs/web/viewer.html?{viewer_query}"
+                )
+                pdf_display = (
+                    f'<iframe src="{html.escape(viewer_url)}" width="100%" '
+                    'height="750" style="border:none;"></iframe>'
+                )
                 st.markdown(pdf_display, unsafe_allow_html=True)
+
+                st.caption(
+                    "Use the toolbar's highlight tool to annotate the PDF - "
+                    "your edits save to Drive automatically as you work."
+                )
             else:
                 st.warning("PDF could not be loaded from Drive.")
 

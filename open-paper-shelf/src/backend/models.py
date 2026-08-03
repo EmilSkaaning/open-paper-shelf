@@ -42,6 +42,10 @@ class PaperIndexEntry(BaseModel):
         pdf_file_id: The Google Drive file ID of the paper's PDF.
         meta_file_id: The Google Drive file ID of the paper's metadata JSON.
         folder_id: The Google Drive folder ID containing the paper's files.
+        edited_pdf_file_id: The Google Drive file ID of the paper's edited
+            PDF (the raw PDF re-uploaded after the user annotated it with
+            their browser's native PDF tools), or "" if no edited copy has
+            been uploaded yet.
         tags: List of tag strings associated with the paper, kept in sync
             with the paper's meta.json so the sidebar can filter by tag
             without fetching every paper's metadata.
@@ -62,6 +66,7 @@ class PaperIndexEntry(BaseModel):
     pdf_file_id: str
     meta_file_id: str
     folder_id: str
+    edited_pdf_file_id: str = ""
     tags: List[str] = Field(default_factory=list)
     status: ReadingStatus = "Unread"
     embedding: List[float] = Field(default_factory=list)
