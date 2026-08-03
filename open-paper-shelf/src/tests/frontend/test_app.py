@@ -873,6 +873,144 @@ class TestMainLibrarySelection:
         )
         fake_st.success.assert_called_once()
 
+    def test_delete_library_button_sets_confirm_state(
+        self, fake_st: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """Test clicking "Delete Library" stages a confirmation instead of
+        deleting immediately."""
+        fake_st.session_state.root_id = "root_123"
+        fake_st.button.side_effect = lambda label, **kw: label == "Delete Library"
+        fake_st.selectbox.return_value = "lib1"
+        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
+        mocker.patch.object(
+            app,
+            "list_libraries",
+            return_value=[
+                {"id": "lib1", "name": "Lib One"},
+                {"id": "lib2", "name": "Lib Two"},
+            ],
+        )
+        mock_delete = mocker.patch.object(app, "delete_library")
+
+        app.main()
+
+        assert fake_st.session_state.confirm_delete_lib_id == "lib1"
+        mock_delete.assert_not_called()
+
+    def test_confirm_delete_library_deletes_and_reruns(
+        self,
+        fake_st: MagicMock,
+        mocker: MockerFixture,
+        stop_rerun: type[BaseException],
+    ) -> None:
+        """Test confirming the staged library deletion calls delete_library
+        and reruns."""
+        fake_st.session_state.root_id = "root_123"
+        fake_st.session_state.manual_library_selection = True
+        fake_st.session_state.confirm_delete_lib_id = "lib1"
+        fake_st.button.side_effect = lambda label, **kw: (
+            kw.get("key") == "confirm_delete_lib_btn"
+        )
+        fake_st.selectbox.return_value = "lib1"
+        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
+        mocker.patch.object(
+            app,
+            "list_libraries",
+            return_value=[{"id": "lib1", "name": "Lib One"}],
+        )
+        mock_delete = mocker.patch.object(app, "delete_library")
+
+        with pytest.raises(stop_rerun):
+            app.main()
+
+        mock_delete.assert_called_once_with(mocker.ANY, "lib1")
+        assert fake_st.session_state.confirm_delete_lib_id is None
+
+    def test_cancel_delete_library_clears_state_without_deleting(
+        self,
+        fake_st: MagicMock,
+        mocker: MockerFixture,
+        stop_rerun: type[BaseException],
+    ) -> None:
+        """Test cancelling the staged library deletion clears the pending
+        state without calling delete_library."""
+        fake_st.session_state.root_id = "root_123"
+        fake_st.session_state.manual_library_selection = True
+        fake_st.session_state.confirm_delete_lib_id = "lib1"
+        fake_st.button.side_effect = lambda label, **kw: (
+            kw.get("key") == "cancel_delete_lib_btn"
+        )
+        fake_st.selectbox.return_value = "lib1"
+        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
+        mocker.patch.object(
+            app,
+            "list_libraries",
+            return_value=[{"id": "lib1", "name": "Lib One"}],
+        )
+        mock_delete = mocker.patch.object(app, "delete_library")
+
+        with pytest.raises(stop_rerun):
+            app.main()
+
+        mock_delete.assert_not_called()
+        assert fake_st.session_state.confirm_delete_lib_id is None
+
+    def test_switching_selected_library_clears_stale_confirm_state(
+        self, fake_st: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """Test a staged deletion for a library is dropped once the
+        selectbox picks a different library, so Confirm can't delete the
+        wrong one."""
+        fake_st.session_state.root_id = "root_123"
+        fake_st.session_state.manual_library_selection = True
+        fake_st.session_state.confirm_delete_lib_id = "lib1"
+        fake_st.button.return_value = False
+        fake_st.selectbox.return_value = "lib2"
+        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
+        mocker.patch.object(
+            app,
+            "list_libraries",
+            return_value=[
+                {"id": "lib1", "name": "Lib One"},
+                {"id": "lib2", "name": "Lib Two"},
+            ],
+        )
+        mock_delete = mocker.patch.object(app, "delete_library")
+
+        app.main()
+
+        assert fake_st.session_state.confirm_delete_lib_id is None
+        fake_st.warning.assert_not_called()
+        mock_delete.assert_not_called()
+
+    def test_confirm_delete_library_failure_shows_error_and_stays_staged(
+        self, fake_st: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """Test a failed Drive deletion surfaces a user-facing error instead
+        of leaking the raw exception, and keeps the confirmation staged
+        rather than silently discarding it."""
+        fake_st.session_state.root_id = "root_123"
+        fake_st.session_state.manual_library_selection = True
+        fake_st.session_state.confirm_delete_lib_id = "lib1"
+        fake_st.button.side_effect = lambda label, **kw: (
+            kw.get("key") == "confirm_delete_lib_btn"
+        )
+        fake_st.selectbox.return_value = "lib1"
+        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
+        mocker.patch.object(
+            app,
+            "list_libraries",
+            return_value=[{"id": "lib1", "name": "Lib One"}],
+        )
+        mocker.patch.object(app, "delete_library", side_effect=RuntimeError("boom"))
+
+        app.main()
+
+        fake_st.error.assert_called_once()
+        assert "boom" in fake_st.error.call_args[0][0]
+        assert fake_st.session_state.confirm_delete_lib_id == "lib1"
+        fake_st.rerun.assert_not_called()
+
     def test_returns_early_when_not_authenticated(
         self, fake_st: MagicMock, mocker: MockerFixture
     ) -> None:

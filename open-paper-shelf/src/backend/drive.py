@@ -215,6 +215,17 @@ def create_library(creds: Credentials, root_id: str, lib_name: str) -> Dict[str,
     return {"lib_id": lib_id, "lib_name": unique_name, "papers_id": papers_id}
 
 
+def delete_library(creds: Credentials, lib_id: str) -> None:
+    """Deletes a library's folder (and its contents) from Google Drive.
+
+    Args:
+        creds (Credentials): The Google OAuth credentials.
+        lib_id (str): The Google Drive file ID of the library folder.
+    """
+    service: DriveService = build("drive", "v3", credentials=creds)
+    service.files().delete(fileId=lib_id).execute()
+
+
 def get_papers_folder(creds: Credentials, lib_id: str) -> str:
     """Gets or creates the papers folder nested inside a library folder.
 

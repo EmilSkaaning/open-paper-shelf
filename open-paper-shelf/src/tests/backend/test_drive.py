@@ -16,6 +16,7 @@ from backend.drive import (
     add_oauth_flow,
     create_library,
     create_paper_folder,
+    delete_library,
     delete_paper_folder,
     download_file,
     get_library_index_file,
@@ -330,6 +331,21 @@ class TestCreateLibrary:
         assert res["lib_id"] == "new_lib"
         assert res["papers_id"] == "new_papers"
         assert "TestLib" in res["lib_name"]
+
+
+class TestDeleteLibrary:
+    """Test suite for delete_library."""
+
+    def test_deletes_library_folder_by_id(
+        self, mock_build: MagicMock, mock_creds: MagicMock
+    ) -> None:
+        """Test the library's folder is deleted by its Drive file id."""
+        mock_service = MagicMock()
+        mock_build.return_value = mock_service
+
+        delete_library(mock_creds, "lib_123")
+
+        mock_service.files().delete.assert_called_once_with(fileId="lib_123")
 
 
 class TestGetLibraryIndexFile:

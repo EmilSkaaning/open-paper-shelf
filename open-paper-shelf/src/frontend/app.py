@@ -19,6 +19,7 @@ if str(src_path) not in sys.path:
 
 from backend.drive import (  # noqa: E402
     create_library,
+    delete_library,
     download_file,
     get_or_create_root_folder,
     get_papers_folder,
@@ -152,6 +153,35 @@ def main() -> None:
                         creds, selected_lib, papers_id, lib_options[selected_lib]
                     )
                     st.rerun()
+                if (
+                    st.session_state.get("confirm_delete_lib_id") is not None
+                    and st.session_state.confirm_delete_lib_id != selected_lib
+                ):
+                    st.session_state.confirm_delete_lib_id = None
+
+                if st.button("Delete Library"):
+                    st.session_state.confirm_delete_lib_id = selected_lib
+
+                if st.session_state.get("confirm_delete_lib_id") in lib_options:
+                    lib_id_to_delete = st.session_state.confirm_delete_lib_id
+                    st.warning(
+                        f"Delete library '{lib_options[lib_id_to_delete]}' and "
+                        "all its papers? This cannot be undone."
+                    )
+                    confirm_col, cancel_col = st.columns(2)
+                    with confirm_col:
+                        if st.button("Confirm", key="confirm_delete_lib_btn"):
+                            try:
+                                delete_library(creds, lib_id_to_delete)
+                            except Exception as e:
+                                st.error(f"Failed to delete library: {e}")
+                            else:
+                                st.session_state.confirm_delete_lib_id = None
+                                st.rerun()
+                    with cancel_col:
+                        if st.button("Cancel", key="cancel_delete_lib_btn"):
+                            st.session_state.confirm_delete_lib_id = None
+                            st.rerun()
             else:
                 st.info("No existing libraries found.")
 
