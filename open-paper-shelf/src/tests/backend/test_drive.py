@@ -336,16 +336,22 @@ class TestCreateLibrary:
 class TestDeleteLibrary:
     """Test suite for delete_library."""
 
-    def test_deletes_library_folder_by_id(
+    def test_trashes_library_folder_by_id(
         self, mock_build: MagicMock, mock_creds: MagicMock
     ) -> None:
-        """Test the library's folder is deleted by its Drive file id."""
+        """Test the library's folder is trashed (not hard-deleted) by its
+        Drive file id, since a hard delete is rejected by Drive's
+        appNotAuthorizedToChild check for folders with nested children the
+        app didn't create directly."""
         mock_service = MagicMock()
         mock_build.return_value = mock_service
 
         delete_library(mock_creds, "lib_123")
 
-        mock_service.files().delete.assert_called_once_with(fileId="lib_123")
+        mock_service.files().update.assert_called_once_with(
+            fileId="lib_123", body={"trashed": True}
+        )
+        mock_service.files().delete.assert_not_called()
 
 
 class TestGetLibraryIndexFile:

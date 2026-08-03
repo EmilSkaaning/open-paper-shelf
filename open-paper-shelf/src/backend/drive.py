@@ -216,14 +216,21 @@ def create_library(creds: Credentials, root_id: str, lib_name: str) -> Dict[str,
 
 
 def delete_library(creds: Credentials, lib_id: str) -> None:
-    """Deletes a library's folder (and its contents) from Google Drive.
+    """Trashes a library's folder (and its contents) in Google Drive.
+
+    Uses a trash update rather than a hard delete: the app's OAuth scope
+    only grants write access to files/folders it created directly, and a
+    hard `files().delete()` on a folder is rejected with a 403
+    `appNotAuthorizedToChild` error unless the app also has direct
+    authorization over every nested child. Trashing only requires write
+    access to the top-level folder itself.
 
     Args:
         creds (Credentials): The Google OAuth credentials.
         lib_id (str): The Google Drive file ID of the library folder.
     """
     service: DriveService = build("drive", "v3", credentials=creds)
-    service.files().delete(fileId=lib_id).execute()
+    service.files().update(fileId=lib_id, body={"trashed": True}).execute()
 
 
 def get_papers_folder(creds: Credentials, lib_id: str) -> str:
