@@ -449,6 +449,39 @@ class TestUploadLibraryIndex:
         assert "remote_pid" in index.papers
         assert "deleted_pid" not in index.papers
 
+    def test_merges_remote_edited_pdf_id_for_paper_present_locally(
+        self, mock_build: MagicMock, mock_creds: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """Regression test: a paper present in both indexes must still pick
+        up a newer `edited_pdf_file_id` from the remote copy - otherwise a
+        stale local index (e.g. the frontend's in-memory state during a
+        concurrent backend autosave) silently erases the Drive reference to
+        the user's edited PDF."""
+        entry_fields = {
+            "title": "Paper",
+            "pdf_file_id": "pdf1",
+            "meta_file_id": "meta1",
+            "folder_id": "folder1",
+        }
+        remote_data = {
+            "papers": {"pid1": {**entry_fields, "edited_pdf_file_id": "new-edited-id"}}
+        }
+        mock_service = MagicMock()
+        mock_build.return_value = mock_service
+        mock_service.files().list().execute.return_value = {"files": [{"id": "idx"}]}
+        mock_service.files().get_media().execute.return_value = json.dumps(
+            remote_data
+        ).encode("utf-8")
+        mocker.patch("backend.drive.MediaFileUpload")
+
+        index = LibraryIndex(
+            papers={"pid1": {**entry_fields, "edited_pdf_file_id": ""}}
+        )
+        upload_library_index(mock_creds, "papers_123", index)
+
+        assert index.papers["pid1"].edited_pdf_file_id == "new-edited-id"
+        assert index.papers["pid1"].title == "Paper"
+
 
 class TestUploadFileToFolder:
     """Test suite for upload_file_to_folder."""

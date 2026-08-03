@@ -261,20 +261,28 @@ def _merge_remote_papers(
     index: LibraryIndex,
     deleted_pids: set[str] | None,
 ) -> None:
-    """Merges papers present in the remote index but missing locally into `index`.
+    """Merges remote-only papers and backend-owned fields into `index`.
 
     A paper only present in the remote index (e.g. uploaded from another
     device) is added to `index.papers` in place, unless it's in
     `deleted_pids` (deleted locally in this same operation, so it must not
-    be resurrected from the stale remote copy). A corrupted or unreadable
-    remote index is logged and skipped rather than blocking the upload.
+    be resurrected from the stale remote copy).
+
+    For a paper present in both, `edited_pdf_file_id` is taken from the
+    remote copy whenever it differs. That field is written exclusively by
+    the backend's PDF-autosave path (`save_edited_pdf`), never by the
+    caller's in-memory index, so the local copy calling `upload_library_index`
+    (e.g. the frontend saving metadata) can only be stale for this field -
+    preferring its value would silently erase a concurrent autosave's Drive
+    reference. A corrupted or unreadable remote index is logged and skipped
+    rather than blocking the upload.
 
     Args:
         service (DriveService): The Google Drive API v3 resource service.
         file_info (DriveMetadata): The existing remote index file's `id`/
             `modifiedTime` metadata, as returned by `get_library_index_file`.
         index (LibraryIndex): The local library index; entries are added to
-            its `papers` dict in place.
+            or updated in its `papers` dict in place.
         deleted_pids (set[str] | None): Paper IDs deleted locally that must
             not be merged back from the remote index.
 
@@ -289,8 +297,15 @@ def _merge_remote_papers(
         remote_index = LibraryIndex(**remote_data)
         pids_to_ignore = deleted_pids or set()
         for pid, p in remote_index.papers.items():
-            if pid not in index.papers and pid not in pids_to_ignore:
+            if pid in pids_to_ignore:
+                continue
+            local_entry = index.papers.get(pid)
+            if local_entry is None:
                 index.papers[pid] = p
+            elif p.edited_pdf_file_id != local_entry.edited_pdf_file_id:
+                index.papers[pid] = local_entry.model_copy(
+                    update={"edited_pdf_file_id": p.edited_pdf_file_id}
+                )
     except HttpError as e:
         if e.resp.status != 404:
             raise
