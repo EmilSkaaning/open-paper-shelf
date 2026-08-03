@@ -1350,6 +1350,42 @@ class TestFilterPapers:
         result = app.filter_papers(self._papers(), "", [], [])
         assert "not-a-hex-id" not in [pid for pid, _ in result]
 
+    def test_include_similar_matches_duplicate_pids_regardless_of_status(
+        self,
+    ) -> None:
+        """Test the 'Similar' pseudo-filter matches by duplicate-pid
+        membership, independent of each paper's actual reading status."""
+        result = app.filter_papers(
+            self._papers(),
+            "",
+            [],
+            [],
+            duplicate_pids=["b" * 32, "c" * 32],
+            include_similar=True,
+        )
+        assert {pid for pid, _ in result} == {"b" * 32, "c" * 32}
+
+    def test_include_similar_is_ORed_with_status_filter(self) -> None:
+        """Test selecting a real status alongside 'Similar' returns the
+        union, not the intersection - a paper can match either criterion."""
+        result = app.filter_papers(
+            self._papers(),
+            "",
+            ["Read"],
+            [],
+            duplicate_pids=["c" * 32],
+            include_similar=True,
+        )
+        assert {pid for pid, _ in result} == {"a" * 32, "c" * 32}
+
+    def test_duplicate_pids_ignored_when_include_similar_is_false(self) -> None:
+        """Test duplicate_pids has no effect unless include_similar is set,
+        so callers that don't pass it get the original status-only behavior."""
+        result = app.filter_papers(
+            self._papers(), "", ["Read"], [], duplicate_pids=["c" * 32]
+        )
+        assert {pid for pid, _ in result} == {"a" * 32}
+
 
 class TestMainLibraryView:
     """Test suite for main()'s library view (sidebar entry, switch, rows)."""
