@@ -15,7 +15,6 @@ from backend.huggingface_client import (
     HFTokenMissingError,
     embed_text,
     extract_pdf_text,
-    find_similar_papers,
     generate_paper_metadata,
 )
 from backend.models import LibraryIndex, PaperIndexEntry, PaperMetadata
@@ -57,9 +56,10 @@ def generate_metadata_for_paper(pid: str, local_pdf_path: Path) -> bool:
     """Generates a draft title/abstract/tags/embedding for a paper via Hugging Face.
 
     Extracts text from the paper's local PDF and calls the Hugging Face
-    generation and embedding functions, staging the result (and any
-    duplicate matches found in the current library index) in
-    `st.session_state` for the metadata form to prefill. Does not write to
+    generation and embedding functions, staging the result in
+    `st.session_state` for the metadata form to prefill. Duplicate-embedding
+    matches are recomputed fresh from the persisted index at render time
+    (see `frontend.app`), not staged here. Does not write to
     local disk, Drive, or the library index - the user must still click
     "Save Changes" to persist the draft, and does not rerun, so callers can
     batch several papers before triggering a single rerun. Reports errors via
@@ -168,9 +168,6 @@ def generate_metadata_for_paper(pid: str, local_pdf_path: Path) -> bool:
         return True
 
     st.session_state[f"generated_{pid}"]["embedding"] = embedding
-    st.session_state[f"dupes_{pid}"] = find_similar_papers(
-        embedding, st.session_state.index, exclude_pid=pid
-    )
     return True
 
 
@@ -243,7 +240,6 @@ def persist_generated_metadata(
     index.papers[pid] = paper_info
 
     st.session_state.pop(f"generated_{pid}", None)
-    st.session_state.pop(f"dupes_{pid}", None)
     return True
 
 

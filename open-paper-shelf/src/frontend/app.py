@@ -585,10 +585,14 @@ def main() -> None:
                         st.session_state.pop(f"confirm_regenerate_{pid}", None)
                         st.rerun()
 
-            for _, dupe_title, dupe_score in st.session_state.get(f"dupes_{pid}", []):
-                st.warning(f"Similar to '{dupe_title}' — {dupe_score:.0%} match")
-
             draft = st.session_state.get(f"generated_{pid}", {})
+            dupe_embedding = draft.get("embedding") or paper_info.embedding
+            if dupe_embedding:
+                for _, dupe_title, dupe_score in find_similar_papers(
+                    dupe_embedding, st.session_state.index, exclude_pid=pid
+                ):
+                    st.warning(f"Similar to '{dupe_title}' — {dupe_score:.0%} match")
+
             with st.form(key=f"meta_form_{pid}"):
                 new_title = st.text_input(
                     "Title", value=draft.get("title", meta.title), key=f"title_{pid}"
@@ -665,7 +669,6 @@ def main() -> None:
                         )
 
                     st.session_state.pop(f"generated_{pid}", None)
-                    st.session_state.pop(f"dupes_{pid}", None)
                     st.success("Metadata saved!")
                     st.rerun()
     else:
