@@ -1769,7 +1769,7 @@ class TestMainLibraryView:
         fake_st.session_state.selected_paper = None
         fake_st.file_uploader.return_value = None
         fake_st.multiselect.side_effect = lambda label, **kw: (
-            ["✅ Read"] if label == "Status" else []
+            ["✅ Read"] if label == "Status" else list[str]()
         )
         mocker.patch.object(app, "st_keyup", return_value="")
         mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
@@ -1866,7 +1866,9 @@ class TestMainLibraryView:
         fake_st.session_state.tags_filter = ["urgent", "obsolete-tag"]
         fake_st.file_uploader.return_value = None
         fake_st.multiselect.side_effect = lambda label, **kw: (
-            fake_st.session_state.get(kw.get("key"), []) if label == "Tags" else []
+            fake_st.session_state.get(kw.get("key"), list[str]())
+            if label == "Tags"
+            else list[str]()
         )
         mocker.patch.object(app, "st_keyup", return_value="")
         mocker.patch.object(app, "authenticate_user", return_value=MagicMock())

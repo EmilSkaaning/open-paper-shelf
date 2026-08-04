@@ -72,6 +72,7 @@ omit = [
 ]
 
 [tool.pyrefly]
+preset = "strict"
 project-includes = [
     "**/*.py*",
     "**/*.ipynb",

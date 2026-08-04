@@ -184,7 +184,7 @@ def _call_with_retry(
 def _build_combined_prompt_messages(
     pdf_text: str,
     existing_tags: Sequence[str] = (),
-) -> List[dict]:
+) -> List[dict[str, str]]:
     """Builds the chat messages for the single metadata-generation call.
 
     Asks the model to produce the title, abstract, and tags together as one
@@ -274,7 +274,7 @@ def _parse_generated_metadata(content: str) -> GeneratedMetadata:
 
     title = str(payload.get("title", "")).strip()
     abstract = str(payload.get("abstract", "")).strip()
-    raw_tags = payload.get("tags", [])
+    raw_tags: list[object] = payload.get("tags", [])
     if not isinstance(raw_tags, list):
         raw_tags = []
 
