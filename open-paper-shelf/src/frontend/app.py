@@ -126,7 +126,14 @@ def main() -> None:
     if not creds:
         return
 
-    st.title("📚 Open Paper Shelf")
+    _, header_col, _ = st.columns([1, 2, 1])
+    with header_col:
+        if _LOGO_PATH.exists():
+            st.image(str(_LOGO_PATH), width="stretch")
+        st.markdown(
+            "<h1 style='text-align: center;'>Open Paper Shelf</h1>",
+            unsafe_allow_html=True,
+        )
 
     if "root_id" not in st.session_state:
         st.session_state.root_id = get_or_create_root_folder(creds)
