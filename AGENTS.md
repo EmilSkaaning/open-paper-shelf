@@ -203,3 +203,40 @@ comprehensive summary → include a test plan → push with the `-u` flag.
   * `WIP` (not a commit)
   * `changed some stuff` (tells reviewers nothing)
   * `feat: implemented the new de novo alphafold model weight enumeration system` (way over 50 chars)
+
+## 9. GitHub Issue Format & Labels
+
+When filing a new issue in this repo (by hand or via an agent), follow the structure and
+labeling scheme already used by existing issues (e.g. #32, #71).
+
+### Body format
+
+Every issue body must use exactly these three headers, in this order:
+
+* `## Background` — what's wrong, missing, or motivating the issue.
+* `## Proposed fix` — the concrete change being requested.
+* `## Why this matters` — the impact of leaving it undone.
+
+### Label taxonomy
+
+Apply **one `type:*`**, **one or more `area:*`**, and **one `difficulty:*`** label to every
+new issue:
+
+| Label | Meaning |
+|-------|---------|
+| `type:feature` | A concrete new capability to build |
+| `type:chore` | Maintenance/tooling/asset work |
+| `type:docs` | Documentation-only changes (README, guides, architecture docs) |
+| `type:investigation` | Open-ended research/spike, not yet a committed feature |
+| `area:backend` | FastAPI/data/model layer (`src/backend`) |
+| `area:frontend` | Streamlit UI (`src/frontend`) |
+| `area:ci-cd` | GitHub Actions, pre-commit, deployment |
+| `area:design` | Visual/branding assets |
+| `difficulty:trivial` | Minutes of work, no design decisions |
+| `difficulty:easy` | Small, well-scoped change with a clear approach |
+| `difficulty:medium` | Moderate scope, touches a few files or needs some design choices |
+| `difficulty:hard` | Large or ambiguous scope, spans multiple layers/files |
+| `difficulty:expert` | Open-ended architecture/strategy work with significant unknowns |
+
+An issue missing any of the three label categories should be edited to add the missing
+label(s) before work starts on it.
