@@ -3,7 +3,7 @@
 import logging
 from pathlib import Path
 
-from fastapi import Body, FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -45,9 +45,20 @@ class EditedPdfSavedResponse(BaseModel):
 
 # WARNING: Mounted without authentication, like the /papers static mount
 # above. Do not expose to public networks as-is.
-@app.post("/papers/{lib_id}/{pid}/edited", response_model=EditedPdfSavedResponse)
-def save_edited_pdf_route(
-    lib_id: str, pid: str, data: bytes = Body(..., media_type="application/pdf")
+@app.post(
+    "/papers/{lib_id}/{pid}/edited",
+    response_model=EditedPdfSavedResponse,
+    openapi_extra={
+        "requestBody": {
+            "required": True,
+            "content": {
+                "application/pdf": {"schema": {"type": "string", "format": "binary"}}
+            },
+        }
+    },
+)
+async def save_edited_pdf_route(
+    lib_id: str, pid: str, request: Request
 ) -> EditedPdfSavedResponse:
     """Persists a browser-auto-saved, annotated PDF for one paper.
 
@@ -55,10 +66,14 @@ def save_edited_pdf_route(
     highlight edits change, so annotations sync to Google Drive without a
     manual download/re-upload round trip.
 
+    The request body is read incrementally via `Request.stream()` and
+    rejected as soon as the accumulated size exceeds MAX_EDITED_PDF_BYTES,
+    so an oversized upload is never fully buffered into memory.
+
     Args:
         lib_id: The Google Drive folder ID of the library.
         pid: The paper's unique ID.
-        data: The raw PDF bytes produced by pdf.js's saveDocument().
+        request: The incoming request, streamed for its raw PDF body.
 
     Returns:
         EditedPdfSavedResponse: The Drive file ID of the persisted edit.
@@ -66,18 +81,26 @@ def save_edited_pdf_route(
     Raises:
         HTTPException: 400 for a malformed lib_id/pid, 401 if not
             authenticated with Google, 404 if the paper is unknown, 413 if
-            `data` exceeds MAX_EDITED_PDF_BYTES, 422 if `data` is not a valid
-            PDF, 502 on a Google Drive failure.
+            the streamed body exceeds MAX_EDITED_PDF_BYTES, 422 if the body
+            is not a valid PDF, 502 on a Google Drive failure.
     """
     creds = load_credentials_from_file()
     if creds is None:
         raise HTTPException(
             status_code=401, detail="Not authenticated with Google Drive."
         )
-    if len(data) > MAX_EDITED_PDF_BYTES:
-        raise HTTPException(
-            status_code=413, detail="Edited PDF exceeds the maximum allowed size."
-        )
+
+    chunks: list[bytes] = []
+    total_size = 0
+    async for chunk in request.stream():
+        total_size += len(chunk)
+        if total_size > MAX_EDITED_PDF_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail="Edited PDF exceeds the maximum allowed size.",
+            )
+        chunks.append(chunk)
+    data = b"".join(chunks)
 
     try:
         updated_entry = _save_edited_pdf(creds, lib_id, pid, data)
