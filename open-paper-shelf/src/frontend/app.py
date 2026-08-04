@@ -29,6 +29,7 @@ from backend.drive import (  # noqa: E402
 )
 from backend.models import LibraryIndex, PaperMetadata  # noqa: E402
 from frontend.auth import authenticate_user  # noqa: E402
+from frontend.branding import apply_branding  # noqa: E402
 from frontend.constants import (  # noqa: E402
     DEFAULT_FASTAPI_URL,
     EDITED_PDF_FILENAME,
@@ -99,8 +100,10 @@ logger = logging.getLogger(__name__)
 st.set_page_config(
     layout="wide",
     page_title="Open Paper Shelf",
+    page_icon="📚",
     initial_sidebar_state="expanded",
 )
+apply_branding()
 
 
 def main() -> None:
