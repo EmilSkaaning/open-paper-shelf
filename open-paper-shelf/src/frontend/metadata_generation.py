@@ -4,7 +4,7 @@ import json
 import logging
 import time
 from pathlib import Path
-from typing import Callable, Sequence
+from typing import Callable, List, Sequence
 
 import streamlit as st
 from google.oauth2.credentials import Credentials
@@ -130,7 +130,7 @@ def generate_metadata_for_paper(pid: str, local_pdf_path: Path) -> bool:
     # than blanking it, so a failed re-generation doesn't lose a
     # previously-computed one if the user saves this draft as-is.
     existing_entry = st.session_state.index.papers.get(pid)
-    existing_embedding = existing_entry.embedding if existing_entry else []
+    existing_embedding: List[float] = existing_entry.embedding if existing_entry else []
     st.session_state[f"generated_{pid}"] = {
         "title": generated.title,
         "abstract": generated.abstract,

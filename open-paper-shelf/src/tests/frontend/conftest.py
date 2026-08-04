@@ -15,7 +15,7 @@ import frontend.metadata_generation as metadata_generation
 import frontend.uploads as uploads
 
 
-class FakeSessionState(dict):
+class FakeSessionState(dict[str, Any]):
     """Minimal attribute-accessible dict standing in for st.session_state."""
 
     def __getattr__(self, key: str) -> Any:
@@ -128,9 +128,9 @@ def fake_st(mocker: MockerFixture) -> MagicMock:
     """
     mock_st = MagicMock()
     mock_st.session_state = FakeSessionState()
-    mock_st.query_params = {}
+    mock_st.query_params = dict[str, Any]()
     mock_st.button.return_value = False
-    mock_st.multiselect.return_value = []
+    mock_st.multiselect.return_value = list[Any]()
     mock_st.rerun.side_effect = StopRerun
     mock_st.columns.side_effect = _columns_side_effect
     mocker.patch.object(app, "st", mock_st)

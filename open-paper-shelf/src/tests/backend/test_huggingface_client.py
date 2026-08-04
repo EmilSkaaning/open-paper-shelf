@@ -490,12 +490,12 @@ class TestCosineSimilarity:
             cosine_similarity([1.0, 2.0], [1.0, 2.0, 3.0])
 
 
-def _index_with(entries: dict) -> LibraryIndex:
+def _index_with(entries: dict[str, PaperIndexEntry]) -> LibraryIndex:
     """Builds a LibraryIndex with the given {pid: PaperIndexEntry} entries."""
     return LibraryIndex(papers=entries)
 
 
-def _entry(title: str, embedding: list) -> PaperIndexEntry:
+def _entry(title: str, embedding: list[float]) -> PaperIndexEntry:
     """Builds a minimal PaperIndexEntry with the given title/embedding."""
     return PaperIndexEntry(
         title=title,
