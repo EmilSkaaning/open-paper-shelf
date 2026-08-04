@@ -29,6 +29,7 @@ from backend.drive import (  # noqa: E402
 )
 from backend.models import LibraryIndex, PaperMetadata  # noqa: E402
 from frontend.auth import authenticate_user  # noqa: E402
+from frontend.branding import apply_branding  # noqa: E402
 from frontend.constants import (  # noqa: E402
     DEFAULT_FASTAPI_URL,
     EDITED_PDF_FILENAME,
@@ -96,11 +97,17 @@ from frontend.metadata_generation import (  # noqa: E402,F401
 
 logger = logging.getLogger(__name__)
 
+_LOGO_PATH = Path(__file__).resolve().parent / "assets" / "logo.png"
+
 st.set_page_config(
     layout="wide",
     page_title="Open Paper Shelf",
+    page_icon=str(_LOGO_PATH) if _LOGO_PATH.exists() else "📚",
     initial_sidebar_state="expanded",
 )
+apply_branding()
+if _LOGO_PATH.exists():
+    st.logo(str(_LOGO_PATH))
 
 
 def main() -> None:
@@ -119,7 +126,14 @@ def main() -> None:
     if not creds:
         return
 
-    st.title("📚 Open Paper Shelf")
+    _, header_col, _ = st.columns([1, 2, 1])
+    with header_col:
+        if _LOGO_PATH.exists():
+            st.image(str(_LOGO_PATH), width="stretch")
+        st.markdown(
+            "<h1 style='text-align: center;'>Open Paper Shelf</h1>",
+            unsafe_allow_html=True,
+        )
 
     if "root_id" not in st.session_state:
         st.session_state.root_id = get_or_create_root_folder(creds)

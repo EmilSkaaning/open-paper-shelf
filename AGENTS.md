@@ -6,6 +6,12 @@ testing, and how function/class documentation and Git commits are carried out. S
 this repo's actual stack (a single Python project: FastAPI backend, Streamlit frontend,
 pytest/ruff/pyrefly via `uv`).
 
+## 0. Branding
+
+UI colors, fonts, and iconography follow [docs/BRANDING.md](docs/BRANDING.md).
+Consult it before touching `.streamlit/config.toml`, `frontend/branding.py`,
+or adding new colors/fonts/icons to the Streamlit UI.
+
 ## 1. Core Principles
 
 1. **Agent-First** — delegate to ECC's specialized agents/skills for domain tasks (see Section 5).

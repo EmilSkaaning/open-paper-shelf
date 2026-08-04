@@ -1,0 +1,9 @@
+# Open Paper Shelf brand theme - "Forest Library" (dark, default).
+# See docs/BRANDING.md for the full palette/typography rationale.
+[theme]
+base = "dark"
+primaryColor = "#6FA97A"
+backgroundColor = "#14170F"
+secondaryBackgroundColor = "#1E241A"
+textColor = "#EDE7D9"
+font = "sans serif"
