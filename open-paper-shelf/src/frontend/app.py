@@ -298,9 +298,17 @@ def main() -> None:
                             progress.empty()
                             st.session_state.last_sync_time = None
                     st.session_state.uploader_key += 1
-                    if all_succeeded:
+                    duplicates_skipped = st.session_state.get(
+                        "duplicate_uploads_skipped", []
+                    )
+                    if all_succeeded and not duplicates_skipped:
                         st.success("Uploaded successfully!")
                         st.rerun()
+                    elif all_succeeded:
+                        st.success(
+                            "Uploaded successfully! (Duplicate files were "
+                            "skipped — see warnings above.)"
+                        )
                     else:
                         st.warning(
                             "Some files failed to upload. See the errors above; "

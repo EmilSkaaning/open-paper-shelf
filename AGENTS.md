@@ -26,6 +26,13 @@ or adding new colors/fonts/icons to the Streamlit UI.
 * Always execute python commands and tools using `uv` to ensure proper environment isolation.
 * Example: `uv run pytest` or `uv run ruff format .`
 
+### Git Worktrees
+* All git worktrees live under `.worktrees/` at the repo root (already gitignored) — never
+  create one as a sibling of the repo or elsewhere on disk.
+* Name each worktree directory after its branch, dropping the `type/` prefix, e.g. branch
+  `fix/73-oversized-upload` → `.worktrees/73-oversized-upload`.
+* Create with: `git worktree add .worktrees/{name} -b {type}/{name} origin/main`.
+
 ## 3. Coding Style
 
 **Immutability:** Prefer returning new objects/copies over mutating in place — e.g. Pydantic
@@ -209,3 +216,61 @@ comprehensive summary → include a test plan → push with the `-u` flag.
   * `WIP` (not a commit)
   * `changed some stuff` (tells reviewers nothing)
   * `feat: implemented the new de novo alphafold model weight enumeration system` (way over 50 chars)
+
+## 9. GitHub Issue Format & Labels
+
+When filing a new issue in this repo (by hand or via an agent), follow the structure and
+labeling scheme already used by existing issues.
+
+### Standard issue body format
+
+Every regular (non-epic) issue body must use exactly these three headers, in this order:
+
+* `## Background` — what's wrong, missing, or motivating the issue.
+* `## Proposed fix` — the concrete change being requested.
+* `## Why this matters` — the impact of leaving it undone.
+
+### Epic issue body format
+
+For work too large for one issue (e.g. epics #41, #42, #43), file a single epic issue plus one
+regular issue per sub-task, and link them together:
+
+* Epic issue body headers, in this order:
+  * `## Problem` — what's wrong or missing at the epic level.
+  * `## Goal` — the end state once the whole epic ships.
+  * `## Design` (optional) — cross-cutting architecture/decisions that apply to multiple
+    sub-tasks, so each sub-task issue doesn't have to repeat them.
+  * `## Tasks` — a GitHub checklist referencing each sub-task issue, e.g. `- [ ] #57 <short
+    description>`. Check items off as sub-task issues close.
+  * `## Cross-epic dependency` (if applicable) — call out hard dependencies on other epics or
+    specific sub-task issues, and which remaining tasks are unblocked vs. blocked.
+* Each sub-task issue is a normal `## Background` / `## Proposed fix` / `## Why this matters`
+  issue as above, and should reference its parent epic inline (e.g. "see epic #42") the first
+  time epic-level context is needed.
+* There is no dedicated `epic:*` label — an epic is just a `type:feature` (or `type:chore`)
+  issue identified by having a `## Tasks` checklist of sub-issues; label it and its sub-tasks
+  normally per the taxonomy below.
+
+### Label taxonomy
+
+Apply **one `type:*`**, **one or more `area:*`**, and **one `difficulty:*`** label to every
+new issue:
+
+| Label | Meaning |
+|-------|---------|
+| `type:feature` | A concrete new capability to build |
+| `type:chore` | Maintenance/tooling/asset work |
+| `type:docs` | Documentation-only changes (README, guides, architecture docs) |
+| `type:investigation` | Open-ended research/spike, not yet a committed feature |
+| `area:backend` | FastAPI/data/model layer (`src/backend`) |
+| `area:frontend` | Streamlit UI (`src/frontend`) |
+| `area:ci-cd` | GitHub Actions, pre-commit, deployment |
+| `area:design` | Visual/branding assets |
+| `difficulty:trivial` | Minutes of work, no design decisions |
+| `difficulty:easy` | Small, well-scoped change with a clear approach |
+| `difficulty:medium` | Moderate scope, touches a few files or needs some design choices |
+| `difficulty:hard` | Large or ambiguous scope, spans multiple layers/files |
+| `difficulty:expert` | Open-ended architecture/strategy work with significant unknowns |
+
+An issue missing any of the three label categories should be edited to add the missing
+label(s) before work starts on it.
