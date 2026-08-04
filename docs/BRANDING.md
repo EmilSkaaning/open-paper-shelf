@@ -10,6 +10,12 @@ personal research library, not a corporate SaaS dashboard.
 The app defaults to dark mode. Do not introduce a light theme without an
 explicit decision to support one.
 
+**Status: accent color under reconsideration.** The green accent below
+reads as "dirty" in practice and is likely to change — see
+[open-paper-shelf/docs/BRANDING_NOTES.md](../open-paper-shelf/docs/BRANDING_NOTES.md)
+for the open question and next steps. Everything else here (dark base,
+typography, layout mechanism) is settled and working well.
+
 | Token | Hex | Use |
 |---|---|---|
 | Background | `#14170F` | app background |
