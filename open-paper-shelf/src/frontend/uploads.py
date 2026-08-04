@@ -105,6 +105,26 @@ def _upload_paper_files(
     )
 
 
+def _is_duplicate_title(title: str) -> bool:
+    """Checks whether a paper with the given title already exists in the index.
+
+    Comparison is case-insensitive, since Streamlit's uploader preserves the
+    original filename casing and users may re-select the same file with a
+    different case.
+
+    Args:
+        title (str): The candidate paper title to check.
+
+    Returns:
+        bool: True if an existing index entry has a matching title.
+    """
+    normalized = title.strip().casefold()
+    return any(
+        entry.title.strip().casefold() == normalized
+        for entry in st.session_state.index.papers.values()
+    )
+
+
 def upload_papers(
     creds: Credentials,
     uploaded_files: Sequence[UploadedFile],
@@ -121,15 +141,29 @@ def upload_papers(
             succeeded or failed), receiving the 1-based file index, the
             total file count, and that file's name.
 
+    Skipped duplicates (files whose title matches an existing index entry)
+    are recorded in `st.session_state.duplicate_uploads_skipped` (a list of
+    filenames), reset at the start of each call. Callers that `st.rerun()`
+    on success should check this list first, since a rerun clears any
+    `st.warning` rendered during the current script run.
+
     Returns:
         True if every file uploaded successfully, False if any failed.
     """
     total = len(uploaded_files)
     all_succeeded = True
+    st.session_state.duplicate_uploads_skipped = []
     for i, uploaded_file in enumerate(uploaded_files):
         try:
             validated_name = UploadedPaperName(name=uploaded_file.name).name
             title = strip_pdf_suffix(validated_name)
+            if _is_duplicate_title(title):
+                st.session_state.duplicate_uploads_skipped.append(uploaded_file.name)
+                st.warning(
+                    f"Skipped {uploaded_file.name}: a paper titled "
+                    f'"{title}" already exists in this library.'
+                )
+                continue
             paper_id = uuid.uuid4().hex
             with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
                 tmp.write(uploaded_file.getvalue())
