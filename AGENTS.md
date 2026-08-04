@@ -20,6 +20,13 @@ pytest/ruff/pyrefly via `uv`).
 * Always execute python commands and tools using `uv` to ensure proper environment isolation.
 * Example: `uv run pytest` or `uv run ruff format .`
 
+### Git Worktrees
+* All git worktrees live under `.worktrees/` at the repo root (already gitignored) — never
+  create one as a sibling of the repo or elsewhere on disk.
+* Name each worktree directory after its branch, dropping the `type/` prefix, e.g. branch
+  `fix/73-oversized-upload` → `.worktrees/73-oversized-upload`.
+* Create with: `git worktree add .worktrees/{name} -b {type}/{name} origin/main`.
+
 ## 3. Coding Style
 
 **Immutability:** Prefer returning new objects/copies over mutating in place — e.g. Pydantic
