@@ -36,16 +36,17 @@ Loaded via the Google Fonts CSS injection in `frontend/branding.py`'s
 
 ## Logo / Icon
 
-Concept direction (final asset pending, being generated with nanobanana):
-a simple, flat-vector mark evoking papers/books — favor the **fanned
-paper stack** or **shelf-line + document glyph** concepts for legibility
-down to true favicon size (16px). Once finalized, the asset should ship as:
+**Status: WIP, not final.** A first-draft mark (open-book concept, gold
+line art on the dark background) lives at `frontend/assets/logo.png` and
+is wired into `st.set_page_config(page_icon=...)` and `st.logo(...)` in
+`app.py` as a placeholder so the direction is visible in the running app.
+Both the palette and this asset are still under active iteration — expect
+them to change before this branch is considered done.
+
+Once a final asset is chosen, it should ship as:
 
 - A square icon (works as favicon and Streamlit `st.logo(icon_image=...)`)
 - A wordmark lockup (icon + "Open Paper Shelf", for `st.logo(image=...)`)
-
-Until a final SVG/PNG lands, `page_icon="📚"` is used as a placeholder in
-`st.set_page_config` — replace it once the asset exists.
 
 ## Do / Don't
 

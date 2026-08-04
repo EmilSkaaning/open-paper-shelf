@@ -97,13 +97,17 @@ from frontend.metadata_generation import (  # noqa: E402,F401
 
 logger = logging.getLogger(__name__)
 
+_LOGO_PATH = Path(__file__).resolve().parent / "assets" / "logo.png"
+
 st.set_page_config(
     layout="wide",
     page_title="Open Paper Shelf",
-    page_icon="📚",
+    page_icon=str(_LOGO_PATH) if _LOGO_PATH.exists() else "📚",
     initial_sidebar_state="expanded",
 )
 apply_branding()
+if _LOGO_PATH.exists():
+    st.logo(str(_LOGO_PATH))
 
 
 def main() -> None:
