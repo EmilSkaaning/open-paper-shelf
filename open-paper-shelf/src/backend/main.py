@@ -4,6 +4,7 @@ import logging
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -103,7 +104,9 @@ async def save_edited_pdf_route(
     data = b"".join(chunks)
 
     try:
-        updated_entry = _save_edited_pdf(creds, lib_id, pid, data)
+        updated_entry = await run_in_threadpool(
+            _save_edited_pdf, creds, lib_id, pid, data
+        )
     except InvalidIdError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except InvalidPdfError as e:
