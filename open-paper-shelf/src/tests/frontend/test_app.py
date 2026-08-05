@@ -4044,6 +4044,55 @@ class TestMainBulkGenerateFlow:
         )
         assert generate_missing_call.kwargs.get("type") == "secondary"
 
+    def test_generate_missing_info_shares_position_with_other_icon_messages(
+        self, fake_st: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """Test the wand icon's "already has metadata" info box renders at
+        the same call position (immediately after all five icon buttons)
+        as the trash icon's "No papers selected." warning, instead of being
+        nested inside its own icon column - a stray per-column message
+        would stretch just that column's auto width and shove the icons
+        after it out of place (issue #99)."""
+        pid = "a" * 32
+        entry = PaperIndexEntry(
+            title="Has Tags",
+            pdf_file_id="pdf1",
+            meta_file_id="meta1",
+            folder_id="f1",
+            tags=["nlp"],
+        )
+        fake_st.session_state.current_lib_id = "lib_123"
+        fake_st.session_state.current_papers_id = "papers_123"
+        fake_st.session_state.root_id = "root_123"
+        fake_st.session_state.index = LibraryIndex(papers={pid: entry})
+        fake_st.session_state.selected_paper = None
+        fake_st.file_uploader.return_value = None
+        fake_st.button.side_effect = lambda label, **kw: (
+            kw.get("key") == "generate_missing_icon"
+        )
+        mocker.patch.object(app, "st_keyup", return_value="")
+        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
+
+        app.main()
+
+        button_names = [
+            c[0] for c in fake_st.mock_calls if c[0] in ("button", "info", "warning")
+        ]
+        remove_tag_index = next(
+            i
+            for i, c in enumerate(fake_st.mock_calls)
+            if c[0] == "button" and c.kwargs.get("key") == "remove_tag_icon"
+        )
+        info_index = next(
+            i
+            for i, c in enumerate(fake_st.mock_calls)
+            if c[0] == "info" and "already has metadata" in str(c.args)
+        )
+        assert info_index == remove_tag_index + 1, (
+            f"expected the info box to render immediately after the last "
+            f"icon button, got call order {button_names}"
+        )
+
     def test_confirming_bulk_generate_calls_generate_and_reruns(
         self,
         fake_st: MagicMock,

@@ -105,15 +105,15 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+# Session-state keys backing the icon bar's mutually exclusive staged
+# actions - only one of delete/generate/add-tag/remove-tag can be staged at
+# a time, so arming one clears the others rather than stacking their forms.
 BULK_ACTION_STATE_KEYS = (
     "confirm_delete_pids",
     "confirm_generate_pids",
     "show_add_tag_pids",
     "show_remove_tag_pids",
 )
-"""Session-state keys backing the icon bar's mutually exclusive staged
-actions - only one of delete/generate/add-tag/remove-tag can be staged at
-a time, so arming one clears the others rather than stacking their forms."""
 
 
 def _stage_bulk_action(state_key: str, pids: list[str]) -> None:
@@ -426,6 +426,10 @@ def main() -> None:
                 icon_col5,
                 _icon_spacer,
             ) = st.columns([1, 1, 1, 1, 1, 5], gap=None)
+            # Rendered outside the columns below so a wide message box never
+            # stretches the auto-width icon columns and shoves the later
+            # icons out of place.
+            icon_bar_message: tuple[str, str] | None = None
             with icon_col1:
                 if st.button(
                     "🗑️",
@@ -436,7 +440,7 @@ def main() -> None:
                     if checked_pids:
                         _stage_bulk_action("confirm_delete_pids", checked_pids)
                     else:
-                        st.warning("No papers selected.")
+                        icon_bar_message = ("warning", "No papers selected.")
             with icon_col2:
                 if st.button(
                     "✨",
@@ -447,7 +451,7 @@ def main() -> None:
                     if checked_pids:
                         _stage_bulk_action("confirm_generate_pids", checked_pids)
                     else:
-                        st.warning("No papers selected.")
+                        icon_bar_message = ("warning", "No papers selected.")
             with icon_col3:
                 if st.button(
                     "🪄",
@@ -461,7 +465,7 @@ def main() -> None:
                     if missing_pids:
                         _stage_bulk_action("confirm_generate_pids", missing_pids)
                     else:
-                        st.info("Every paper already has metadata.")
+                        icon_bar_message = ("info", "Every paper already has metadata.")
             with icon_col4:
                 if st.button(
                     "🏷️",
@@ -472,7 +476,7 @@ def main() -> None:
                     if checked_pids:
                         _stage_bulk_action("show_add_tag_pids", checked_pids)
                     else:
-                        st.warning("No papers selected.")
+                        icon_bar_message = ("warning", "No papers selected.")
             with icon_col5:
                 if st.button(
                     "🚫",
@@ -483,7 +487,14 @@ def main() -> None:
                     if checked_pids:
                         _stage_bulk_action("show_remove_tag_pids", checked_pids)
                     else:
-                        st.warning("No papers selected.")
+                        icon_bar_message = ("warning", "No papers selected.")
+
+            if icon_bar_message is not None:
+                message_kind, message_text = icon_bar_message
+                if message_kind == "warning":
+                    st.warning(message_text)
+                else:
+                    st.info(message_text)
 
             search_box = st_keyup(
                 "Search", placeholder="Search papers...", key="search_box"
