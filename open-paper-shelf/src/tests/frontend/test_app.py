@@ -2104,12 +2104,17 @@ class TestMainUploadFlow:
         fake_st.success.assert_not_called()
         fake_st.rerun.assert_not_called()
 
-    def test_upload_button_skips_rerun_when_duplicates_were_skipped(
-        self, fake_st: MagicMock, mocker: MockerFixture
+    def test_upload_button_reruns_and_persists_duplicate_notice(
+        self,
+        fake_st: MagicMock,
+        mocker: MockerFixture,
+        stop_rerun: type[BaseException],
     ) -> None:
         """Regression test: when upload_papers reports skipped duplicates,
-        the app must not rerun, since a rerun would wipe the st.warning
-        upload_papers already rendered for the skipped file(s)."""
+        the app still reruns (so the uploader clears), but stashes the
+        skipped filenames in `pending_duplicate_notice` session state so
+        they can be rendered by name on the next run, instead of relying on
+        an ephemeral st.warning that a rerun would wipe."""
         fake_st.session_state.current_lib_id = "lib_123"
         fake_st.session_state.current_papers_id = "papers_123"
         fake_st.session_state.root_id = "root_123"
@@ -2123,10 +2128,34 @@ class TestMainUploadFlow:
         mocker.patch.object(app, "upload_papers", return_value=True)
         mocker.patch.object(app, "upload_library_index")
 
+        with pytest.raises(stop_rerun):
+            app.main()
+
+        fake_st.rerun.assert_called_once()
+        fake_st.success.assert_called_once()
+        assert fake_st.session_state.pending_duplicate_notice == ["a.pdf"]
+
+    def test_pending_duplicate_notice_renders_filenames_and_is_cleared(
+        self, fake_st: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """Test that a pending duplicate notice from a prior run is rendered
+        with each skipped filename listed, then consumed so it doesn't
+        reappear on the following run."""
+        fake_st.session_state.current_lib_id = "lib_123"
+        fake_st.session_state.current_papers_id = "papers_123"
+        fake_st.session_state.root_id = "root_123"
+        fake_st.session_state.index = LibraryIndex()
+        fake_st.session_state.selected_paper = None
+        fake_st.session_state.pending_duplicate_notice = ["a.pdf", "b.pdf"]
+        fake_st.file_uploader.return_value = None
+        mocker.patch.object(app, "st_keyup", return_value="")
+        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
+
         app.main()
 
-        fake_st.rerun.assert_not_called()
-        fake_st.success.assert_called_once()
+        warning_messages = [c.args[0] for c in fake_st.warning.call_args_list]
+        assert any("a.pdf" in msg and "b.pdf" in msg for msg in warning_messages)
+        assert "pending_duplicate_notice" not in fake_st.session_state
 
     def test_upload_shows_determinate_progress_bar_not_spinner(
         self,

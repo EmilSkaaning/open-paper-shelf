@@ -246,6 +246,12 @@ def main() -> None:
             st.session_state.uploader_key = 0
 
         with st.expander("Upload Paper(s)", expanded=False):
+            pending_duplicates = st.session_state.pop("pending_duplicate_notice", None)
+            if pending_duplicates:
+                st.warning(
+                    "Skipped duplicate file(s) already in this library:\n"
+                    + "\n".join(f"- {name}" for name in pending_duplicates)
+                )
             uploaded_files = st.file_uploader(
                 "Choose PDF files",
                 type="pdf",
@@ -291,10 +297,11 @@ def main() -> None:
                         st.success("Uploaded successfully!")
                         st.rerun()
                     elif all_succeeded:
+                        st.session_state.pending_duplicate_notice = duplicates_skipped
                         st.success(
-                            "Uploaded successfully! (Duplicate files were "
-                            "skipped — see warnings above.)"
+                            "Uploaded successfully! (Duplicate files were skipped.)"
                         )
+                        st.rerun()
                     else:
                         st.warning(
                             "Some files failed to upload. See the errors above; "
