@@ -3178,6 +3178,61 @@ class TestMainAddRemoveTagFlow:
         mock_remove.assert_not_called()
         assert fake_st.session_state.show_remove_tag_pids is None
 
+    def test_staging_add_tag_clears_other_staged_bulk_actions(
+        self, fake_st: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """Regression test: staging one icon-bar action (e.g. add-tag) must
+        clear any other staged action (e.g. a lingering remove-tag form),
+        so only one bulk-action box shows at a time."""
+        pid = "a" * 32
+        entry = PaperIndexEntry(
+            title="Some Paper", pdf_file_id="pdf1", meta_file_id="meta1", folder_id="f1"
+        )
+        fake_st.session_state.current_lib_id = "lib_123"
+        fake_st.session_state.current_papers_id = "papers_123"
+        fake_st.session_state.root_id = "root_123"
+        fake_st.session_state.index = LibraryIndex(papers={pid: entry})
+        fake_st.session_state.selected_paper = None
+        fake_st.session_state.show_remove_tag_pids = [pid]
+        fake_st.session_state.confirm_delete_pids = [pid]
+        fake_st.session_state[f"chk_{pid}"] = True
+        fake_st.file_uploader.return_value = None
+        fake_st.button.side_effect = lambda label, **kw: kw.get("key") == "add_tag_icon"
+        mocker.patch.object(app, "st_keyup", return_value="")
+        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
+
+        app.main()
+
+        assert fake_st.session_state.show_add_tag_pids == [pid]
+        assert "show_remove_tag_pids" not in fake_st.session_state
+        assert "confirm_delete_pids" not in fake_st.session_state
+
+    def test_staging_delete_clears_a_lingering_add_tag_box(
+        self, fake_st: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """Regression test: the reverse direction — clicking trash while an
+        add-tag box is open must dismiss the add-tag box."""
+        pid = "a" * 32
+        entry = PaperIndexEntry(
+            title="Some Paper", pdf_file_id="pdf1", meta_file_id="meta1", folder_id="f1"
+        )
+        fake_st.session_state.current_lib_id = "lib_123"
+        fake_st.session_state.current_papers_id = "papers_123"
+        fake_st.session_state.root_id = "root_123"
+        fake_st.session_state.index = LibraryIndex(papers={pid: entry})
+        fake_st.session_state.selected_paper = None
+        fake_st.session_state.show_add_tag_pids = [pid]
+        fake_st.session_state[f"chk_{pid}"] = True
+        fake_st.file_uploader.return_value = None
+        fake_st.button.side_effect = lambda label, **kw: kw.get("key") == "trash_icon"
+        mocker.patch.object(app, "st_keyup", return_value="")
+        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
+
+        app.main()
+
+        assert fake_st.session_state.confirm_delete_pids == [pid]
+        assert "show_add_tag_pids" not in fake_st.session_state
+
 
 class TestPersistGeneratedMetadata:
     """Test suite for persist_generated_metadata."""

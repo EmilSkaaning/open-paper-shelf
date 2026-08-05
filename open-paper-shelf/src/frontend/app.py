@@ -105,6 +105,30 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+BULK_ACTION_STATE_KEYS = (
+    "confirm_delete_pids",
+    "confirm_generate_pids",
+    "show_add_tag_pids",
+    "show_remove_tag_pids",
+)
+"""Session-state keys backing the icon bar's mutually exclusive staged
+actions - only one of delete/generate/add-tag/remove-tag can be staged at
+a time, so arming one clears the others rather than stacking their forms."""
+
+
+def _stage_bulk_action(state_key: str, pids: list[str]) -> None:
+    """Stages a bulk action for the icon bar, clearing any other staged action.
+
+    Args:
+        state_key: The `st.session_state` key to stage `pids` under - one of
+            `BULK_ACTION_STATE_KEYS`.
+        pids: The paper IDs the staged action applies to.
+    """
+    for key in BULK_ACTION_STATE_KEYS:
+        if key != state_key:
+            st.session_state.pop(key, None)
+    st.session_state[state_key] = pids
+
 
 def main() -> None:
     """The main entry point for the Streamlit frontend application.
@@ -410,7 +434,7 @@ def main() -> None:
                     type="secondary",
                 ):
                     if checked_pids:
-                        st.session_state.confirm_delete_pids = checked_pids
+                        _stage_bulk_action("confirm_delete_pids", checked_pids)
                     else:
                         st.warning("No papers selected.")
             with icon_col2:
@@ -421,7 +445,7 @@ def main() -> None:
                     type="secondary",
                 ):
                     if checked_pids:
-                        st.session_state.confirm_generate_pids = checked_pids
+                        _stage_bulk_action("confirm_generate_pids", checked_pids)
                     else:
                         st.warning("No papers selected.")
             with icon_col3:
@@ -435,7 +459,7 @@ def main() -> None:
                         get_missing_metadata_pids(st.session_state.index)
                     )
                     if missing_pids:
-                        st.session_state.confirm_generate_pids = missing_pids
+                        _stage_bulk_action("confirm_generate_pids", missing_pids)
                     else:
                         st.info("Every paper already has metadata.")
             with icon_col4:
@@ -446,7 +470,7 @@ def main() -> None:
                     type="secondary",
                 ):
                     if checked_pids:
-                        st.session_state.show_add_tag_pids = checked_pids
+                        _stage_bulk_action("show_add_tag_pids", checked_pids)
                     else:
                         st.warning("No papers selected.")
             with icon_col5:
@@ -457,7 +481,7 @@ def main() -> None:
                     type="secondary",
                 ):
                     if checked_pids:
-                        st.session_state.show_remove_tag_pids = checked_pids
+                        _stage_bulk_action("show_remove_tag_pids", checked_pids)
                     else:
                         st.warning("No papers selected.")
 
