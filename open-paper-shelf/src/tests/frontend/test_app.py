@@ -2079,7 +2079,19 @@ class TestMainUploadFlow:
 
         mock_upload_papers.assert_called_once()
         mock_upload_index.assert_called_once()
-        fake_st.success.assert_called_once()
+        # The success message is stashed in session_state rather than shown
+        # immediately, since st.rerun() halts the script right after this
+        # and would wipe out anything rendered in the same run.
+        fake_st.success.assert_not_called()
+        assert fake_st.session_state.upload_flash["message"] == (
+            "Uploaded successfully!"
+        )
+
+        fake_st.button.side_effect = lambda label, **kw: False
+        app.main()
+
+        fake_st.success.assert_called_once_with("Uploaded successfully!")
+        assert "upload_flash" not in fake_st.session_state
 
     def test_upload_button_reports_partial_failure_without_rerun(
         self, fake_st: MagicMock, mocker: MockerFixture
@@ -2111,9 +2123,12 @@ class TestMainUploadFlow:
         stop_rerun: type[BaseException],
     ) -> None:
         """Regression test: when upload_papers reports skipped duplicates,
-        the app must still rerun after showing the success message so the
-        file uploader's key bump takes effect and it clears its selection,
-        matching the plain-success branch."""
+        the app must still rerun after upload so the file uploader's key
+        bump takes effect and it clears its selection, matching the
+        plain-success branch. The success/warning messages are stashed in
+        session_state and rendered on the next run, since st.rerun() would
+        otherwise wipe them out before the user could see which files were
+        skipped (Jules review finding on PR #93)."""
         fake_st.session_state.current_lib_id = "lib_123"
         fake_st.session_state.current_papers_id = "papers_123"
         fake_st.session_state.root_id = "root_123"
@@ -2131,7 +2146,19 @@ class TestMainUploadFlow:
             app.main()
 
         fake_st.rerun.assert_called_once()
-        fake_st.success.assert_called_once()
+        fake_st.success.assert_not_called()
+        flash = fake_st.session_state.upload_flash
+        assert flash["duplicates_skipped"] == ["a.pdf"]
+        assert flash["all_succeeded"] is True
+
+        fake_st.button.side_effect = lambda label, **kw: False
+        app.main()
+
+        fake_st.warning.assert_called_once_with(
+            "Skipped a.pdf: a paper with that title already exists in this library."
+        )
+        fake_st.success.assert_called_once_with(flash["message"])
+        assert "upload_flash" not in fake_st.session_state
 
     def test_upload_shows_determinate_progress_bar_not_spinner(
         self,
