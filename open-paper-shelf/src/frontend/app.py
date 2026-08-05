@@ -496,40 +496,6 @@ def main() -> None:
                 else:
                     st.info(message_text)
 
-            search_box = st_keyup(
-                "Search", placeholder="Search papers...", key="search_box"
-            )
-            search_query = (search_box or "").lower()
-
-            status_col, tags_col = st.columns([1, 1])
-
-            with status_col:
-                status_filter_labels = st.multiselect(
-                    "Status",
-                    options=list(STATUS_LABELS.values()) + [SIMILAR_FILTER_LABEL],
-                    key="status_filter",
-                )
-                status_filter = [
-                    LABEL_TO_STATUS[label]
-                    for label in status_filter_labels
-                    if label in LABEL_TO_STATUS
-                ]
-                include_similar_filter = SIMILAR_FILTER_LABEL in status_filter_labels
-            with tags_col:
-                all_tags = get_all_tags(st.session_state.index)
-                # A previously selected tag may no longer exist (its last
-                # paper was deleted or retagged since the last rerun). Drop
-                # it from the persisted selection before the widget reads
-                # it so a stale value never lingers against the current
-                # options.
-                if "tags_filter" in st.session_state:
-                    st.session_state.tags_filter = [
-                        tag for tag in st.session_state.tags_filter if tag in all_tags
-                    ]
-                tags_filter = st.multiselect(
-                    "Tags", options=all_tags, key="tags_filter"
-                )
-
             if st.session_state.get("confirm_delete_pids"):
                 pids_to_delete = st.session_state.confirm_delete_pids
                 st.warning(
@@ -641,6 +607,40 @@ def main() -> None:
                         if st.button("Cancel", key="cancel_remove_tag_btn"):
                             st.session_state.show_remove_tag_pids = None
                             st.rerun()
+
+            search_box = st_keyup(
+                "Search", placeholder="Search papers...", key="search_box"
+            )
+            search_query = (search_box or "").lower()
+
+            status_col, tags_col = st.columns([1, 1])
+
+            with status_col:
+                status_filter_labels = st.multiselect(
+                    "Status",
+                    options=list(STATUS_LABELS.values()) + [SIMILAR_FILTER_LABEL],
+                    key="status_filter",
+                )
+                status_filter = [
+                    LABEL_TO_STATUS[label]
+                    for label in status_filter_labels
+                    if label in LABEL_TO_STATUS
+                ]
+                include_similar_filter = SIMILAR_FILTER_LABEL in status_filter_labels
+            with tags_col:
+                all_tags = get_all_tags(st.session_state.index)
+                # A previously selected tag may no longer exist (its last
+                # paper was deleted or retagged since the last rerun). Drop
+                # it from the persisted selection before the widget reads
+                # it so a stale value never lingers against the current
+                # options.
+                if "tags_filter" in st.session_state:
+                    st.session_state.tags_filter = [
+                        tag for tag in st.session_state.tags_filter if tag in all_tags
+                    ]
+                tags_filter = st.multiselect(
+                    "Tags", options=all_tags, key="tags_filter"
+                )
 
             # Re-filter after the block above so a partial batch-delete
             # failure (which skips st.rerun() to keep its error visible)
