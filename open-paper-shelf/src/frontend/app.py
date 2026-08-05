@@ -580,8 +580,9 @@ def main() -> None:
                             new_tags = [
                                 t.strip() for t in new_tags_str.split(",") if t.strip()
                             ]
+                            add_succeeded = True
                             if new_tags:
-                                add_tags_to_selected(
+                                add_succeeded = add_tags_to_selected(
                                     creds,
                                     pids_to_tag,
                                     st.session_state.index,
@@ -590,7 +591,8 @@ def main() -> None:
                                     new_tags,
                                 )
                             st.session_state.show_add_tag_pids = None
-                            st.rerun()
+                            if add_succeeded:
+                                st.rerun()
                     with cancel_add_tag_col:
                         if st.button("Cancel", key="cancel_add_tag_btn"):
                             st.session_state.show_add_tag_pids = None
@@ -618,8 +620,9 @@ def main() -> None:
                         remove_tag_col, cancel_remove_tag_col = st.columns(2)
                         with remove_tag_col:
                             if st.button("Remove", key="confirm_remove_tag_btn"):
+                                remove_succeeded = True
                                 if tags_to_remove:
-                                    remove_tags_from_selected(
+                                    remove_succeeded = remove_tags_from_selected(
                                         creds,
                                         pids_to_untag,
                                         st.session_state.index,
@@ -628,7 +631,8 @@ def main() -> None:
                                         tags_to_remove,
                                     )
                                 st.session_state.show_remove_tag_pids = None
-                                st.rerun()
+                                if remove_succeeded:
+                                    st.rerun()
                         with cancel_remove_tag_col:
                             if st.button("Cancel", key="cancel_remove_tag_btn"):
                                 st.session_state.show_remove_tag_pids = None

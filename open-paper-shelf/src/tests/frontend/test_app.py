@@ -3012,6 +3012,50 @@ class TestMainAddRemoveTagFlow:
         mock_add.assert_not_called()
         assert fake_st.session_state.show_add_tag_pids is None
 
+    def test_confirming_failed_add_tag_skips_rerun_but_clears_staged_form(
+        self,
+        fake_st: MagicMock,
+        mocker: MockerFixture,
+        tmp_path: Path,
+    ) -> None:
+        """Regression test: if add_tags_to_selected reports a failure (e.g.
+        a Drive upload or the index sync failed and already showed an
+        st.error), Add must not rerun - rerunning would restart the script
+        and wipe out that error before the user ever sees it - but the
+        stale staged form must still be cleared."""
+        pid = "a" * 32
+        entry = PaperIndexEntry(
+            title="Some Paper", pdf_file_id="pdf1", meta_file_id="meta1", folder_id="f1"
+        )
+        fake_st.session_state.current_lib_id = "lib_123"
+        fake_st.session_state.current_papers_id = "papers_123"
+        fake_st.session_state.root_id = "root_123"
+        fake_st.session_state.index = LibraryIndex(papers={pid: entry})
+        fake_st.session_state.selected_paper = None
+        fake_st.session_state.local_lib_dir = tmp_path
+        fake_st.session_state.show_add_tag_pids = [pid]
+        fake_st.file_uploader.return_value = None
+        fake_st.text_input.return_value = "alpha"
+        fake_st.button.side_effect = lambda label, **kw: (
+            kw.get("key") == "confirm_add_tag_btn"
+        )
+        mock_add = mocker.patch.object(app, "add_tags_to_selected", return_value=False)
+        mocker.patch.object(app, "st_keyup", return_value="")
+        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
+
+        app.main()  # must not raise (no rerun on failure)
+
+        mock_add.assert_called_once_with(
+            mocker.ANY,
+            [pid],
+            fake_st.session_state.index,
+            "papers_123",
+            tmp_path,
+            ["alpha"],
+        )
+        fake_st.rerun.assert_not_called()
+        assert fake_st.session_state.show_add_tag_pids is None
+
     def test_cancelling_add_tag_clears_staged_form(
         self,
         fake_st: MagicMock,
@@ -3139,6 +3183,56 @@ class TestMainAddRemoveTagFlow:
             tmp_path,
             ["alpha"],
         )
+        assert fake_st.session_state.show_remove_tag_pids is None
+
+    def test_confirming_failed_remove_tag_skips_rerun_but_clears_staged_form(
+        self,
+        fake_st: MagicMock,
+        mocker: MockerFixture,
+        tmp_path: Path,
+    ) -> None:
+        """Regression test: if remove_tags_from_selected reports a failure
+        (e.g. a Drive upload or the index sync failed and already showed an
+        st.error), Remove must not rerun - rerunning would restart the
+        script and wipe out that error before the user ever sees it - but
+        the stale staged form must still be cleared."""
+        pid = "a" * 32
+        entry = PaperIndexEntry(
+            title="Some Paper",
+            pdf_file_id="pdf1",
+            meta_file_id="meta1",
+            folder_id="f1",
+            tags=["alpha"],
+        )
+        fake_st.session_state.current_lib_id = "lib_123"
+        fake_st.session_state.current_papers_id = "papers_123"
+        fake_st.session_state.root_id = "root_123"
+        fake_st.session_state.index = LibraryIndex(papers={pid: entry})
+        fake_st.session_state.selected_paper = None
+        fake_st.session_state.local_lib_dir = tmp_path
+        fake_st.session_state.show_remove_tag_pids = [pid]
+        fake_st.file_uploader.return_value = None
+        fake_st.multiselect.return_value = ["alpha"]
+        fake_st.button.side_effect = lambda label, **kw: (
+            kw.get("key") == "confirm_remove_tag_btn"
+        )
+        mock_remove = mocker.patch.object(
+            app, "remove_tags_from_selected", return_value=False
+        )
+        mocker.patch.object(app, "st_keyup", return_value="")
+        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
+
+        app.main()  # must not raise (no rerun on failure)
+
+        mock_remove.assert_called_once_with(
+            mocker.ANY,
+            [pid],
+            fake_st.session_state.index,
+            "papers_123",
+            tmp_path,
+            ["alpha"],
+        )
+        fake_st.rerun.assert_not_called()
         assert fake_st.session_state.show_remove_tag_pids is None
 
     def test_cancelling_remove_tag_clears_staged_form(
