@@ -245,18 +245,15 @@ def main() -> None:
         if "uploader_key" not in st.session_state:
             st.session_state.uploader_key = 0
 
-        with st.expander("Upload Paper(s)", expanded=False):
-            upload_flash = st.session_state.pop("upload_flash", None)
+        upload_flash = st.session_state.pop("upload_flash", None)
+        with st.expander("Upload Paper(s)", expanded=upload_flash is not None):
             if upload_flash is not None:
                 for skipped_name in upload_flash["duplicates_skipped"]:
                     st.warning(
                         f"Skipped {skipped_name}: a paper with that title "
                         "already exists in this library."
                     )
-                if upload_flash["all_succeeded"]:
-                    st.success(upload_flash["message"])
-                else:
-                    st.warning(upload_flash["message"])
+                st.success(upload_flash["message"])
 
             uploaded_files = st.file_uploader(
                 "Choose PDF files",
