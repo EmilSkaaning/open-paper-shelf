@@ -307,30 +307,32 @@ def main() -> None:
                     duplicates_skipped = st.session_state.get(
                         "duplicate_uploads_skipped", []
                     )
-                    if all_succeeded and not duplicates_skipped:
-                        st.session_state.upload_flash = {
-                            "duplicates_skipped": [],
-                            "all_succeeded": True,
-                            "message": "Uploaded successfully!",
-                        }
-                        st.rerun()
-                    elif all_succeeded:
+                    if all_succeeded:
+                        message = "Uploaded successfully!"
+                        if duplicates_skipped:
+                            message = (
+                                "Uploaded successfully! (Duplicate files "
+                                "were skipped — see warnings above.)"
+                            )
                         st.session_state.upload_flash = {
                             "duplicates_skipped": duplicates_skipped,
                             "all_succeeded": True,
-                            "message": "Uploaded successfully! (Duplicate "
-                            "files were skipped — see warnings above.)",
+                            "message": message,
                         }
                         st.rerun()
                     else:
-                        if duplicates_skipped:
-                            st.session_state.upload_flash = {
-                                "duplicates_skipped": duplicates_skipped,
-                                "all_succeeded": False,
-                                "message": "Some files failed to upload. "
-                                "See the errors above; re-select the failed "
-                                "files to retry.",
-                            }
+                        if len(duplicates_skipped) > MAX_DUPLICATE_NAMES_TO_LIST:
+                            st.warning(
+                                f"Skipped {len(duplicates_skipped)} duplicate "
+                                "files already in this library."
+                            )
+                        else:
+                            for skipped_name in duplicates_skipped:
+                                st.warning(
+                                    f"Skipped {skipped_name}: a paper with "
+                                    "that title already exists in this "
+                                    "library."
+                                )
                         st.warning(
                             "Some files failed to upload. See the errors above; "
                             "re-select the failed files to retry."

@@ -2121,13 +2121,14 @@ class TestMainUploadFlow:
         fake_st.success.assert_not_called()
         fake_st.rerun.assert_not_called()
 
-    def test_partial_failure_still_persists_duplicate_notice(
+    def test_partial_failure_still_shows_duplicate_notice(
         self, fake_st: MagicMock, mocker: MockerFixture
     ) -> None:
         """Regression test: when a batch has both a failure and skipped
-        duplicates, the duplicate filenames must still be stashed in
-        `upload_flash` so the user isn't left with no feedback about the
-        files that were silently skipped as duplicates."""
+        duplicates, the duplicate filenames must warn immediately (since
+        the failure path never reruns) instead of being stashed in
+        `upload_flash`, which would leave the user with no feedback until
+        their next unrelated interaction (Jules review finding on PR #94)."""
         fake_st.session_state.current_lib_id = "lib_123"
         fake_st.session_state.current_papers_id = "papers_123"
         fake_st.session_state.root_id = "root_123"
@@ -2143,11 +2144,12 @@ class TestMainUploadFlow:
 
         app.main()
 
-        fake_st.warning.assert_called_once()
+        assert fake_st.warning.call_count == 2
+        fake_st.warning.assert_any_call(
+            "Skipped dup.pdf: a paper with that title already exists in this library."
+        )
         fake_st.rerun.assert_not_called()
-        flash = fake_st.session_state.upload_flash
-        assert flash["duplicates_skipped"] == ["dup.pdf"]
-        assert flash["all_succeeded"] is False
+        assert "upload_flash" not in fake_st.session_state
 
     def test_upload_button_reruns_and_persists_duplicate_notice(
         self,
