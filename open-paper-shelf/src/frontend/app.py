@@ -35,6 +35,7 @@ from frontend.constants import (  # noqa: E402
     GENERATE_METADATA_HELP,
     JSON_MIME_TYPE,
     LABEL_TO_STATUS,
+    MAX_DUPLICATE_NAMES_TO_LIST,
     META_FILENAME,
     PAPER_ID_PATTERN,
     PDF_FILENAME,
@@ -248,10 +249,16 @@ def main() -> None:
         with st.expander("Upload Paper(s)", expanded=False):
             pending_duplicates = st.session_state.pop("pending_duplicate_notice", None)
             if pending_duplicates:
-                st.warning(
-                    "Skipped duplicate file(s) already in this library:\n"
-                    + "\n".join(f"- {name}" for name in pending_duplicates)
-                )
+                if len(pending_duplicates) > MAX_DUPLICATE_NAMES_TO_LIST:
+                    st.warning(
+                        f"Skipped {len(pending_duplicates)} duplicate files "
+                        "already in this library."
+                    )
+                else:
+                    st.warning(
+                        "Skipped duplicate file(s) already in this library:\n"
+                        + "\n".join(f"- {name}" for name in pending_duplicates)
+                    )
             uploaded_files = st.file_uploader(
                 "Choose PDF files",
                 type="pdf",

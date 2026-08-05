@@ -312,8 +312,11 @@ class TestUploadPapers:
     ) -> None:
         """Regression test: re-uploading a file whose title already exists
         in the index must be skipped (no new Drive folder, no new index
-        entry) and reported via st.warning, instead of silently creating a
-        duplicate paper."""
+        entry) and recorded in `duplicate_uploads_skipped`, instead of
+        silently creating a duplicate paper. upload_papers() itself renders
+        no UI feedback for the skip — that's the caller's responsibility, so
+        the skipped file doesn't briefly flash its own warning box before a
+        caller's rerun wipes it."""
         fake_st.session_state.current_papers_id = "papers_123"
         fake_st.session_state.index = LibraryIndex(
             papers={
@@ -335,8 +338,10 @@ class TestUploadPapers:
         assert len(fake_st.session_state.index.papers) == 1
         mock_create_folder.assert_not_called()
         mock_upload_file.assert_not_called()
-        fake_st.warning.assert_called_once()
-        assert "Attention Is All You Need" in fake_st.warning.call_args[0][0]
+        fake_st.warning.assert_not_called()
+        assert fake_st.session_state.duplicate_uploads_skipped == [
+            "Attention Is All You Need.pdf"
+        ]
 
     def test_skips_second_of_two_identical_files_in_same_batch(
         self, fake_st: MagicMock, mocker: MockerFixture
@@ -2156,6 +2161,29 @@ class TestMainUploadFlow:
         warning_messages = [c.args[0] for c in fake_st.warning.call_args_list]
         assert any("a.pdf" in msg and "b.pdf" in msg for msg in warning_messages)
         assert "pending_duplicate_notice" not in fake_st.session_state
+
+    def test_pending_duplicate_notice_summarizes_count_above_threshold(
+        self, fake_st: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """Test that more than MAX_DUPLICATE_NAMES_TO_LIST skipped duplicates
+        are summarized as a count instead of listing every filename, so a
+        large batch can't produce an unreadably long notice."""
+        fake_st.session_state.current_lib_id = "lib_123"
+        fake_st.session_state.current_papers_id = "papers_123"
+        fake_st.session_state.root_id = "root_123"
+        fake_st.session_state.index = LibraryIndex()
+        fake_st.session_state.selected_paper = None
+        fake_st.session_state.pending_duplicate_notice = [
+            f"paper{i}.pdf" for i in range(6)
+        ]
+        fake_st.file_uploader.return_value = None
+        mocker.patch.object(app, "st_keyup", return_value="")
+        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
+
+        app.main()
+
+        warning_messages = [c.args[0] for c in fake_st.warning.call_args_list]
+        assert any("6" in msg and "paper0.pdf" not in msg for msg in warning_messages)
 
     def test_upload_shows_determinate_progress_bar_not_spinner(
         self,

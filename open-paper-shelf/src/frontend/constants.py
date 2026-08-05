@@ -41,3 +41,8 @@ PDF_MIME_TYPE: str = "application/pdf"
 JSON_MIME_TYPE: str = "application/json"
 PAPER_ID_PATTERN: str = r"^[a-f0-9]{32}$"
 DEFAULT_FASTAPI_URL: str = "http://localhost:8000"
+
+# Above this many skipped duplicate files, the upload notice shows just the
+# count instead of listing every filename, so a large batch can't produce an
+# unreadably long message.
+MAX_DUPLICATE_NAMES_TO_LIST: int = 5

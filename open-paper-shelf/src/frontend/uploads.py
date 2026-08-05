@@ -143,9 +143,9 @@ def upload_papers(
 
     Skipped duplicates (files whose title matches an existing index entry)
     are recorded in `st.session_state.duplicate_uploads_skipped` (a list of
-    filenames), reset at the start of each call. Callers that `st.rerun()`
-    on success should check this list first, since a rerun clears any
-    `st.warning` rendered during the current script run.
+    filenames), reset at the start of each call. This function does not
+    render any UI feedback for skipped duplicates itself — callers own
+    presenting that list to the user.
 
     Returns:
         True if every file uploaded successfully, False if any failed.
@@ -159,10 +159,6 @@ def upload_papers(
             title = strip_pdf_suffix(validated_name)
             if _is_duplicate_title(title):
                 st.session_state.duplicate_uploads_skipped.append(uploaded_file.name)
-                st.warning(
-                    f"Skipped {uploaded_file.name}: a paper titled "
-                    f'"{title}" already exists in this library.'
-                )
                 continue
             paper_id = uuid.uuid4().hex
             with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
