@@ -2104,12 +2104,16 @@ class TestMainUploadFlow:
         fake_st.success.assert_not_called()
         fake_st.rerun.assert_not_called()
 
-    def test_upload_button_skips_rerun_when_duplicates_were_skipped(
-        self, fake_st: MagicMock, mocker: MockerFixture
+    def test_upload_button_reruns_when_duplicates_were_skipped(
+        self,
+        fake_st: MagicMock,
+        mocker: MockerFixture,
+        stop_rerun: type[BaseException],
     ) -> None:
         """Regression test: when upload_papers reports skipped duplicates,
-        the app must not rerun, since a rerun would wipe the st.warning
-        upload_papers already rendered for the skipped file(s)."""
+        the app must still rerun after showing the success message so the
+        file uploader's key bump takes effect and it clears its selection,
+        matching the plain-success branch."""
         fake_st.session_state.current_lib_id = "lib_123"
         fake_st.session_state.current_papers_id = "papers_123"
         fake_st.session_state.root_id = "root_123"
@@ -2123,9 +2127,10 @@ class TestMainUploadFlow:
         mocker.patch.object(app, "upload_papers", return_value=True)
         mocker.patch.object(app, "upload_library_index")
 
-        app.main()
+        with pytest.raises(stop_rerun):
+            app.main()
 
-        fake_st.rerun.assert_not_called()
+        fake_st.rerun.assert_called_once()
         fake_st.success.assert_called_once()
 
     def test_upload_shows_determinate_progress_bar_not_spinner(

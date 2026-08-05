@@ -295,6 +295,7 @@ def main() -> None:
                             "Uploaded successfully! (Duplicate files were "
                             "skipped — see warnings above.)"
                         )
+                        st.rerun()
                     else:
                         st.warning(
                             "Some files failed to upload. See the errors above; "
