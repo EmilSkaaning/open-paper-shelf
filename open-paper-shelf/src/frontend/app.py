@@ -315,6 +315,31 @@ def main() -> None:
             # of centered in two full-width halves; the trailing column
             # just absorbs the remaining space. All three icons use a fixed
             # "secondary" type; no per-button background-color styling.
+            #
+            # The [1, 1, 1, 7] ratio is only a *starting* width: Streamlit
+            # columns are flex items that shrink with their container, so
+            # dragging the sidebar's resize handle narrower than a few
+            # hundred px would shrink these three icon columns past the
+            # button's natural size, making the buttons overlap and the
+            # emoji glyphs spill outside their bounds. Pin the icon columns
+            # to a fixed size (flex: 0 0 auto) so only the trailing spacer
+            # column shrinks/grows, and clip+center each button's content so
+            # its emoji can never render outside the button box.
+            st.markdown(
+                "<style>"
+                "div[data-testid='stColumn']:has(.st-key-trash_icon),"
+                "div[data-testid='stColumn']:has(.st-key-bulk_generate_icon),"
+                "div[data-testid='stColumn']:has(.st-key-generate_missing_icon)"
+                "{ flex: 0 0 auto; width: auto; min-width: 2.5rem; }"
+                ".st-key-trash_icon button,"
+                ".st-key-bulk_generate_icon button,"
+                ".st-key-generate_missing_icon button"
+                "{ width: 2.5rem; height: 2.5rem; min-width: 2.5rem; padding: 0;"
+                " display: flex; align-items: center; justify-content: center;"
+                " overflow: hidden; line-height: 1; }"
+                "</style>",
+                unsafe_allow_html=True,
+            )
             icon_col1, icon_col2, icon_col3, _icon_spacer = st.columns(
                 [1, 1, 1, 7], gap=None
             )
