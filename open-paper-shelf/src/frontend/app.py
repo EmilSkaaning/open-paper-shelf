@@ -310,6 +310,10 @@ def main() -> None:
                         )
                         st.rerun()
                     else:
+                        if duplicates_skipped:
+                            st.session_state.pending_duplicate_notice = (
+                                duplicates_skipped
+                            )
                         st.warning(
                             "Some files failed to upload. See the errors above; "
                             "re-select the failed files to retry."

@@ -2109,6 +2109,32 @@ class TestMainUploadFlow:
         fake_st.success.assert_not_called()
         fake_st.rerun.assert_not_called()
 
+    def test_partial_failure_still_persists_duplicate_notice(
+        self, fake_st: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """Regression test: when a batch has both a failure and skipped
+        duplicates, the duplicate filenames must still be stashed in
+        `pending_duplicate_notice` so the user isn't left with no feedback
+        about the files that were silently skipped as duplicates."""
+        fake_st.session_state.current_lib_id = "lib_123"
+        fake_st.session_state.current_papers_id = "papers_123"
+        fake_st.session_state.root_id = "root_123"
+        fake_st.session_state.index = LibraryIndex()
+        fake_st.session_state.selected_paper = None
+        fake_st.session_state.duplicate_uploads_skipped = ["dup.pdf"]
+        fake_st.file_uploader.return_value = [make_uploaded_file("a.pdf")]
+        fake_st.button.side_effect = lambda label, **kw: label == "Upload"
+        mocker.patch.object(app, "st_keyup", return_value="")
+        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
+        mocker.patch.object(app, "upload_papers", return_value=False)
+        mocker.patch.object(app, "upload_library_index")
+
+        app.main()
+
+        fake_st.warning.assert_called_once()
+        fake_st.rerun.assert_not_called()
+        assert fake_st.session_state.pending_duplicate_notice == ["dup.pdf"]
+
     def test_upload_button_reruns_and_persists_duplicate_notice(
         self,
         fake_st: MagicMock,
