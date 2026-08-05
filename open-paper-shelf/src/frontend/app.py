@@ -513,117 +513,126 @@ def main() -> None:
                 else:
                     st.info(message_text)
 
-            if st.session_state.get("confirm_delete_pids"):
-                pids_to_delete = st.session_state.confirm_delete_pids
-                st.warning(
-                    f"Delete {len(pids_to_delete)} paper(s)? This cannot be undone."
-                )
-                confirm_col, cancel_col = st.columns(2)
-                with confirm_col:
-                    if st.button("Confirm", key="confirm_delete_btn"):
-                        delete_succeeded = delete_selected_papers(
-                            creds,
-                            pids_to_delete,
-                            st.session_state.index,
-                            st.session_state.current_papers_id,
-                            st.session_state.local_lib_dir,
-                        )
-                        st.session_state.confirm_delete_pids = None
-                        if delete_succeeded:
-                            st.rerun()
-                with cancel_col:
-                    if st.button("Cancel", key="cancel_delete_btn"):
-                        st.session_state.confirm_delete_pids = None
-                        st.rerun()
-
-            if st.session_state.get("confirm_generate_pids"):
-                pids_to_generate = st.session_state.confirm_generate_pids
-                st.warning(
-                    f"Generate metadata for {len(pids_to_generate)} paper(s)? "
-                    "Any existing metadata will be overwritten."
-                )
-                confirm_gen_col, cancel_gen_col = st.columns(2)
-                with confirm_gen_col:
-                    if st.button("Confirm", key="confirm_generate_btn"):
-                        generate_metadata_for_selected(
-                            creds,
-                            pids_to_generate,
-                            st.session_state.index,
-                            st.session_state.current_papers_id,
-                            st.session_state.local_lib_dir,
-                        )
-                        st.session_state.confirm_generate_pids = None
-                        st.rerun()
-                with cancel_gen_col:
-                    if st.button("Cancel", key="cancel_generate_btn"):
-                        st.session_state.confirm_generate_pids = None
-                        st.rerun()
-
-            if st.session_state.get("show_add_tag_pids"):
-                pids_to_tag = st.session_state.show_add_tag_pids
-                new_tags_str = st.text_input(
-                    f"Add tag(s) to {len(pids_to_tag)} paper(s), comma separated",
-                    key="add_tag_input",
-                )
-                add_tag_col, cancel_add_tag_col = st.columns(2)
-                with add_tag_col:
-                    if st.button("Add", key="confirm_add_tag_btn"):
-                        new_tags = [
-                            t.strip() for t in new_tags_str.split(",") if t.strip()
-                        ]
-                        if new_tags:
-                            add_tags_to_selected(
+            # Always declare this container, even when no action is staged,
+            # so the number of elements preceding the search box never
+            # changes between reruns. Streamlit re-keys elements by their
+            # position in the tree; letting these panels appear and
+            # disappear directly in the flow shifted the search box's
+            # position on every toggle, which desynced its custom
+            # st_keyup iframe component (it would get stuck showing its
+            # unrendered placeholder markup instead of the real widget).
+            with st.container():
+                if st.session_state.get("confirm_delete_pids"):
+                    pids_to_delete = st.session_state.confirm_delete_pids
+                    st.warning(
+                        f"Delete {len(pids_to_delete)} paper(s)? This cannot be undone."
+                    )
+                    confirm_col, cancel_col = st.columns(2)
+                    with confirm_col:
+                        if st.button("Confirm", key="confirm_delete_btn"):
+                            delete_succeeded = delete_selected_papers(
                                 creds,
-                                pids_to_tag,
+                                pids_to_delete,
                                 st.session_state.index,
                                 st.session_state.current_papers_id,
                                 st.session_state.local_lib_dir,
-                                new_tags,
                             )
-                        st.session_state.show_add_tag_pids = None
-                        st.rerun()
-                with cancel_add_tag_col:
-                    if st.button("Cancel", key="cancel_add_tag_btn"):
-                        st.session_state.show_add_tag_pids = None
-                        st.rerun()
+                            st.session_state.confirm_delete_pids = None
+                            if delete_succeeded:
+                                st.rerun()
+                    with cancel_col:
+                        if st.button("Cancel", key="cancel_delete_btn"):
+                            st.session_state.confirm_delete_pids = None
+                            st.rerun()
 
-            if st.session_state.get("show_remove_tag_pids"):
-                pids_to_untag = st.session_state.show_remove_tag_pids
-                tags_in_selection = sorted(
-                    {
-                        tag
-                        for pid in pids_to_untag
-                        if pid in st.session_state.index.papers
-                        for tag in st.session_state.index.papers[pid].tags
-                    }
-                )
-                if not tags_in_selection:
-                    st.info("None of the selected papers have any tags.")
-                    st.session_state.show_remove_tag_pids = None
-                else:
-                    tags_to_remove = st.multiselect(
-                        f"Remove tag(s) from {len(pids_to_untag)} paper(s)",
-                        options=tags_in_selection,
-                        key="remove_tag_select",
+                if st.session_state.get("confirm_generate_pids"):
+                    pids_to_generate = st.session_state.confirm_generate_pids
+                    st.warning(
+                        f"Generate metadata for {len(pids_to_generate)} paper(s)? "
+                        "Any existing metadata will be overwritten."
                     )
-                    remove_tag_col, cancel_remove_tag_col = st.columns(2)
-                    with remove_tag_col:
-                        if st.button("Remove", key="confirm_remove_tag_btn"):
-                            if tags_to_remove:
-                                remove_tags_from_selected(
+                    confirm_gen_col, cancel_gen_col = st.columns(2)
+                    with confirm_gen_col:
+                        if st.button("Confirm", key="confirm_generate_btn"):
+                            generate_metadata_for_selected(
+                                creds,
+                                pids_to_generate,
+                                st.session_state.index,
+                                st.session_state.current_papers_id,
+                                st.session_state.local_lib_dir,
+                            )
+                            st.session_state.confirm_generate_pids = None
+                            st.rerun()
+                    with cancel_gen_col:
+                        if st.button("Cancel", key="cancel_generate_btn"):
+                            st.session_state.confirm_generate_pids = None
+                            st.rerun()
+
+                if st.session_state.get("show_add_tag_pids"):
+                    pids_to_tag = st.session_state.show_add_tag_pids
+                    new_tags_str = st.text_input(
+                        f"Add tag(s) to {len(pids_to_tag)} paper(s), comma separated",
+                        key="add_tag_input",
+                    )
+                    add_tag_col, cancel_add_tag_col = st.columns(2)
+                    with add_tag_col:
+                        if st.button("Add", key="confirm_add_tag_btn"):
+                            new_tags = [
+                                t.strip() for t in new_tags_str.split(",") if t.strip()
+                            ]
+                            if new_tags:
+                                add_tags_to_selected(
                                     creds,
-                                    pids_to_untag,
+                                    pids_to_tag,
                                     st.session_state.index,
                                     st.session_state.current_papers_id,
                                     st.session_state.local_lib_dir,
-                                    tags_to_remove,
+                                    new_tags,
                                 )
-                            st.session_state.show_remove_tag_pids = None
+                            st.session_state.show_add_tag_pids = None
                             st.rerun()
-                    with cancel_remove_tag_col:
-                        if st.button("Cancel", key="cancel_remove_tag_btn"):
-                            st.session_state.show_remove_tag_pids = None
+                    with cancel_add_tag_col:
+                        if st.button("Cancel", key="cancel_add_tag_btn"):
+                            st.session_state.show_add_tag_pids = None
                             st.rerun()
+
+                if st.session_state.get("show_remove_tag_pids"):
+                    pids_to_untag = st.session_state.show_remove_tag_pids
+                    tags_in_selection = sorted(
+                        {
+                            tag
+                            for pid in pids_to_untag
+                            if pid in st.session_state.index.papers
+                            for tag in st.session_state.index.papers[pid].tags
+                        }
+                    )
+                    if not tags_in_selection:
+                        st.info("None of the selected papers have any tags.")
+                        st.session_state.show_remove_tag_pids = None
+                    else:
+                        tags_to_remove = st.multiselect(
+                            f"Remove tag(s) from {len(pids_to_untag)} paper(s)",
+                            options=tags_in_selection,
+                            key="remove_tag_select",
+                        )
+                        remove_tag_col, cancel_remove_tag_col = st.columns(2)
+                        with remove_tag_col:
+                            if st.button("Remove", key="confirm_remove_tag_btn"):
+                                if tags_to_remove:
+                                    remove_tags_from_selected(
+                                        creds,
+                                        pids_to_untag,
+                                        st.session_state.index,
+                                        st.session_state.current_papers_id,
+                                        st.session_state.local_lib_dir,
+                                        tags_to_remove,
+                                    )
+                                st.session_state.show_remove_tag_pids = None
+                                st.rerun()
+                        with cancel_remove_tag_col:
+                            if st.button("Cancel", key="cancel_remove_tag_btn"):
+                                st.session_state.show_remove_tag_pids = None
+                                st.rerun()
 
             search_box = st_keyup(
                 "Search", placeholder="Search papers...", key="search_box"
