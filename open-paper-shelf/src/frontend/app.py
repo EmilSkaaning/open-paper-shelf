@@ -130,6 +130,12 @@ def _stage_bulk_action(state_key: str, pids: list[str]) -> None:
     st.session_state[state_key] = pids
 
 
+def _clear_bulk_actions() -> None:
+    """Clears any staged icon-bar action without staging a new one."""
+    for key in BULK_ACTION_STATE_KEYS:
+        st.session_state.pop(key, None)
+
+
 def main() -> None:
     """The main entry point for the Streamlit frontend application.
 
@@ -440,6 +446,7 @@ def main() -> None:
                     if checked_pids:
                         _stage_bulk_action("confirm_delete_pids", checked_pids)
                     else:
+                        _clear_bulk_actions()
                         icon_bar_message = ("warning", "No papers selected.")
             with icon_col2:
                 if st.button(
@@ -451,6 +458,7 @@ def main() -> None:
                     if checked_pids:
                         _stage_bulk_action("confirm_generate_pids", checked_pids)
                     else:
+                        _clear_bulk_actions()
                         icon_bar_message = ("warning", "No papers selected.")
             with icon_col3:
                 if st.button(
@@ -465,6 +473,7 @@ def main() -> None:
                     if missing_pids:
                         _stage_bulk_action("confirm_generate_pids", missing_pids)
                     else:
+                        _clear_bulk_actions()
                         icon_bar_message = ("info", "Every paper already has metadata.")
             with icon_col4:
                 if st.button(
@@ -476,6 +485,7 @@ def main() -> None:
                     if checked_pids:
                         _stage_bulk_action("show_add_tag_pids", checked_pids)
                     else:
+                        _clear_bulk_actions()
                         icon_bar_message = ("warning", "No papers selected.")
             with icon_col5:
                 if st.button(
@@ -487,6 +497,7 @@ def main() -> None:
                     if checked_pids:
                         _stage_bulk_action("show_remove_tag_pids", checked_pids)
                     else:
+                        _clear_bulk_actions()
                         icon_bar_message = ("warning", "No papers selected.")
 
             if icon_bar_message is not None:

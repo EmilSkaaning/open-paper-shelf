@@ -3233,6 +3233,32 @@ class TestMainAddRemoveTagFlow:
         assert fake_st.session_state.confirm_delete_pids == [pid]
         assert "show_add_tag_pids" not in fake_st.session_state
 
+    def test_no_op_icon_click_clears_a_lingering_generate_missing_box(
+        self, fake_st: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """Regression test: after staging the magic-wand's "generate missing"
+        confirmation, clicking another icon with nothing checked must still
+        dismiss that staged box instead of leaving both boxes visible."""
+        pid = "a" * 32
+        entry = PaperIndexEntry(
+            title="Some Paper", pdf_file_id="pdf1", meta_file_id="meta1", folder_id="f1"
+        )
+        fake_st.session_state.current_lib_id = "lib_123"
+        fake_st.session_state.current_papers_id = "papers_123"
+        fake_st.session_state.root_id = "root_123"
+        fake_st.session_state.index = LibraryIndex(papers={pid: entry})
+        fake_st.session_state.selected_paper = None
+        fake_st.session_state.confirm_generate_pids = [pid]
+        fake_st.file_uploader.return_value = None
+        fake_st.button.side_effect = lambda label, **kw: kw.get("key") == "add_tag_icon"
+        mocker.patch.object(app, "st_keyup", return_value="")
+        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
+
+        app.main()
+
+        assert "confirm_generate_pids" not in fake_st.session_state
+        assert "show_add_tag_pids" not in fake_st.session_state
+
 
 class TestPersistGeneratedMetadata:
     """Test suite for persist_generated_metadata."""
