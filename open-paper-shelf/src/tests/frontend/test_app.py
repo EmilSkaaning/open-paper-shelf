@@ -3212,6 +3212,45 @@ class TestMainBulkGenerateFlow:
         assert "gap" in icon_bar_call.kwargs
         assert icon_bar_call.kwargs["gap"] is None
 
+    def test_icon_bar_columns_have_fixed_size_css(
+        self, fake_st: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """Test a CSS rule pins the icon-bar button columns to a fixed
+        size so they stop shrinking (and overlapping/clipping their emoji)
+        as the sidebar's drag-resize slider narrows the sidebar (issue #89)."""
+        pid = "a" * 32
+        entry = PaperIndexEntry(
+            title="Some Paper", pdf_file_id="pdf1", meta_file_id="meta1", folder_id="f1"
+        )
+        fake_st.session_state.current_lib_id = "lib_123"
+        fake_st.session_state.current_papers_id = "papers_123"
+        fake_st.session_state.root_id = "root_123"
+        fake_st.session_state.index = LibraryIndex(papers={pid: entry})
+        fake_st.session_state.selected_paper = None
+        fake_st.file_uploader.return_value = None
+        fake_st.checkbox.return_value = False
+        fake_st.button.return_value = False
+        mocker.patch.object(app, "st_keyup", return_value="")
+        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
+
+        app.main()
+
+        icon_bar_css_calls = [
+            c
+            for c in fake_st.markdown.call_args_list
+            if c.args
+            and "st-key-trash_icon" in c.args[0]
+            and "st-key-bulk_generate_icon" in c.args[0]
+            and "st-key-generate_missing_icon" in c.args[0]
+        ]
+        assert icon_bar_css_calls, "expected a CSS block sizing the icon-bar buttons"
+        css = icon_bar_css_calls[0].args[0]
+        assert icon_bar_css_calls[0].kwargs.get("unsafe_allow_html") is True
+        assert "flex: 0 0 auto" in css
+        assert "overflow: hidden" in css
+        assert "margin-right" in css
+        assert "margin-bottom" in css
+
     def test_bulk_generate_with_checked_paper_shows_confirmation(
         self, fake_st: MagicMock, mocker: MockerFixture
     ) -> None:
