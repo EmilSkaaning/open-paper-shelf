@@ -245,7 +245,16 @@ def main() -> None:
         if "uploader_key" not in st.session_state:
             st.session_state.uploader_key = 0
 
-        with st.expander("Upload Paper(s)", expanded=False):
+        upload_flash = st.session_state.pop("upload_flash", None)
+        with st.expander("Upload Paper(s)", expanded=upload_flash is not None):
+            if upload_flash is not None:
+                for skipped_name in upload_flash["duplicates_skipped"]:
+                    st.warning(
+                        f"Skipped {skipped_name}: a paper with that title "
+                        "already exists in this library."
+                    )
+                st.success(upload_flash["message"])
+
             uploaded_files = st.file_uploader(
                 "Choose PDF files",
                 type="pdf",
@@ -288,13 +297,20 @@ def main() -> None:
                         "duplicate_uploads_skipped", []
                     )
                     if all_succeeded and not duplicates_skipped:
-                        st.success("Uploaded successfully!")
+                        st.session_state.upload_flash = {
+                            "duplicates_skipped": [],
+                            "all_succeeded": True,
+                            "message": "Uploaded successfully!",
+                        }
                         st.rerun()
                     elif all_succeeded:
-                        st.success(
-                            "Uploaded successfully! (Duplicate files were "
-                            "skipped — see warnings above.)"
-                        )
+                        st.session_state.upload_flash = {
+                            "duplicates_skipped": duplicates_skipped,
+                            "all_succeeded": True,
+                            "message": "Uploaded successfully! (Duplicate "
+                            "files were skipped — see warnings above.)",
+                        }
+                        st.rerun()
                     else:
                         st.warning(
                             "Some files failed to upload. See the errors above; "
