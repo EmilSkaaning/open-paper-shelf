@@ -246,19 +246,26 @@ def main() -> None:
         if "uploader_key" not in st.session_state:
             st.session_state.uploader_key = 0
 
-        with st.expander("Upload Paper(s)", expanded=False):
-            pending_duplicates = st.session_state.pop("pending_duplicate_notice", None)
-            if pending_duplicates:
-                if len(pending_duplicates) > MAX_DUPLICATE_NAMES_TO_LIST:
+        upload_flash = st.session_state.pop("upload_flash", None)
+        with st.expander("Upload Paper(s)", expanded=upload_flash is not None):
+            if upload_flash is not None:
+                duplicates_skipped = upload_flash["duplicates_skipped"]
+                if len(duplicates_skipped) > MAX_DUPLICATE_NAMES_TO_LIST:
                     st.warning(
-                        f"Skipped {len(pending_duplicates)} duplicate files "
+                        f"Skipped {len(duplicates_skipped)} duplicate files "
                         "already in this library."
                     )
                 else:
-                    st.warning(
-                        "Skipped duplicate file(s) already in this library:\n"
-                        + "\n".join(f"- {name}" for name in pending_duplicates)
-                    )
+                    for skipped_name in duplicates_skipped:
+                        st.warning(
+                            f"Skipped {skipped_name}: a paper with that title "
+                            "already exists in this library."
+                        )
+                if upload_flash["all_succeeded"]:
+                    st.success(upload_flash["message"])
+                else:
+                    st.warning(upload_flash["message"])
+
             uploaded_files = st.file_uploader(
                 "Choose PDF files",
                 type="pdf",
@@ -301,19 +308,29 @@ def main() -> None:
                         "duplicate_uploads_skipped", []
                     )
                     if all_succeeded and not duplicates_skipped:
-                        st.success("Uploaded successfully!")
+                        st.session_state.upload_flash = {
+                            "duplicates_skipped": [],
+                            "all_succeeded": True,
+                            "message": "Uploaded successfully!",
+                        }
                         st.rerun()
                     elif all_succeeded:
-                        st.session_state.pending_duplicate_notice = duplicates_skipped
-                        st.success(
-                            "Uploaded successfully! (Duplicate files were skipped.)"
-                        )
+                        st.session_state.upload_flash = {
+                            "duplicates_skipped": duplicates_skipped,
+                            "all_succeeded": True,
+                            "message": "Uploaded successfully! (Duplicate "
+                            "files were skipped — see warnings above.)",
+                        }
                         st.rerun()
                     else:
                         if duplicates_skipped:
-                            st.session_state.pending_duplicate_notice = (
-                                duplicates_skipped
-                            )
+                            st.session_state.upload_flash = {
+                                "duplicates_skipped": duplicates_skipped,
+                                "all_succeeded": False,
+                                "message": "Some files failed to upload. "
+                                "See the errors above; re-select the failed "
+                                "files to retry.",
+                            }
                         st.warning(
                             "Some files failed to upload. See the errors above; "
                             "re-select the failed files to retry."

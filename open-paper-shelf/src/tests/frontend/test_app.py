@@ -2084,7 +2084,19 @@ class TestMainUploadFlow:
 
         mock_upload_papers.assert_called_once()
         mock_upload_index.assert_called_once()
-        fake_st.success.assert_called_once()
+        # The success message is stashed in session_state rather than shown
+        # immediately, since st.rerun() halts the script right after this
+        # and would wipe out anything rendered in the same run.
+        fake_st.success.assert_not_called()
+        assert fake_st.session_state.upload_flash["message"] == (
+            "Uploaded successfully!"
+        )
+
+        fake_st.button.side_effect = lambda label, **kw: False
+        app.main()
+
+        fake_st.success.assert_called_once_with("Uploaded successfully!")
+        assert "upload_flash" not in fake_st.session_state
 
     def test_upload_button_reports_partial_failure_without_rerun(
         self, fake_st: MagicMock, mocker: MockerFixture
@@ -2114,8 +2126,8 @@ class TestMainUploadFlow:
     ) -> None:
         """Regression test: when a batch has both a failure and skipped
         duplicates, the duplicate filenames must still be stashed in
-        `pending_duplicate_notice` so the user isn't left with no feedback
-        about the files that were silently skipped as duplicates."""
+        `upload_flash` so the user isn't left with no feedback about the
+        files that were silently skipped as duplicates."""
         fake_st.session_state.current_lib_id = "lib_123"
         fake_st.session_state.current_papers_id = "papers_123"
         fake_st.session_state.root_id = "root_123"
@@ -2133,7 +2145,9 @@ class TestMainUploadFlow:
 
         fake_st.warning.assert_called_once()
         fake_st.rerun.assert_not_called()
-        assert fake_st.session_state.pending_duplicate_notice == ["dup.pdf"]
+        flash = fake_st.session_state.upload_flash
+        assert flash["duplicates_skipped"] == ["dup.pdf"]
+        assert flash["all_succeeded"] is False
 
     def test_upload_button_reruns_and_persists_duplicate_notice(
         self,
@@ -2142,10 +2156,12 @@ class TestMainUploadFlow:
         stop_rerun: type[BaseException],
     ) -> None:
         """Regression test: when upload_papers reports skipped duplicates,
-        the app still reruns (so the uploader clears), but stashes the
-        skipped filenames in `pending_duplicate_notice` session state so
-        they can be rendered by name on the next run, instead of relying on
-        an ephemeral st.warning that a rerun would wipe."""
+        the app must still rerun after upload so the file uploader's key
+        bump takes effect and it clears its selection, matching the
+        plain-success branch. The success/warning messages are stashed in
+        session_state and rendered on the next run, since st.rerun() would
+        otherwise wipe them out before the user could see which files were
+        skipped (Jules review finding on PR #93)."""
         fake_st.session_state.current_lib_id = "lib_123"
         fake_st.session_state.current_papers_id = "papers_123"
         fake_st.session_state.root_id = "root_123"
@@ -2163,32 +2179,21 @@ class TestMainUploadFlow:
             app.main()
 
         fake_st.rerun.assert_called_once()
-        fake_st.success.assert_called_once()
-        assert fake_st.session_state.pending_duplicate_notice == ["a.pdf"]
+        fake_st.success.assert_not_called()
+        flash = fake_st.session_state.upload_flash
+        assert flash["duplicates_skipped"] == ["a.pdf"]
+        assert flash["all_succeeded"] is True
 
-    def test_pending_duplicate_notice_renders_filenames_and_is_cleared(
-        self, fake_st: MagicMock, mocker: MockerFixture
-    ) -> None:
-        """Test that a pending duplicate notice from a prior run is rendered
-        with each skipped filename listed, then consumed so it doesn't
-        reappear on the following run."""
-        fake_st.session_state.current_lib_id = "lib_123"
-        fake_st.session_state.current_papers_id = "papers_123"
-        fake_st.session_state.root_id = "root_123"
-        fake_st.session_state.index = LibraryIndex()
-        fake_st.session_state.selected_paper = None
-        fake_st.session_state.pending_duplicate_notice = ["a.pdf", "b.pdf"]
-        fake_st.file_uploader.return_value = None
-        mocker.patch.object(app, "st_keyup", return_value="")
-        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
-
+        fake_st.button.side_effect = lambda label, **kw: False
         app.main()
 
-        warning_messages = [c.args[0] for c in fake_st.warning.call_args_list]
-        assert any("a.pdf" in msg and "b.pdf" in msg for msg in warning_messages)
-        assert "pending_duplicate_notice" not in fake_st.session_state
+        fake_st.warning.assert_called_once_with(
+            "Skipped a.pdf: a paper with that title already exists in this library."
+        )
+        fake_st.success.assert_called_once_with(flash["message"])
+        assert "upload_flash" not in fake_st.session_state
 
-    def test_pending_duplicate_notice_summarizes_count_above_threshold(
+    def test_upload_flash_summarizes_count_above_threshold(
         self, fake_st: MagicMock, mocker: MockerFixture
     ) -> None:
         """Test that more than MAX_DUPLICATE_NAMES_TO_LIST skipped duplicates
@@ -2199,9 +2204,12 @@ class TestMainUploadFlow:
         fake_st.session_state.root_id = "root_123"
         fake_st.session_state.index = LibraryIndex()
         fake_st.session_state.selected_paper = None
-        fake_st.session_state.pending_duplicate_notice = [
-            f"paper{i}.pdf" for i in range(6)
-        ]
+        fake_st.session_state.upload_flash = {
+            "duplicates_skipped": [f"paper{i}.pdf" for i in range(6)],
+            "all_succeeded": True,
+            "message": "Uploaded successfully! (Duplicate files were "
+            "skipped — see warnings above.)",
+        }
         fake_st.file_uploader.return_value = None
         mocker.patch.object(app, "st_keyup", return_value="")
         mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
@@ -2210,6 +2218,7 @@ class TestMainUploadFlow:
 
         warning_messages = [c.args[0] for c in fake_st.warning.call_args_list]
         assert any("6" in msg and "paper0.pdf" not in msg for msg in warning_messages)
+        assert "upload_flash" not in fake_st.session_state
 
     def test_upload_shows_determinate_progress_bar_not_spinner(
         self,
