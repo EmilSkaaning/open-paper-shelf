@@ -325,6 +325,12 @@ def main() -> None:
             # to a fixed size (flex: 0 0 auto) so only the trailing spacer
             # column shrinks/grows, and clip+center each button's content so
             # its emoji can never render outside the button box.
+            #
+            # At very narrow sidebar widths the row itself wraps (the three
+            # fixed-size columns no longer fit next to the shrunk spacer
+            # column), stacking icons onto a second row. A bottom margin on
+            # every button keeps that wrapped row from touching the one
+            # above it, in addition to the existing horizontal gap.
             st.markdown(
                 "<style>"
                 "div[data-testid='stColumn']:has(.st-key-trash_icon),"
@@ -336,7 +342,7 @@ def main() -> None:
                 ".st-key-generate_missing_icon button"
                 "{ width: 2.5rem; height: 2.5rem; min-width: 2.5rem; padding: 0;"
                 " display: flex; align-items: center; justify-content: center;"
-                " overflow: hidden; line-height: 1; }"
+                " overflow: hidden; line-height: 1; margin-bottom: 0.4rem; }"
                 ".st-key-trash_icon button, .st-key-bulk_generate_icon button"
                 "{ margin-right: 0.4rem; }"
                 "</style>",

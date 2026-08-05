@@ -3192,6 +3192,7 @@ class TestMainBulkGenerateFlow:
         assert "flex: 0 0 auto" in css
         assert "overflow: hidden" in css
         assert "margin-right" in css
+        assert "margin-bottom" in css
 
     def test_bulk_generate_with_checked_paper_shows_confirmation(
         self, fake_st: MagicMock, mocker: MockerFixture
