@@ -44,8 +44,10 @@ from frontend.constants import (  # noqa: E402
     STATUS_LABELS,
 )
 from frontend.library import (  # noqa: E402
+    add_tags_to_selected,
     delete_selected_papers,
     init_library_state,
+    remove_tags_from_selected,
     sync_library_index,
 )
 from frontend.library_filters import (  # noqa: E402
@@ -226,6 +228,8 @@ def main() -> None:
                 "last_sync_time",
                 "confirm_delete_pids",
                 "confirm_generate_pids",
+                "show_add_tag_pids",
+                "show_remove_tag_pids",
             ]:
                 st.session_state.pop(k, None)
 
@@ -372,22 +376,32 @@ def main() -> None:
                 "<style>"
                 "div[data-testid='stColumn']:has(.st-key-trash_icon),"
                 "div[data-testid='stColumn']:has(.st-key-bulk_generate_icon),"
-                "div[data-testid='stColumn']:has(.st-key-generate_missing_icon)"
+                "div[data-testid='stColumn']:has(.st-key-generate_missing_icon),"
+                "div[data-testid='stColumn']:has(.st-key-add_tag_icon),"
+                "div[data-testid='stColumn']:has(.st-key-remove_tag_icon)"
                 "{ flex: 0 0 auto; width: auto; min-width: 2.5rem; }"
                 ".st-key-trash_icon button,"
                 ".st-key-bulk_generate_icon button,"
-                ".st-key-generate_missing_icon button"
+                ".st-key-generate_missing_icon button,"
+                ".st-key-add_tag_icon button,"
+                ".st-key-remove_tag_icon button"
                 "{ width: 2.5rem; height: 2.5rem; min-width: 2.5rem; padding: 0;"
                 " display: flex; align-items: center; justify-content: center;"
                 " overflow: hidden; line-height: 1; margin-bottom: 0.4rem; }"
-                ".st-key-trash_icon button, .st-key-bulk_generate_icon button"
+                ".st-key-trash_icon button, .st-key-bulk_generate_icon button,"
+                ".st-key-generate_missing_icon button, .st-key-add_tag_icon button"
                 "{ margin-right: 0.4rem; }"
                 "</style>",
                 unsafe_allow_html=True,
             )
-            icon_col1, icon_col2, icon_col3, _icon_spacer = st.columns(
-                [1, 1, 1, 7], gap=None
-            )
+            (
+                icon_col1,
+                icon_col2,
+                icon_col3,
+                icon_col4,
+                icon_col5,
+                _icon_spacer,
+            ) = st.columns([1, 1, 1, 1, 1, 5], gap=None)
             with icon_col1:
                 if st.button(
                     "🗑️",
@@ -424,6 +438,28 @@ def main() -> None:
                         st.session_state.confirm_generate_pids = missing_pids
                     else:
                         st.info("Every paper already has metadata.")
+            with icon_col4:
+                if st.button(
+                    "🏷️",
+                    key="add_tag_icon",
+                    help="Add a tag to selected papers",
+                    type="secondary",
+                ):
+                    if checked_pids:
+                        st.session_state.show_add_tag_pids = checked_pids
+                    else:
+                        st.warning("No papers selected.")
+            with icon_col5:
+                if st.button(
+                    "🚫",
+                    key="remove_tag_icon",
+                    help="Remove a tag from selected papers",
+                    type="secondary",
+                ):
+                    if checked_pids:
+                        st.session_state.show_remove_tag_pids = checked_pids
+                    else:
+                        st.warning("No papers selected.")
 
             search_box = st_keyup(
                 "Search", placeholder="Search papers...", key="search_box"
@@ -504,6 +540,72 @@ def main() -> None:
                     if st.button("Cancel", key="cancel_generate_btn"):
                         st.session_state.confirm_generate_pids = None
                         st.rerun()
+
+            if st.session_state.get("show_add_tag_pids"):
+                pids_to_tag = st.session_state.show_add_tag_pids
+                new_tags_str = st.text_input(
+                    f"Add tag(s) to {len(pids_to_tag)} paper(s), comma separated",
+                    key="add_tag_input",
+                )
+                add_tag_col, cancel_add_tag_col = st.columns(2)
+                with add_tag_col:
+                    if st.button("Add", key="confirm_add_tag_btn"):
+                        new_tags = [
+                            t.strip() for t in new_tags_str.split(",") if t.strip()
+                        ]
+                        if new_tags:
+                            add_tags_to_selected(
+                                creds,
+                                pids_to_tag,
+                                st.session_state.index,
+                                st.session_state.current_papers_id,
+                                st.session_state.local_lib_dir,
+                                new_tags,
+                            )
+                        st.session_state.show_add_tag_pids = None
+                        st.rerun()
+                with cancel_add_tag_col:
+                    if st.button("Cancel", key="cancel_add_tag_btn"):
+                        st.session_state.show_add_tag_pids = None
+                        st.rerun()
+
+            if st.session_state.get("show_remove_tag_pids"):
+                pids_to_untag = st.session_state.show_remove_tag_pids
+                tags_in_selection = sorted(
+                    {
+                        tag
+                        for pid in pids_to_untag
+                        if pid in st.session_state.index.papers
+                        for tag in st.session_state.index.papers[pid].tags
+                    }
+                )
+                if not tags_in_selection:
+                    st.info("None of the selected papers have any tags.")
+                    st.session_state.show_remove_tag_pids = None
+                else:
+                    tags_to_remove = st.multiselect(
+                        f"Remove tag(s) from {len(pids_to_untag)} paper(s)",
+                        options=tags_in_selection,
+                        key="remove_tag_select",
+                    )
+                    remove_tag_col, cancel_remove_tag_col = st.columns(2)
+                    with remove_tag_col:
+                        if st.button("Remove", key="confirm_remove_tag_btn"):
+                            if tags_to_remove:
+                                remove_tags_from_selected(
+                                    creds,
+                                    pids_to_untag,
+                                    st.session_state.index,
+                                    st.session_state.current_papers_id,
+                                    st.session_state.local_lib_dir,
+                                    tags_to_remove,
+                                )
+                            st.session_state.show_remove_tag_pids = None
+                            st.rerun()
+                    with cancel_remove_tag_col:
+                        if st.button("Cancel", key="cancel_remove_tag_btn"):
+                            st.session_state.show_remove_tag_pids = None
+                            st.rerun()
 
             # Re-filter after the block above so a partial batch-delete
             # failure (which skips st.rerun() to keep its error visible)
