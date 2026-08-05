@@ -337,6 +337,8 @@ def main() -> None:
                 "{ width: 2.5rem; height: 2.5rem; min-width: 2.5rem; padding: 0;"
                 " display: flex; align-items: center; justify-content: center;"
                 " overflow: hidden; line-height: 1; }"
+                ".st-key-trash_icon button, .st-key-bulk_generate_icon button"
+                "{ margin-right: 0.4rem; }"
                 "</style>",
                 unsafe_allow_html=True,
             )

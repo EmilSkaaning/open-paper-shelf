@@ -3191,6 +3191,7 @@ class TestMainBulkGenerateFlow:
         assert icon_bar_css_calls[0].kwargs.get("unsafe_allow_html") is True
         assert "flex: 0 0 auto" in css
         assert "overflow: hidden" in css
+        assert "margin-right" in css
 
     def test_bulk_generate_with_checked_paper_shows_confirmation(
         self, fake_st: MagicMock, mocker: MockerFixture
