@@ -213,6 +213,8 @@ def _apply_tag_update(
             continue
 
         new_tags = update_tags(list(meta.tags))
+        if new_tags == meta.tags:
+            continue
         meta = meta.model_copy(update={"tags": new_tags})
 
         try:
