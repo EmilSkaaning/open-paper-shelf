@@ -4354,6 +4354,130 @@ class TestMainBulkGenerateFlow:
         assert fake_st.session_state.confirm_generate_pids is None
 
 
+class TestToggleSelectAll:
+    """Test suite for `_toggle_select_all`, the "Mark all" callback."""
+
+    def test_marks_only_the_given_filtered_pids(self, fake_st: MagicMock) -> None:
+        """Test switching the toggle on marks exactly the filtered papers,
+        not every paper in the library."""
+        pid_in_filter = "a" * 32
+        pid_outside_filter = "b" * 32
+        fake_st.session_state.index = LibraryIndex(
+            papers={
+                pid_in_filter: PaperIndexEntry(
+                    title="In", pdf_file_id="p1", meta_file_id="m1", folder_id="f1"
+                ),
+                pid_outside_filter: PaperIndexEntry(
+                    title="Out", pdf_file_id="p2", meta_file_id="m2", folder_id="f2"
+                ),
+            }
+        )
+        fake_st.session_state.select_all_toggle = True
+
+        app._toggle_select_all([pid_in_filter])
+
+        assert fake_st.session_state[f"chk_{pid_in_filter}"] is True
+        assert f"chk_{pid_outside_filter}" not in fake_st.session_state
+
+    def test_toggling_off_clears_every_mark_in_the_library(
+        self, fake_st: MagicMock
+    ) -> None:
+        """Test switching the toggle off clears marks for every paper, not
+        just the ones currently in the filtered view."""
+        pid_in_filter = "a" * 32
+        pid_outside_filter = "b" * 32
+        fake_st.session_state.index = LibraryIndex(
+            papers={
+                pid_in_filter: PaperIndexEntry(
+                    title="In", pdf_file_id="p1", meta_file_id="m1", folder_id="f1"
+                ),
+                pid_outside_filter: PaperIndexEntry(
+                    title="Out", pdf_file_id="p2", meta_file_id="m2", folder_id="f2"
+                ),
+            }
+        )
+        fake_st.session_state[f"chk_{pid_in_filter}"] = True
+        fake_st.session_state[f"chk_{pid_outside_filter}"] = True
+        fake_st.session_state.select_all_toggle = False
+
+        app._toggle_select_all([pid_in_filter])
+
+        assert f"chk_{pid_in_filter}" not in fake_st.session_state
+        assert f"chk_{pid_outside_filter}" not in fake_st.session_state
+
+    def test_reapplying_with_a_narrower_filter_drops_stale_marks(
+        self, fake_st: MagicMock
+    ) -> None:
+        """Test toggling on again with a narrower filter leaves no stale
+        marks from a paper that's no longer in view (issue #99)."""
+        pid_still_in_filter = "a" * 32
+        pid_no_longer_in_filter = "b" * 32
+        fake_st.session_state.index = LibraryIndex(
+            papers={
+                pid_still_in_filter: PaperIndexEntry(
+                    title="Still", pdf_file_id="p1", meta_file_id="m1", folder_id="f1"
+                ),
+                pid_no_longer_in_filter: PaperIndexEntry(
+                    title="Gone", pdf_file_id="p2", meta_file_id="m2", folder_id="f2"
+                ),
+            }
+        )
+        fake_st.session_state[f"chk_{pid_still_in_filter}"] = True
+        fake_st.session_state[f"chk_{pid_no_longer_in_filter}"] = True
+        fake_st.session_state.select_all_toggle = True
+
+        app._toggle_select_all([pid_still_in_filter])
+
+        assert fake_st.session_state[f"chk_{pid_still_in_filter}"] is True
+        assert f"chk_{pid_no_longer_in_filter}" not in fake_st.session_state
+
+
+class TestMainSelectAllToggle:
+    """Test suite for main()'s "Mark all" checkbox rendering."""
+
+    def test_renders_mark_all_checkbox_scoped_to_filtered_papers(
+        self, fake_st: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """Test the "Mark all" checkbox is rendered with the currently
+        filtered paper IDs bound as its on_change callback args."""
+        matching_pid = "a" * 32
+        non_matching_pid = "b" * 32
+        fake_st.session_state.current_lib_id = "lib_123"
+        fake_st.session_state.current_papers_id = "papers_123"
+        fake_st.session_state.root_id = "root_123"
+        fake_st.session_state.index = LibraryIndex(
+            papers={
+                matching_pid: PaperIndexEntry(
+                    title="Neural Networks",
+                    pdf_file_id="p1",
+                    meta_file_id="m1",
+                    folder_id="f1",
+                ),
+                non_matching_pid: PaperIndexEntry(
+                    title="Something Else",
+                    pdf_file_id="p2",
+                    meta_file_id="m2",
+                    folder_id="f2",
+                ),
+            }
+        )
+        fake_st.session_state.selected_paper = None
+        fake_st.file_uploader.return_value = None
+        fake_st.button.return_value = False
+        mocker.patch.object(app, "st_keyup", return_value="neural")
+        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
+
+        app.main()
+
+        select_all_call = next(
+            c
+            for c in fake_st.checkbox.call_args_list
+            if c.kwargs.get("key") == "select_all_toggle"
+        )
+        assert select_all_call.kwargs.get("on_change") is app._toggle_select_all
+        assert select_all_call.kwargs.get("args") == ([matching_pid],)
+
+
 def _select_paper(
     fake_st: MagicMock, mocker: MockerFixture, tmp_path: Path, pid: str
 ) -> PaperIndexEntry:

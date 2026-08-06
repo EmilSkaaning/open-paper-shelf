@@ -136,6 +136,28 @@ def _clear_bulk_actions() -> None:
         st.session_state.pop(key, None)
 
 
+def _toggle_select_all(filtered_pids: list[str]) -> None:
+    """Marks or clears every paper checkbox to match the "Mark all" toggle.
+
+    Every paper's checkbox is cleared first, then - only when the toggle was
+    switched on - re-marked for exactly `filtered_pids`. Always starting from
+    a clean slate keeps this scoped to the papers currently matching the
+    active search/filter, with no stale marks surviving from a prior
+    selection made under a different filter.
+
+    Args:
+        filtered_pids: The paper IDs currently satisfying the active
+            search/filter criteria, captured at the time the toggle was
+            rendered.
+    """
+    mark_all = st.session_state.select_all_toggle
+    for pid in st.session_state.index.papers:
+        st.session_state.pop(f"chk_{pid}", None)
+    if mark_all:
+        for pid in filtered_pids:
+            st.session_state[f"chk_{pid}"] = True
+
+
 def main() -> None:
     """The main entry point for the Streamlit frontend application.
 
@@ -694,6 +716,13 @@ def main() -> None:
                 tags_filter,
                 duplicate_pids=duplicate_pids,
                 include_similar=include_similar_filter,
+            )
+
+            st.checkbox(
+                "Mark all",
+                key="select_all_toggle",
+                on_change=_toggle_select_all,
+                args=([pid for pid, _ in filtered_papers],),
             )
 
             with st.container(height=400):
