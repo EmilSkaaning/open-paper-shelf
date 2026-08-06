@@ -3,7 +3,7 @@
 import json
 import shutil
 from pathlib import Path
-from typing import Sequence
+from typing import Callable, Sequence
 
 import streamlit as st
 from google.oauth2.credentials import Credentials
@@ -13,9 +13,10 @@ from backend.drive import (
     delete_paper_folder,
     download_file,
     get_library_index_file,
+    upload_file_to_folder,
     upload_library_index,
 )
-from backend.models import LibraryIndex, PaperIndexEntry
+from backend.models import LibraryIndex, PaperIndexEntry, PaperMetadata
 
 
 def init_library_state(
@@ -149,3 +150,158 @@ def delete_selected_papers(
         shutil.rmtree(local_lib_dir / pid, ignore_errors=True)
 
     return all_succeeded
+
+
+def _apply_tag_update(
+    creds: Credentials,
+    pids: Sequence[str],
+    index: LibraryIndex,
+    papers_id: str,
+    local_lib_dir: Path,
+    update_tags: Callable[[list[str]], list[str]],
+) -> bool:
+    """Applies a tag transformation to each selected paper's metadata.
+
+    Downloads a paper's meta.json first if it isn't already cached locally
+    (e.g. because the paper was never opened), so its existing notes/
+    citation/status survive the update. `update_tags` is applied to each
+    paper's current tags to compute its new tags, which are then written to
+    local disk, uploaded to Drive, and applied to `index` in place. The
+    whole-library index is uploaded once after the batch rather than once
+    per paper. A per-paper failure is reported and the batch continues
+    with the rest.
+
+    Args:
+        creds: The Google OAuth credentials.
+        pids: The paper IDs to update.
+        index: The current library index; mutated in place.
+        papers_id: The Google Drive folder ID of the library's papers folder.
+        local_lib_dir: The local cache directory for this library.
+        update_tags: Called with a paper's current tags, returning its new
+            tags.
+
+    Returns:
+        bool: True if every requested paper's tags were updated and (when
+        there was anything to upload) the index upload succeeded. False if
+        any individual paper's fetch/save failed, or the index upload
+        failed.
+    """
+    all_succeeded = True
+    updated_any = False
+    for pid in pids:
+        entry = index.papers.get(pid)
+        if entry is None:
+            continue
+
+        local_paper_dir = local_lib_dir / pid
+        local_paper_dir.mkdir(parents=True, exist_ok=True)
+        local_meta_path = local_paper_dir / "meta.json"
+        if not local_meta_path.exists():
+            try:
+                download_file(creds, entry.meta_file_id, local_meta_path)
+            except Exception as e:
+                st.error(f"Failed to fetch metadata for '{entry.title}': {e}")
+                all_succeeded = False
+                continue
+
+        try:
+            data = json.loads(local_meta_path.read_text(encoding="utf-8"))
+            meta = PaperMetadata(**data)
+        except Exception as e:
+            st.error(f"Failed to read metadata for '{entry.title}': {e}")
+            all_succeeded = False
+            continue
+
+        new_tags = update_tags(list(meta.tags))
+        if new_tags == meta.tags:
+            continue
+        meta = meta.model_copy(update={"tags": new_tags})
+
+        try:
+            local_meta_path.write_text(meta.model_dump_json(indent=2), encoding="utf-8")
+            upload_file_to_folder(
+                creds, entry.folder_id, local_meta_path, "meta.json", "application/json"
+            )
+        except Exception as e:
+            st.error(f"Failed to save tags for '{entry.title}': {e}")
+            all_succeeded = False
+            continue
+
+        index.papers[pid] = entry.model_copy(update={"tags": new_tags})
+        updated_any = True
+
+    if not updated_any:
+        return all_succeeded
+
+    try:
+        upload_library_index(creds, papers_id, index)
+    except Exception as e:
+        st.error(f"Tags saved, but syncing the index failed: {e}")
+        return False
+
+    return all_succeeded
+
+
+def add_tags_to_selected(
+    creds: Credentials,
+    pids: Sequence[str],
+    index: LibraryIndex,
+    papers_id: str,
+    local_lib_dir: Path,
+    tags: Sequence[str],
+) -> bool:
+    """Adds one or more tags to every selected paper's metadata.
+
+    Args:
+        creds: The Google OAuth credentials.
+        pids: The paper IDs to update.
+        index: The current library index; mutated in place.
+        papers_id: The Google Drive folder ID of the library's papers folder.
+        local_lib_dir: The local cache directory for this library.
+        tags: The tags to add. A paper that already has a given tag isn't
+            given a duplicate.
+
+    Returns:
+        bool: See `_apply_tag_update`.
+    """
+
+    def _add(existing_tags: list[str]) -> list[str]:
+        """Appends any tag from `tags` not already present, in order."""
+        result = list(existing_tags)
+        for tag in tags:
+            if tag not in result:
+                result.append(tag)
+        return result
+
+    return _apply_tag_update(creds, pids, index, papers_id, local_lib_dir, _add)
+
+
+def remove_tags_from_selected(
+    creds: Credentials,
+    pids: Sequence[str],
+    index: LibraryIndex,
+    papers_id: str,
+    local_lib_dir: Path,
+    tags: Sequence[str],
+) -> bool:
+    """Removes one or more tags from every selected paper's metadata.
+
+    Args:
+        creds: The Google OAuth credentials.
+        pids: The paper IDs to update.
+        index: The current library index; mutated in place.
+        papers_id: The Google Drive folder ID of the library's papers folder.
+        local_lib_dir: The local cache directory for this library.
+        tags: The tags to remove. A paper without a given tag is left
+            unchanged for that tag.
+
+    Returns:
+        bool: See `_apply_tag_update`.
+    """
+    tags_to_remove = set(tags)
+
+    def _remove(existing_tags: list[str]) -> list[str]:
+        """Drops every tag in `tags_to_remove`, keeping the rest in order."""
+        return [tag for tag in existing_tags if tag not in tags_to_remove]
+
+    return _apply_tag_update(creds, pids, index, papers_id, local_lib_dir, _remove)

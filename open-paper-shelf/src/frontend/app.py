@@ -44,8 +44,10 @@ from frontend.constants import (  # noqa: E402
     STATUS_LABELS,
 )
 from frontend.library import (  # noqa: E402
+    add_tags_to_selected,
     delete_selected_papers,
     init_library_state,
+    remove_tags_from_selected,
     sync_library_index,
 )
 from frontend.library_filters import (  # noqa: E402
@@ -102,6 +104,36 @@ st.set_page_config(
     page_title="Open Paper Shelf",
     initial_sidebar_state="expanded",
 )
+
+# Session-state keys backing the icon bar's mutually exclusive staged
+# actions - only one of delete/generate/add-tag/remove-tag can be staged at
+# a time, so arming one clears the others rather than stacking their forms.
+BULK_ACTION_STATE_KEYS = (
+    "confirm_delete_pids",
+    "confirm_generate_pids",
+    "show_add_tag_pids",
+    "show_remove_tag_pids",
+)
+
+
+def _stage_bulk_action(state_key: str, pids: list[str]) -> None:
+    """Stages a bulk action for the icon bar, clearing any other staged action.
+
+    Args:
+        state_key: The `st.session_state` key to stage `pids` under - one of
+            `BULK_ACTION_STATE_KEYS`.
+        pids: The paper IDs the staged action applies to.
+    """
+    for key in BULK_ACTION_STATE_KEYS:
+        if key != state_key:
+            st.session_state.pop(key, None)
+    st.session_state[state_key] = pids
+
+
+def _clear_bulk_actions() -> None:
+    """Clears any staged icon-bar action without staging a new one."""
+    for key in BULK_ACTION_STATE_KEYS:
+        st.session_state.pop(key, None)
 
 
 def main() -> None:
@@ -226,6 +258,8 @@ def main() -> None:
                 "last_sync_time",
                 "confirm_delete_pids",
                 "confirm_generate_pids",
+                "show_add_tag_pids",
+                "show_remove_tag_pids",
             ]:
                 st.session_state.pop(k, None)
 
@@ -367,27 +401,55 @@ def main() -> None:
             # fixed-size columns no longer fit next to the shrunk spacer
             # column), stacking icons onto a second row. A bottom margin on
             # every button keeps that wrapped row from touching the one
-            # above it, in addition to the existing horizontal gap.
+            # above it, matching the existing horizontal gap so wrapped
+            # icons stay evenly spaced in both directions.
+            #
+            # Streamlit reserves its own ~1rem gap above the row plus the
+            # expander's native top padding, stacking into a large empty
+            # band between the "Library Papers" header and the icon row.
+            # Zero out the expander's native padding for this row and pull
+            # the row up with a negative margin to close most of that gap;
+            # a button's `help` tooltip is allowed to land on the header
+            # text when hovering a top-row icon — that overlap is accepted
+            # in exchange for a tight header-to-icon spacing.
             st.markdown(
                 "<style>"
+                "div[data-testid='stExpanderDetails']:has(.st-key-trash_icon)"
+                "{ padding-top: 0; }"
+                "div[data-testid='stHorizontalBlock']:has(.st-key-trash_icon)"
+                "{ padding-top: 0; margin-top: -0.6rem; }"
                 "div[data-testid='stColumn']:has(.st-key-trash_icon),"
                 "div[data-testid='stColumn']:has(.st-key-bulk_generate_icon),"
-                "div[data-testid='stColumn']:has(.st-key-generate_missing_icon)"
+                "div[data-testid='stColumn']:has(.st-key-generate_missing_icon),"
+                "div[data-testid='stColumn']:has(.st-key-add_tag_icon),"
+                "div[data-testid='stColumn']:has(.st-key-remove_tag_icon)"
                 "{ flex: 0 0 auto; width: auto; min-width: 2.5rem; }"
                 ".st-key-trash_icon button,"
                 ".st-key-bulk_generate_icon button,"
-                ".st-key-generate_missing_icon button"
+                ".st-key-generate_missing_icon button,"
+                ".st-key-add_tag_icon button,"
+                ".st-key-remove_tag_icon button"
                 "{ width: 2.5rem; height: 2.5rem; min-width: 2.5rem; padding: 0;"
                 " display: flex; align-items: center; justify-content: center;"
                 " overflow: hidden; line-height: 1; margin-bottom: 0.4rem; }"
-                ".st-key-trash_icon button, .st-key-bulk_generate_icon button"
+                ".st-key-trash_icon button, .st-key-bulk_generate_icon button,"
+                ".st-key-generate_missing_icon button, .st-key-add_tag_icon button"
                 "{ margin-right: 0.4rem; }"
                 "</style>",
                 unsafe_allow_html=True,
             )
-            icon_col1, icon_col2, icon_col3, _icon_spacer = st.columns(
-                [1, 1, 1, 7], gap=None
-            )
+            (
+                icon_col1,
+                icon_col2,
+                icon_col3,
+                icon_col4,
+                icon_col5,
+                _icon_spacer,
+            ) = st.columns([1, 1, 1, 1, 1, 5], gap=None)
+            # Rendered outside the columns below so a wide message box never
+            # stretches the auto-width icon columns and shoves the later
+            # icons out of place.
+            icon_bar_message: tuple[str, str] | None = None
             with icon_col1:
                 if st.button(
                     "🗑️",
@@ -396,9 +458,10 @@ def main() -> None:
                     type="secondary",
                 ):
                     if checked_pids:
-                        st.session_state.confirm_delete_pids = checked_pids
+                        _stage_bulk_action("confirm_delete_pids", checked_pids)
                     else:
-                        st.warning("No papers selected.")
+                        _clear_bulk_actions()
+                        icon_bar_message = ("warning", "No papers selected.")
             with icon_col2:
                 if st.button(
                     "✨",
@@ -407,9 +470,10 @@ def main() -> None:
                     type="secondary",
                 ):
                     if checked_pids:
-                        st.session_state.confirm_generate_pids = checked_pids
+                        _stage_bulk_action("confirm_generate_pids", checked_pids)
                     else:
-                        st.warning("No papers selected.")
+                        _clear_bulk_actions()
+                        icon_bar_message = ("warning", "No papers selected.")
             with icon_col3:
                 if st.button(
                     "🪄",
@@ -421,9 +485,166 @@ def main() -> None:
                         get_missing_metadata_pids(st.session_state.index)
                     )
                     if missing_pids:
-                        st.session_state.confirm_generate_pids = missing_pids
+                        _stage_bulk_action("confirm_generate_pids", missing_pids)
                     else:
-                        st.info("Every paper already has metadata.")
+                        _clear_bulk_actions()
+                        icon_bar_message = ("info", "Every paper already has metadata.")
+            with icon_col4:
+                if st.button(
+                    "🏷️",
+                    key="add_tag_icon",
+                    help="Add a tag to selected papers",
+                    type="secondary",
+                ):
+                    if checked_pids:
+                        _stage_bulk_action("show_add_tag_pids", checked_pids)
+                    else:
+                        _clear_bulk_actions()
+                        icon_bar_message = ("warning", "No papers selected.")
+            with icon_col5:
+                if st.button(
+                    "🚫",
+                    key="remove_tag_icon",
+                    help="Remove a tag from selected papers",
+                    type="secondary",
+                ):
+                    if checked_pids:
+                        _stage_bulk_action("show_remove_tag_pids", checked_pids)
+                    else:
+                        _clear_bulk_actions()
+                        icon_bar_message = ("warning", "No papers selected.")
+
+            if icon_bar_message is not None:
+                message_kind, message_text = icon_bar_message
+                if message_kind == "warning":
+                    st.warning(message_text)
+                else:
+                    st.info(message_text)
+
+            # Always declare this container, even when no action is staged,
+            # so the number of elements preceding the search box never
+            # changes between reruns. Streamlit re-keys elements by their
+            # position in the tree; letting these panels appear and
+            # disappear directly in the flow shifted the search box's
+            # position on every toggle, which desynced its custom
+            # st_keyup iframe component (it would get stuck showing its
+            # unrendered placeholder markup instead of the real widget).
+            with st.container():
+                if st.session_state.get("confirm_delete_pids"):
+                    pids_to_delete = st.session_state.confirm_delete_pids
+                    st.warning(
+                        f"Delete {len(pids_to_delete)} paper(s)? This cannot be undone."
+                    )
+                    confirm_col, cancel_col = st.columns(2)
+                    with confirm_col:
+                        if st.button("Confirm", key="confirm_delete_btn"):
+                            delete_succeeded = delete_selected_papers(
+                                creds,
+                                pids_to_delete,
+                                st.session_state.index,
+                                st.session_state.current_papers_id,
+                                st.session_state.local_lib_dir,
+                            )
+                            st.session_state.confirm_delete_pids = None
+                            if delete_succeeded:
+                                st.rerun()
+                    with cancel_col:
+                        if st.button("Cancel", key="cancel_delete_btn"):
+                            st.session_state.confirm_delete_pids = None
+                            st.rerun()
+
+                if st.session_state.get("confirm_generate_pids"):
+                    pids_to_generate = st.session_state.confirm_generate_pids
+                    st.warning(
+                        f"Generate metadata for {len(pids_to_generate)} paper(s)? "
+                        "Any existing metadata will be overwritten."
+                    )
+                    confirm_gen_col, cancel_gen_col = st.columns(2)
+                    with confirm_gen_col:
+                        if st.button("Confirm", key="confirm_generate_btn"):
+                            generate_metadata_for_selected(
+                                creds,
+                                pids_to_generate,
+                                st.session_state.index,
+                                st.session_state.current_papers_id,
+                                st.session_state.local_lib_dir,
+                            )
+                            st.session_state.confirm_generate_pids = None
+                            st.rerun()
+                    with cancel_gen_col:
+                        if st.button("Cancel", key="cancel_generate_btn"):
+                            st.session_state.confirm_generate_pids = None
+                            st.rerun()
+
+                if st.session_state.get("show_add_tag_pids"):
+                    pids_to_tag = st.session_state.show_add_tag_pids
+                    new_tags_str = st.text_input(
+                        f"Add tag(s) to {len(pids_to_tag)} paper(s), comma separated",
+                        key="add_tag_input",
+                    )
+                    add_tag_col, cancel_add_tag_col = st.columns(2)
+                    with add_tag_col:
+                        if st.button("Add", key="confirm_add_tag_btn"):
+                            new_tags = [
+                                t.strip() for t in new_tags_str.split(",") if t.strip()
+                            ]
+                            add_succeeded = True
+                            if new_tags:
+                                add_succeeded = add_tags_to_selected(
+                                    creds,
+                                    pids_to_tag,
+                                    st.session_state.index,
+                                    st.session_state.current_papers_id,
+                                    st.session_state.local_lib_dir,
+                                    new_tags,
+                                )
+                            st.session_state.show_add_tag_pids = None
+                            if add_succeeded:
+                                st.rerun()
+                    with cancel_add_tag_col:
+                        if st.button("Cancel", key="cancel_add_tag_btn"):
+                            st.session_state.show_add_tag_pids = None
+                            st.rerun()
+
+                if st.session_state.get("show_remove_tag_pids"):
+                    pids_to_untag = st.session_state.show_remove_tag_pids
+                    tags_in_selection = sorted(
+                        {
+                            tag
+                            for pid in pids_to_untag
+                            if pid in st.session_state.index.papers
+                            for tag in st.session_state.index.papers[pid].tags
+                        }
+                    )
+                    if not tags_in_selection:
+                        st.info("None of the selected papers have any tags.")
+                        st.session_state.show_remove_tag_pids = None
+                    else:
+                        tags_to_remove = st.multiselect(
+                            f"Remove tag(s) from {len(pids_to_untag)} paper(s)",
+                            options=tags_in_selection,
+                            key="remove_tag_select",
+                        )
+                        remove_tag_col, cancel_remove_tag_col = st.columns(2)
+                        with remove_tag_col:
+                            if st.button("Remove", key="confirm_remove_tag_btn"):
+                                remove_succeeded = True
+                                if tags_to_remove:
+                                    remove_succeeded = remove_tags_from_selected(
+                                        creds,
+                                        pids_to_untag,
+                                        st.session_state.index,
+                                        st.session_state.current_papers_id,
+                                        st.session_state.local_lib_dir,
+                                        tags_to_remove,
+                                    )
+                                st.session_state.show_remove_tag_pids = None
+                                if remove_succeeded:
+                                    st.rerun()
+                        with cancel_remove_tag_col:
+                            if st.button("Cancel", key="cancel_remove_tag_btn"):
+                                st.session_state.show_remove_tag_pids = None
+                                st.rerun()
 
             search_box = st_keyup(
                 "Search", placeholder="Search papers...", key="search_box"
@@ -458,52 +679,6 @@ def main() -> None:
                 tags_filter = st.multiselect(
                     "Tags", options=all_tags, key="tags_filter"
                 )
-
-            if st.session_state.get("confirm_delete_pids"):
-                pids_to_delete = st.session_state.confirm_delete_pids
-                st.warning(
-                    f"Delete {len(pids_to_delete)} paper(s)? This cannot be undone."
-                )
-                confirm_col, cancel_col = st.columns(2)
-                with confirm_col:
-                    if st.button("Confirm", key="confirm_delete_btn"):
-                        delete_succeeded = delete_selected_papers(
-                            creds,
-                            pids_to_delete,
-                            st.session_state.index,
-                            st.session_state.current_papers_id,
-                            st.session_state.local_lib_dir,
-                        )
-                        st.session_state.confirm_delete_pids = None
-                        if delete_succeeded:
-                            st.rerun()
-                with cancel_col:
-                    if st.button("Cancel", key="cancel_delete_btn"):
-                        st.session_state.confirm_delete_pids = None
-                        st.rerun()
-
-            if st.session_state.get("confirm_generate_pids"):
-                pids_to_generate = st.session_state.confirm_generate_pids
-                st.warning(
-                    f"Generate metadata for {len(pids_to_generate)} paper(s)? "
-                    "Any existing metadata will be overwritten."
-                )
-                confirm_gen_col, cancel_gen_col = st.columns(2)
-                with confirm_gen_col:
-                    if st.button("Confirm", key="confirm_generate_btn"):
-                        generate_metadata_for_selected(
-                            creds,
-                            pids_to_generate,
-                            st.session_state.index,
-                            st.session_state.current_papers_id,
-                            st.session_state.local_lib_dir,
-                        )
-                        st.session_state.confirm_generate_pids = None
-                        st.rerun()
-                with cancel_gen_col:
-                    if st.button("Cancel", key="cancel_generate_btn"):
-                        st.session_state.confirm_generate_pids = None
-                        st.rerun()
 
             # Re-filter after the block above so a partial batch-delete
             # failure (which skips st.rerun() to keep its error visible)
