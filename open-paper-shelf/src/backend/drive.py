@@ -586,8 +586,9 @@ def create_paper_folders_batch(
             folder_ids[request_id] = str(response["id"])
 
     for start in range(0, len(paper_ids), DRIVE_BATCH_CHUNK_SIZE):
+        chunk = paper_ids[start : start + DRIVE_BATCH_CHUNK_SIZE]
         batch = service.new_batch_http_request(callback=_record_result)
-        for paper_id in paper_ids[start : start + DRIVE_BATCH_CHUNK_SIZE]:
+        for paper_id in chunk:
             folder_metadata = {
                 "name": paper_id,
                 "mimeType": FOLDER_MIME_TYPE,
@@ -597,7 +598,11 @@ def create_paper_folders_batch(
                 service.files().create(body=folder_metadata, fields="id"),
                 request_id=paper_id,
             )
-        batch.execute()
+        try:
+            batch.execute()
+        except HttpError as e:
+            for paper_id in chunk:
+                errors.setdefault(paper_id, e)
 
     return BatchFolderResult(folder_ids=folder_ids, errors=errors)
 
