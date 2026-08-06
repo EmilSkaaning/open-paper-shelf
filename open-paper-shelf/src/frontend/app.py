@@ -158,6 +158,21 @@ def _toggle_select_all(filtered_pids: list[str]) -> None:
             st.session_state[f"chk_{pid}"] = True
 
 
+def _uncheck_mark_all_if_unmarked(pid: str) -> None:
+    """Clears the "Mark all" toggle when a paper's own checkbox is unmarked.
+
+    Individually unchecking one paper means the checked set no longer
+    covers every filtered paper, so "Mark all" can no longer honestly read
+    as checked - without this, it stayed visually marked after such an
+    uncheck even though the underlying selection was no longer "all".
+
+    Args:
+        pid: The paper ID whose checkbox just changed.
+    """
+    if not st.session_state.get(f"chk_{pid}"):
+        st.session_state.select_all_toggle = False
+
+
 def main() -> None:
     """The main entry point for the Streamlit frontend application.
 
@@ -738,7 +753,11 @@ def main() -> None:
                     row_check, row_button = st.columns([1, 8])
                     with row_check:
                         st.checkbox(
-                            "Select", key=f"chk_{pid}", label_visibility="collapsed"
+                            "Select",
+                            key=f"chk_{pid}",
+                            label_visibility="collapsed",
+                            on_change=_uncheck_mark_all_if_unmarked,
+                            args=(pid,),
                         )
                     with row_button:
                         display_name = f"{STATUS_ICONS.get(p.status, '📄')} {p.title}"
