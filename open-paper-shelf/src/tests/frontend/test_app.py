@@ -4377,7 +4377,7 @@ class TestToggleSelectAll:
         app._toggle_select_all([pid_in_filter])
 
         assert fake_st.session_state[f"chk_{pid_in_filter}"] is True
-        assert f"chk_{pid_outside_filter}" not in fake_st.session_state
+        assert fake_st.session_state[f"chk_{pid_outside_filter}"] is False
 
     def test_toggling_off_clears_every_mark_in_the_library(
         self, fake_st: MagicMock
@@ -4402,8 +4402,8 @@ class TestToggleSelectAll:
 
         app._toggle_select_all([pid_in_filter])
 
-        assert f"chk_{pid_in_filter}" not in fake_st.session_state
-        assert f"chk_{pid_outside_filter}" not in fake_st.session_state
+        assert fake_st.session_state[f"chk_{pid_in_filter}"] is False
+        assert fake_st.session_state[f"chk_{pid_outside_filter}"] is False
 
     def test_reapplying_with_a_narrower_filter_drops_stale_marks(
         self, fake_st: MagicMock
@@ -4429,7 +4429,7 @@ class TestToggleSelectAll:
         app._toggle_select_all([pid_still_in_filter])
 
         assert fake_st.session_state[f"chk_{pid_still_in_filter}"] is True
-        assert f"chk_{pid_no_longer_in_filter}" not in fake_st.session_state
+        assert fake_st.session_state[f"chk_{pid_no_longer_in_filter}"] is False
 
 
 class TestMainSelectAllToggle:

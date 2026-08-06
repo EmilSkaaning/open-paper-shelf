@@ -145,6 +145,12 @@ def _toggle_select_all(filtered_pids: list[str]) -> None:
     active search/filter, with no stale marks surviving from a prior
     selection made under a different filter.
 
+    Each checkbox is reset via an explicit `False` assignment rather than
+    `pop()`-ing its key: Streamlit's frontend only re-renders a checkbox
+    widget when it receives an explicit value for that key, so deleting the
+    key left the browser showing the widget's last-rendered (checked) state
+    even though the backend no longer had it selected.
+
     Args:
         filtered_pids: The paper IDs currently satisfying the active
             search/filter criteria, captured at the time the toggle was
@@ -152,7 +158,7 @@ def _toggle_select_all(filtered_pids: list[str]) -> None:
     """
     mark_all = st.session_state.select_all_toggle
     for pid in st.session_state.index.papers:
-        st.session_state.pop(f"chk_{pid}", None)
+        st.session_state[f"chk_{pid}"] = False
     if mark_all:
         for pid in filtered_pids:
             st.session_state[f"chk_{pid}"] = True
