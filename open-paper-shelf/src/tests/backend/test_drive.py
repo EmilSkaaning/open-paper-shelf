@@ -16,6 +16,7 @@ from backend.drive import (
     add_oauth_flow,
     create_library,
     create_paper_folder,
+    create_paper_folders_batch,
     delete_library,
     delete_paper_folder,
     download_file,
@@ -461,6 +462,78 @@ class TestDeleteLibrary:
 
         with pytest.raises(HttpError):
             delete_library(mock_creds, "lib_123")
+
+
+class TestCreatePaperFoldersBatch:
+    """Test suite for create_paper_folders_batch."""
+
+    def test_creates_every_folder_in_a_single_batch(
+        self, mock_build: MagicMock, mock_creds: MagicMock
+    ) -> None:
+        """Test every paper's folder is created via one batched request,
+        instead of one `files().create()` round-trip per paper."""
+        mock_service = MagicMock()
+        mock_build.return_value = mock_service
+        get_added_ids = _install_fake_batch(mock_service)
+
+        result = create_paper_folders_batch(
+            mock_creds, "papers_123", ["paper_1", "paper_2", "paper_3"]
+        )
+
+        assert get_added_ids() == ["paper_1", "paper_2", "paper_3"]
+        mock_service.new_batch_http_request.assert_called_once()
+        assert result.folder_ids == {
+            "paper_1": "paper_1",
+            "paper_2": "paper_2",
+            "paper_3": "paper_3",
+        }
+        assert result.errors == {}
+
+    def test_chunks_requests_when_over_the_batch_size_limit(
+        self, mock_build: MagicMock, mock_creds: MagicMock
+    ) -> None:
+        """Test more papers than Drive's per-batch request limit are split
+        across multiple batch() calls rather than failing or being dropped."""
+        mock_service = MagicMock()
+        mock_build.return_value = mock_service
+        get_added_ids = _install_fake_batch(mock_service)
+        paper_ids = [f"paper_{i}" for i in range(150)]
+
+        result = create_paper_folders_batch(mock_creds, "papers_123", paper_ids)
+
+        assert get_added_ids() == paper_ids
+        assert mock_service.new_batch_http_request.call_count == 2
+        assert len(result.folder_ids) == 150
+
+    def test_one_papers_failure_does_not_prevent_others_from_creating(
+        self, mock_build: MagicMock, mock_creds: MagicMock
+    ) -> None:
+        """Test a per-paper Drive failure is reported for just that paper,
+        instead of failing (or silently dropping) the rest of the batch."""
+        mock_service = MagicMock()
+        mock_build.return_value = mock_service
+        _install_fake_batch(mock_service, failing_ids=frozenset({"paper_2"}))
+
+        result = create_paper_folders_batch(
+            mock_creds, "papers_123", ["paper_1", "paper_2", "paper_3"]
+        )
+
+        assert result.folder_ids == {"paper_1": "paper_1", "paper_3": "paper_3"}
+        assert set(result.errors) == {"paper_2"}
+        assert isinstance(result.errors["paper_2"], HttpError)
+
+    def test_empty_paper_ids_creates_no_batch(
+        self, mock_build: MagicMock, mock_creds: MagicMock
+    ) -> None:
+        """Test an empty paper_ids list skips creating a batch entirely."""
+        mock_service = MagicMock()
+        mock_build.return_value = mock_service
+
+        result = create_paper_folders_batch(mock_creds, "papers_123", [])
+
+        mock_service.new_batch_http_request.assert_not_called()
+        assert result.folder_ids == {}
+        assert result.errors == {}
 
 
 class TestGetLibraryIndexFile:

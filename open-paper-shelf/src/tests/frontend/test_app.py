@@ -3,6 +3,8 @@
 import io
 import json
 import re
+import threading
+import time
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
@@ -18,9 +20,43 @@ import frontend.auth as auth
 import frontend.library as library
 import frontend.metadata_generation as metadata_generation
 import frontend.uploads as uploads
+from backend.drive import BatchFolderResult
 from backend.huggingface_client import GeneratedMetadata
 from backend.models import LibraryIndex, PaperIndexEntry, PaperMetadata
+from frontend.constants import PDF_FILENAME
 from tests.frontend.conftest import make_uploaded_file
+
+
+def _mock_paper_ids(mocker: MockerFixture, *hexes: str) -> None:
+    """Patches `uuid.uuid4()` in uploads.py to return fixed IDs in order.
+
+    Lets tests predict each pending paper's ID (and therefore the folder ID
+    a mocked `create_paper_folders_batch` should hand back for it) instead
+    of matching against a real, unpredictable UUID.
+    """
+    mocker.patch.object(
+        uploads.uuid, "uuid4", side_effect=[MagicMock(hex=h) for h in hexes]
+    )
+
+
+def _batch_result(
+    folder_ids: dict[str, str] | None = None,
+    errors: dict[str, Exception] | None = None,
+) -> BatchFolderResult:
+    """Builds a `create_paper_folders_batch` return value."""
+    return BatchFolderResult(folder_ids=folder_ids or {}, errors=errors or {})
+
+
+def _fake_upload_ok(
+    creds: Any, folder_id: str, file_path: Path, filename: str, mime_type: str
+) -> str:
+    """A deterministic `upload_file_to_folder` stand-in for TestUploadPapers.
+
+    Keyed by (folder_id, filename) rather than call order, since pending
+    papers' uploads now run concurrently across a thread pool instead of
+    one full pair of round-trips at a time.
+    """
+    return f"{folder_id}:{filename}"
 
 
 def _real_pdf_bytes(pages: int = 1) -> bytes:
@@ -293,13 +329,14 @@ class TestUploadPapers:
         fake_st.session_state.current_papers_id = "papers_123"
         fake_st.session_state.index = LibraryIndex()
         files = [make_uploaded_file("a.pdf"), make_uploaded_file("b.pdf")]
-        mocker.patch.object(
-            uploads, "create_paper_folder", side_effect=["folder1", "folder2"]
-        )
+        _mock_paper_ids(mocker, "paper1", "paper2")
         mocker.patch.object(
             uploads,
-            "upload_file_to_folder",
-            side_effect=["pdf1", "meta1", "pdf2", "meta2"],
+            "create_paper_folders_batch",
+            return_value=_batch_result({"paper1": "folder1", "paper2": "folder2"}),
+        )
+        mocker.patch.object(
+            uploads, "upload_file_to_folder", side_effect=_fake_upload_ok
         )
 
         result = app.upload_papers(creds=MagicMock(), uploaded_files=files)
@@ -307,6 +344,72 @@ class TestUploadPapers:
         assert result is True
         assert len(fake_st.session_state.index.papers) == 2
         fake_st.error.assert_not_called()
+
+    def test_folders_are_created_in_a_single_batched_call(
+        self, fake_st: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """Regression test (#90): all pending papers' Drive folders must be
+        created via one batched call, not one `create_paper_folder` call per
+        paper, so an N-paper upload doesn't pay N sequential round-trips
+        just to create folders."""
+        fake_st.session_state.current_papers_id = "papers_123"
+        fake_st.session_state.index = LibraryIndex()
+        files = [make_uploaded_file("a.pdf"), make_uploaded_file("b.pdf")]
+        _mock_paper_ids(mocker, "paper1", "paper2")
+        mock_batch = mocker.patch.object(
+            uploads,
+            "create_paper_folders_batch",
+            return_value=_batch_result({"paper1": "folder1", "paper2": "folder2"}),
+        )
+        mocker.patch.object(
+            uploads, "upload_file_to_folder", side_effect=_fake_upload_ok
+        )
+
+        result = app.upload_papers(creds=MagicMock(), uploaded_files=files)
+
+        assert result is True
+        mock_batch.assert_called_once_with(
+            mocker.ANY, "papers_123", ["paper1", "paper2"]
+        )
+
+    def test_pdf_and_meta_uploads_for_different_papers_run_concurrently(
+        self, fake_st: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """Regression test (#90): the per-paper PDF/metadata media uploads,
+        which can't be batched, must still run concurrently across papers
+        (via a bounded thread pool) rather than one full pair of
+        round-trips at a time."""
+        fake_st.session_state.current_papers_id = "papers_123"
+        fake_st.session_state.index = LibraryIndex()
+        files = [make_uploaded_file("a.pdf"), make_uploaded_file("b.pdf")]
+        _mock_paper_ids(mocker, "paper1", "paper2")
+        mocker.patch.object(
+            uploads,
+            "create_paper_folders_batch",
+            return_value=_batch_result({"paper1": "folder1", "paper2": "folder2"}),
+        )
+        in_flight = threading.Event()
+        both_in_flight_at_once = threading.Event()
+
+        def _fake_upload_blocking(
+            creds: Any, folder_id: str, file_path: Path, filename: str, mime_type: str
+        ) -> str:
+            if filename != PDF_FILENAME:
+                return f"{folder_id}:{filename}"
+            if in_flight.is_set():
+                both_in_flight_at_once.set()
+            in_flight.set()
+            time.sleep(0.05)
+            return f"{folder_id}:{filename}"
+
+        mocker.patch.object(
+            uploads, "upload_file_to_folder", side_effect=_fake_upload_blocking
+        )
+
+        result = app.upload_papers(creds=MagicMock(), uploaded_files=files)
+
+        assert result is True
+        assert both_in_flight_at_once.is_set()
 
     def test_skips_file_matching_existing_paper_title(
         self, fake_st: MagicMock, mocker: MockerFixture
@@ -330,14 +433,14 @@ class TestUploadPapers:
             }
         )
         files = [make_uploaded_file("Attention Is All You Need.pdf")]
-        mock_create_folder = mocker.patch.object(uploads, "create_paper_folder")
+        mock_create_folders = mocker.patch.object(uploads, "create_paper_folders_batch")
         mock_upload_file = mocker.patch.object(uploads, "upload_file_to_folder")
 
         result = app.upload_papers(creds=MagicMock(), uploaded_files=files)
 
         assert result is True
         assert len(fake_st.session_state.index.papers) == 1
-        mock_create_folder.assert_not_called()
+        mock_create_folders.assert_not_called()
         mock_upload_file.assert_not_called()
         fake_st.warning.assert_not_called()
         assert fake_st.session_state.duplicate_uploads_skipped == [
@@ -356,18 +459,21 @@ class TestUploadPapers:
             make_uploaded_file("Attention Is All You Need.pdf"),
             make_uploaded_file("Attention Is All You Need.pdf"),
         ]
-        mock_create_folder = mocker.patch.object(
-            uploads, "create_paper_folder", return_value="folder1"
+        _mock_paper_ids(mocker, "paper1")
+        mock_create_folders = mocker.patch.object(
+            uploads,
+            "create_paper_folders_batch",
+            return_value=_batch_result({"paper1": "folder1"}),
         )
         mocker.patch.object(
-            uploads, "upload_file_to_folder", side_effect=["pdf1", "meta1"]
+            uploads, "upload_file_to_folder", side_effect=_fake_upload_ok
         )
 
         result = app.upload_papers(creds=MagicMock(), uploaded_files=files)
 
         assert result is True
         assert len(fake_st.session_state.index.papers) == 1
-        mock_create_folder.assert_called_once()
+        mock_create_folders.assert_called_once()
         assert fake_st.session_state.duplicate_uploads_skipped == [
             "Attention Is All You Need.pdf"
         ]
@@ -379,9 +485,14 @@ class TestUploadPapers:
         fake_st.session_state.current_papers_id = "papers_123"
         fake_st.session_state.index = LibraryIndex()
         files = [make_uploaded_file("Attention Is All You Need.pdf")]
-        mocker.patch.object(uploads, "create_paper_folder", return_value="folder1")
+        _mock_paper_ids(mocker, "paper1")
         mocker.patch.object(
-            uploads, "upload_file_to_folder", side_effect=["pdf1", "meta1"]
+            uploads,
+            "create_paper_folders_batch",
+            return_value=_batch_result({"paper1": "folder1"}),
+        )
+        mocker.patch.object(
+            uploads, "upload_file_to_folder", side_effect=_fake_upload_ok
         )
 
         result = app.upload_papers(creds=MagicMock(), uploaded_files=files)
@@ -400,13 +511,16 @@ class TestUploadPapers:
         fake_st.session_state.current_papers_id = "papers_123"
         fake_st.session_state.index = LibraryIndex()
         files = [make_uploaded_file("a.pdf"), make_uploaded_file("b.pdf")]
+        _mock_paper_ids(mocker, "paper1", "paper2")
         mocker.patch.object(
             uploads,
-            "create_paper_folder",
-            side_effect=["folder1", RuntimeError("boom")],
+            "create_paper_folders_batch",
+            return_value=_batch_result(
+                {"paper1": "folder1"}, {"paper2": RuntimeError("boom")}
+            ),
         )
         mocker.patch.object(
-            uploads, "upload_file_to_folder", side_effect=["pdf1", "meta1"]
+            uploads, "upload_file_to_folder", side_effect=_fake_upload_ok
         )
 
         result = app.upload_papers(creds=MagicMock(), uploaded_files=files)
@@ -424,7 +538,7 @@ class TestUploadPapers:
         fake_st.session_state.current_papers_id = "papers_123"
         fake_st.session_state.index = LibraryIndex()
         files = [make_uploaded_file("")]
-        mocker.patch.object(uploads, "create_paper_folder")
+        mocker.patch.object(uploads, "create_paper_folders_batch")
         mocker.patch.object(uploads, "upload_file_to_folder")
 
         result = app.upload_papers(creds=MagicMock(), uploaded_files=files)
@@ -441,7 +555,12 @@ class TestUploadPapers:
         fake_st.session_state.current_papers_id = "papers_123"
         fake_st.session_state.index = LibraryIndex()
         files = [make_uploaded_file("a.pdf")]
-        mocker.patch.object(uploads, "create_paper_folder", return_value="folder1")
+        _mock_paper_ids(mocker, "paper1")
+        mocker.patch.object(
+            uploads,
+            "create_paper_folders_batch",
+            return_value=_batch_result({"paper1": "folder1"}),
+        )
         mocker.patch.object(
             uploads, "upload_file_to_folder", side_effect=RuntimeError("boom")
         )
@@ -462,10 +581,21 @@ class TestUploadPapers:
         fake_st.session_state.current_papers_id = "papers_123"
         fake_st.session_state.index = LibraryIndex()
         files = [make_uploaded_file("a.pdf")]
-        mocker.patch.object(uploads, "create_paper_folder", return_value="folder1")
+        _mock_paper_ids(mocker, "paper1")
         mocker.patch.object(
-            uploads, "upload_file_to_folder", side_effect=["pdf1", RuntimeError("boom")]
+            uploads,
+            "create_paper_folders_batch",
+            return_value=_batch_result({"paper1": "folder1"}),
         )
+
+        def _fake_upload(
+            creds: Any, folder_id: str, file_path: Path, filename: str, mime_type: str
+        ) -> str:
+            if filename == PDF_FILENAME:
+                return "pdf1"
+            raise RuntimeError("boom")
+
+        mocker.patch.object(uploads, "upload_file_to_folder", side_effect=_fake_upload)
         mock_delete = mocker.patch.object(uploads, "delete_paper_folder")
 
         result = app.upload_papers(creds=MagicMock(), uploaded_files=files)
@@ -482,8 +612,11 @@ class TestUploadPapers:
         fake_st.session_state.current_papers_id = "papers_123"
         fake_st.session_state.index = LibraryIndex()
         files = [make_uploaded_file("a.pdf")]
+        _mock_paper_ids(mocker, "paper1")
         mocker.patch.object(
-            uploads, "create_paper_folder", side_effect=RuntimeError("boom")
+            uploads,
+            "create_paper_folders_batch",
+            return_value=_batch_result({}, {"paper1": RuntimeError("boom")}),
         )
         mock_delete = mocker.patch.object(uploads, "delete_paper_folder")
 
@@ -501,7 +634,12 @@ class TestUploadPapers:
         fake_st.session_state.current_papers_id = "papers_123"
         fake_st.session_state.index = LibraryIndex()
         files = [make_uploaded_file("a.pdf")]
-        mocker.patch.object(uploads, "create_paper_folder", return_value="folder1")
+        _mock_paper_ids(mocker, "paper1")
+        mocker.patch.object(
+            uploads,
+            "create_paper_folders_batch",
+            return_value=_batch_result({"paper1": "folder1"}),
+        )
         mocker.patch.object(
             uploads, "upload_file_to_folder", side_effect=RuntimeError("boom")
         )
@@ -526,13 +664,14 @@ class TestUploadPapers:
         fake_st.session_state.current_papers_id = "papers_123"
         fake_st.session_state.index = LibraryIndex()
         files = [make_uploaded_file("a.pdf"), make_uploaded_file("b.pdf")]
-        mocker.patch.object(
-            uploads, "create_paper_folder", side_effect=["folder1", "folder2"]
-        )
+        _mock_paper_ids(mocker, "paper1", "paper2")
         mocker.patch.object(
             uploads,
-            "upload_file_to_folder",
-            side_effect=["pdf1", "meta1", "pdf2", "meta2"],
+            "create_paper_folders_batch",
+            return_value=_batch_result({"paper1": "folder1", "paper2": "folder2"}),
+        )
+        mocker.patch.object(
+            uploads, "upload_file_to_folder", side_effect=_fake_upload_ok
         )
         on_progress = MagicMock()
 
@@ -554,13 +693,16 @@ class TestUploadPapers:
         fake_st.session_state.current_papers_id = "papers_123"
         fake_st.session_state.index = LibraryIndex()
         files = [make_uploaded_file("a.pdf"), make_uploaded_file("b.pdf")]
+        _mock_paper_ids(mocker, "paper1", "paper2")
         mocker.patch.object(
             uploads,
-            "create_paper_folder",
-            side_effect=["folder1", RuntimeError("boom")],
+            "create_paper_folders_batch",
+            return_value=_batch_result(
+                {"paper1": "folder1"}, {"paper2": RuntimeError("boom")}
+            ),
         )
         mocker.patch.object(
-            uploads, "upload_file_to_folder", side_effect=["pdf1", "meta1"]
+            uploads, "upload_file_to_folder", side_effect=_fake_upload_ok
         )
         on_progress = MagicMock()
 
@@ -582,13 +724,14 @@ class TestUploadPapers:
         fake_st.session_state.current_papers_id = "papers_123"
         fake_st.session_state.index = LibraryIndex()
         files = [make_uploaded_file("a.pdf"), make_uploaded_file("b.pdf")]
-        mocker.patch.object(
-            uploads, "create_paper_folder", side_effect=["folder1", "folder2"]
-        )
+        _mock_paper_ids(mocker, "paper1", "paper2")
         mocker.patch.object(
             uploads,
-            "upload_file_to_folder",
-            side_effect=["pdf1", "meta1", "pdf2", "meta2"],
+            "create_paper_folders_batch",
+            return_value=_batch_result({"paper1": "folder1", "paper2": "folder2"}),
+        )
+        mocker.patch.object(
+            uploads, "upload_file_to_folder", side_effect=_fake_upload_ok
         )
         on_progress = MagicMock(side_effect=RuntimeError("widget gone"))
 
@@ -611,9 +754,14 @@ class TestUploadPapers:
         fake_st.session_state.current_papers_id = "papers_123"
         fake_st.session_state.index = LibraryIndex()
         files = [make_uploaded_file("a.pdf")]
-        mocker.patch.object(uploads, "create_paper_folder", return_value="folder1")
+        _mock_paper_ids(mocker, "paper1")
         mocker.patch.object(
-            uploads, "upload_file_to_folder", side_effect=["pdf1", "meta1"]
+            uploads,
+            "create_paper_folders_batch",
+            return_value=_batch_result({"paper1": "folder1"}),
+        )
+        mocker.patch.object(
+            uploads, "upload_file_to_folder", side_effect=_fake_upload_ok
         )
 
         result = app.upload_papers(creds=MagicMock(), uploaded_files=files)
