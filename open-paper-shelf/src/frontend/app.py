@@ -404,17 +404,20 @@ def main() -> None:
             # above it, matching the existing horizontal gap so wrapped
             # icons stay evenly spaced in both directions.
             #
-            # A button's `help` tooltip renders directly above it when there
-            # isn't room below, and with zero space between the icon row and
-            # the "Library Papers" header, that tooltip lands on top of the
-            # header text. A top padding on the row *container* (not each
-            # column) reserves the tooltip its own space once, instead of
-            # overlapping the header — putting it on every column would
-            # otherwise repeat that gap above every wrapped row too.
+            # Streamlit reserves its own ~1rem gap above the row plus the
+            # expander's native top padding, stacking into a large empty
+            # band between the "Library Papers" header and the icon row.
+            # Zero out the expander's native padding for this row and pull
+            # the row up with a negative margin to close most of that gap;
+            # a button's `help` tooltip is allowed to land on the header
+            # text when hovering a top-row icon — that overlap is accepted
+            # in exchange for a tight header-to-icon spacing.
             st.markdown(
                 "<style>"
+                "div[data-testid='stExpanderDetails']:has(.st-key-trash_icon)"
+                "{ padding-top: 0; }"
                 "div[data-testid='stHorizontalBlock']:has(.st-key-trash_icon)"
-                "{ padding-top: 2rem; }"
+                "{ padding-top: 0; margin-top: -0.6rem; }"
                 "div[data-testid='stColumn']:has(.st-key-trash_icon),"
                 "div[data-testid='stColumn']:has(.st-key-bulk_generate_icon),"
                 "div[data-testid='stColumn']:has(.st-key-generate_missing_icon),"

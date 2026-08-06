@@ -4089,6 +4089,28 @@ class TestMainBulkGenerateFlow:
             "tooltip space should be reserved on the row container instead"
         )
 
+        details_padding_match = re.search(
+            r"stExpanderDetails'\]:has\(\.st-key-trash_icon\)\s*\{([^}]*)\}", css
+        )
+        assert details_padding_match, (
+            "expected the expander's native top padding to be zeroed out for "
+            "this row so it doesn't stack with the row's own spacing"
+        )
+        assert "padding-top: 0" in details_padding_match.group(1), (
+            "expander details padding-top should be zeroed to shrink the gap "
+            "between the 'Library Papers' header and the icon bar"
+        )
+
+        row_margin_match = re.search(r"margin-top:\s*(-?[\d.]+)rem", css)
+        assert row_margin_match, (
+            "expected a negative margin-top rule pulling the icon row up "
+            "against Streamlit's default inter-element gap"
+        )
+        assert float(row_margin_match.group(1)) < 0, (
+            "margin-top above the icon row should be negative to close the "
+            "gap between the 'Library Papers' header and the icon bar"
+        )
+
     def test_bulk_generate_with_checked_paper_shows_confirmation(
         self, fake_st: MagicMock, mocker: MockerFixture
     ) -> None:
