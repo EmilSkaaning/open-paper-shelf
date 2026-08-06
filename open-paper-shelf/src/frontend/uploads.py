@@ -321,20 +321,25 @@ def upload_papers(
     items = _stage_uploads(uploaded_files)
 
     pending_items = [item for item in items if isinstance(item, _PendingUpload)]
-    folder_result = (
-        create_paper_folders_batch(
-            creds,
-            st.session_state.current_papers_id,
-            [item.paper_id for item in pending_items],
+    try:
+        folder_result = (
+            create_paper_folders_batch(
+                creds,
+                st.session_state.current_papers_id,
+                [item.paper_id for item in pending_items],
+            )
+            if pending_items
+            else BatchFolderResult(folder_ids={}, errors={})
         )
-        if pending_items
-        else BatchFolderResult(folder_ids={}, errors={})
-    )
+    except Exception as e:
+        folder_result = BatchFolderResult(
+            folder_ids={}, errors={item.paper_id: e for item in pending_items}
+        )
 
     all_succeeded = True
     with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_UPLOADS) as executor:
         futures = {
-            id(item): executor.submit(
+            item: executor.submit(
                 _finish_upload,
                 creds,
                 item,
@@ -346,7 +351,7 @@ def upload_papers(
 
         for i, (uploaded_file, item) in enumerate(zip(uploaded_files, items)):
             if isinstance(item, _PendingUpload):
-                outcome = futures[id(item)].result()
+                outcome = futures[item].result()
                 if outcome.cleanup_error_message is not None:
                     st.error(outcome.cleanup_error_message)
                 if outcome.succeeded:

@@ -345,6 +345,44 @@ class TestUploadPapers:
         assert len(fake_st.session_state.index.papers) == 2
         fake_st.error.assert_not_called()
 
+    def test_returns_false_and_cleans_up_when_batch_call_raises(
+        self, fake_st: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """Regression test: if `create_paper_folders_batch` itself raises
+        (e.g. a network/HTTP error from `batch.execute()`), `upload_papers`
+        must not crash — it should report every pending paper as failed and
+        still clean up its temp PDF file, instead of leaking it."""
+        fake_st.session_state.current_papers_id = "papers_123"
+        fake_st.session_state.index = LibraryIndex()
+        files = [make_uploaded_file("a.pdf")]
+        _mock_paper_ids(mocker, "paper1")
+        mocker.patch.object(
+            uploads,
+            "create_paper_folders_batch",
+            side_effect=RuntimeError("network error"),
+        )
+        mock_upload_file = mocker.patch.object(uploads, "upload_file_to_folder")
+        written_tmp_paths: list[Path] = []
+        original_named_temp_file = uploads.tempfile.NamedTemporaryFile
+
+        def _capture_tmp_path(*args: Any, **kwargs: Any) -> Any:
+            tmp = original_named_temp_file(*args, **kwargs)
+            written_tmp_paths.append(Path(tmp.name))
+            return tmp
+
+        mocker.patch.object(
+            uploads.tempfile, "NamedTemporaryFile", side_effect=_capture_tmp_path
+        )
+
+        result = app.upload_papers(creds=MagicMock(), uploaded_files=files)
+
+        assert result is False
+        assert len(fake_st.session_state.index.papers) == 0
+        mock_upload_file.assert_not_called()
+        fake_st.error.assert_called_once()
+        assert len(written_tmp_paths) == 1
+        assert not written_tmp_paths[0].exists()
+
     def test_folders_are_created_in_a_single_batched_call(
         self, fake_st: MagicMock, mocker: MockerFixture
     ) -> None:
