@@ -136,6 +136,49 @@ def _clear_bulk_actions() -> None:
         st.session_state.pop(key, None)
 
 
+def _toggle_select_all(filtered_pids: list[str]) -> None:
+    """Marks or clears every paper checkbox to match the "Mark all" toggle.
+
+    Every paper's checkbox is cleared first, then - only when the toggle was
+    switched on - re-marked for exactly `filtered_pids`. Always starting from
+    a clean slate keeps this scoped to the papers currently matching the
+    active search/filter, with no stale marks surviving from a prior
+    selection made under a different filter.
+
+    Each checkbox is reset via an explicit `False` assignment rather than
+    `pop()`-ing its key: Streamlit's frontend only re-renders a checkbox
+    widget when it receives an explicit value for that key, so deleting the
+    key left the browser showing the widget's last-rendered (checked) state
+    even though the backend no longer had it selected.
+
+    Args:
+        filtered_pids: The paper IDs currently satisfying the active
+            search/filter criteria, captured at the time the toggle was
+            rendered.
+    """
+    mark_all = st.session_state.select_all_toggle
+    for pid in st.session_state.index.papers:
+        st.session_state[f"chk_{pid}"] = False
+    if mark_all:
+        for pid in filtered_pids:
+            st.session_state[f"chk_{pid}"] = True
+
+
+def _uncheck_mark_all_if_unmarked(pid: str) -> None:
+    """Clears the "Mark all" toggle when a paper's own checkbox is unmarked.
+
+    Individually unchecking one paper means the checked set no longer
+    covers every filtered paper, so "Mark all" can no longer honestly read
+    as checked - without this, it stayed visually marked after such an
+    uncheck even though the underlying selection was no longer "all".
+
+    Args:
+        pid: The paper ID whose checkbox just changed.
+    """
+    if not st.session_state.get(f"chk_{pid}"):
+        st.session_state.select_all_toggle = False
+
+
 def main() -> None:
     """The main entry point for the Streamlit frontend application.
 
@@ -696,6 +739,13 @@ def main() -> None:
                 include_similar=include_similar_filter,
             )
 
+            st.checkbox(
+                "Mark all",
+                key="select_all_toggle",
+                on_change=_toggle_select_all,
+                args=([pid for pid, _ in filtered_papers],),
+            )
+
             with st.container(height=400):
                 if not filtered_papers:
                     if not st.session_state.index.papers:
@@ -709,7 +759,11 @@ def main() -> None:
                     row_check, row_button = st.columns([1, 8])
                     with row_check:
                         st.checkbox(
-                            "Select", key=f"chk_{pid}", label_visibility="collapsed"
+                            "Select",
+                            key=f"chk_{pid}",
+                            label_visibility="collapsed",
+                            on_change=_uncheck_mark_all_if_unmarked,
+                            args=(pid,),
                         )
                     with row_button:
                         display_name = f"{STATUS_ICONS.get(p.status, '📄')} {p.title}"
