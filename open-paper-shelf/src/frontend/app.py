@@ -401,21 +401,26 @@ def main() -> None:
             # fixed-size columns no longer fit next to the shrunk spacer
             # column), stacking icons onto a second row. A bottom margin on
             # every button keeps that wrapped row from touching the one
-            # above it, in addition to the existing horizontal gap.
+            # above it, matching the existing horizontal gap so wrapped
+            # icons stay evenly spaced in both directions.
             #
             # A button's `help` tooltip renders directly above it when there
             # isn't room below, and with zero space between the icon row and
             # the "Library Papers" header, that tooltip lands on top of the
-            # header text. A top margin on the row reserves the tooltip its
-            # own space instead of overlapping the header.
+            # header text. A top padding on the row *container* (not each
+            # column) reserves the tooltip its own space once, instead of
+            # overlapping the header — putting it on every column would
+            # otherwise repeat that gap above every wrapped row too.
             st.markdown(
                 "<style>"
+                "div[data-testid='stHorizontalBlock']:has(.st-key-trash_icon)"
+                "{ padding-top: 2rem; }"
                 "div[data-testid='stColumn']:has(.st-key-trash_icon),"
                 "div[data-testid='stColumn']:has(.st-key-bulk_generate_icon),"
                 "div[data-testid='stColumn']:has(.st-key-generate_missing_icon),"
                 "div[data-testid='stColumn']:has(.st-key-add_tag_icon),"
                 "div[data-testid='stColumn']:has(.st-key-remove_tag_icon)"
-                "{ flex: 0 0 auto; width: auto; min-width: 2.5rem; margin-top: 2rem; }"
+                "{ flex: 0 0 auto; width: auto; min-width: 2.5rem; }"
                 ".st-key-trash_icon button,"
                 ".st-key-bulk_generate_icon button,"
                 ".st-key-generate_missing_icon button,"

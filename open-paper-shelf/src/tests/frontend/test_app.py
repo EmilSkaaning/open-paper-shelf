@@ -2,6 +2,7 @@
 
 import io
 import json
+import re
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
@@ -4038,6 +4039,55 @@ class TestMainBulkGenerateFlow:
         assert "overflow: hidden" in css
         assert "margin-right" in css
         assert "margin-bottom" in css
+
+    def test_icon_bar_wrap_gap_matches_horizontal_gap(
+        self, fake_st: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """Test the vertical gap between wrapped icon rows matches the
+        horizontal gap between icons, so a narrowed sidebar produces evenly
+        spaced icons instead of a large gap above every icon (issue #13)."""
+        pid = "a" * 32
+        entry = PaperIndexEntry(
+            title="Some Paper", pdf_file_id="pdf1", meta_file_id="meta1", folder_id="f1"
+        )
+        fake_st.session_state.current_lib_id = "lib_123"
+        fake_st.session_state.current_papers_id = "papers_123"
+        fake_st.session_state.root_id = "root_123"
+        fake_st.session_state.index = LibraryIndex(papers={pid: entry})
+        fake_st.session_state.selected_paper = None
+        fake_st.file_uploader.return_value = None
+        fake_st.checkbox.return_value = False
+        fake_st.button.return_value = False
+        mocker.patch.object(app, "st_keyup", return_value="")
+        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
+
+        app.main()
+
+        icon_bar_css_calls = [
+            c
+            for c in fake_st.markdown.call_args_list
+            if c.args
+            and "st-key-trash_icon" in c.args[0]
+            and "st-key-bulk_generate_icon" in c.args[0]
+            and "st-key-generate_missing_icon" in c.args[0]
+        ]
+        assert icon_bar_css_calls, "expected a CSS block sizing the icon-bar buttons"
+        css = icon_bar_css_calls[0].args[0]
+
+        horizontal_gap_match = re.search(r"margin-right:\s*([\d.]+rem)", css)
+        vertical_gap_match = re.search(r"margin-bottom:\s*([\d.]+rem)", css)
+        assert horizontal_gap_match, "expected a margin-right rule for horizontal gap"
+        assert vertical_gap_match, "expected a margin-bottom rule for wrap-row gap"
+        assert horizontal_gap_match.group(1) == vertical_gap_match.group(1), (
+            "vertical wrap gap should match the horizontal gap between icons"
+        )
+
+        column_rule_match = re.search(r"st-key-remove_tag_icon\)\s*\{([^}]*)\}", css)
+        assert column_rule_match, "expected a column-sizing CSS rule"
+        assert "margin-top" not in column_rule_match.group(1), (
+            "per-column margin-top duplicates onto every wrapped row; "
+            "tooltip space should be reserved on the row container instead"
+        )
 
     def test_bulk_generate_with_checked_paper_shows_confirmation(
         self, fake_st: MagicMock, mocker: MockerFixture
