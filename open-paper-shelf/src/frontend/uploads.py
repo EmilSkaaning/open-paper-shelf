@@ -263,6 +263,7 @@ def _stage_uploads(
     items: list[_UploadItem] = []
     staged_titles: set[str] = set()
     for uploaded_file in uploaded_files:
+        tmp_path: Optional[Path] = None
         try:
             validated_name = UploadedPaperName(name=uploaded_file.name).name
             title = strip_pdf_suffix(validated_name)
@@ -275,11 +276,13 @@ def _stage_uploads(
             staged_titles.add(normalized_title)
             paper_id = uuid.uuid4().hex
             with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
-                tmp.write(uploaded_file.getvalue())
                 tmp_path = Path(tmp.name)
+                tmp.write(uploaded_file.getvalue())
             items.append(_PendingUpload(uploaded_file.name, paper_id, title, tmp_path))
         except Exception as e:
             st.error(f"Failed to upload {uploaded_file.name}: {e}")
+            if tmp_path is not None:
+                tmp_path.unlink(missing_ok=True)
             items.append(_SkippedUpload(uploaded_file.name, succeeded=False))
     return items
 

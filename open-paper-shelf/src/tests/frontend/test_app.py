@@ -383,6 +383,38 @@ class TestUploadPapers:
         assert len(written_tmp_paths) == 1
         assert not written_tmp_paths[0].exists()
 
+    def test_cleans_up_tmp_file_when_writing_it_fails(
+        self, fake_st: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """Regression test: if writing the uploaded PDF's bytes to the local
+        temp file raises partway through, the delete=False temp file must
+        still be removed instead of leaking on disk."""
+        fake_st.session_state.current_papers_id = "papers_123"
+        fake_st.session_state.index = LibraryIndex()
+        files = [make_uploaded_file("a.pdf")]
+        _mock_paper_ids(mocker, "paper1")
+        written_tmp_paths: list[Path] = []
+        original_named_temp_file = uploads.tempfile.NamedTemporaryFile
+
+        def _capture_tmp_path(*args: Any, **kwargs: Any) -> Any:
+            tmp = original_named_temp_file(*args, **kwargs)
+            written_tmp_paths.append(Path(tmp.name))
+            return tmp
+
+        mocker.patch.object(
+            uploads.tempfile, "NamedTemporaryFile", side_effect=_capture_tmp_path
+        )
+        mocker.patch.object(files[0], "getvalue", side_effect=OSError("disk full"))
+        mocker.patch.object(uploads, "create_paper_folders_batch")
+
+        result = app.upload_papers(creds=MagicMock(), uploaded_files=files)
+
+        assert result is False
+        assert len(fake_st.session_state.index.papers) == 0
+        fake_st.error.assert_called_once()
+        assert len(written_tmp_paths) == 1
+        assert not written_tmp_paths[0].exists()
+
     def test_folders_are_created_in_a_single_batched_call(
         self, fake_st: MagicMock, mocker: MockerFixture
     ) -> None:
