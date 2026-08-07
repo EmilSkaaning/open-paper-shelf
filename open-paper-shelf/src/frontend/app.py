@@ -914,16 +914,37 @@ def main() -> None:
                 viewer_url = (
                     f"{base_url.rstrip('/')}/pdfjs/web/viewer.html?{viewer_query}"
                 )
+
+                pdf_expanded = st.session_state.get("pdf_expanded", False)
+                toggle_label = "Collapse" if pdf_expanded else "Expand"
+                if st.button(toggle_label, key="pdf_expand_toggle"):
+                    st.session_state.pdf_expanded = not pdf_expanded
+                    st.rerun()
+
+                # A CSS-only expand, not the Fullscreen API - PDF.js's native
+                # Presentation Mode disables the annotation editor on entry,
+                # which breaks the app's highlight-and-autosave workflow.
+                wrapper_class = (
+                    "pdf-viewer-expanded" if pdf_expanded else "pdf-viewer-normal"
+                )
                 pdf_display = (
+                    "<style>.pdf-viewer-expanded{position:fixed;inset:0;"
+                    "width:100vw;height:100vh;z-index:9999;background:#fff;}"
+                    ".pdf-viewer-expanded iframe{width:100%;height:100%;}"
+                    "</style>"
+                    f'<div class="{wrapper_class}">'
                     f'<iframe src="{html.escape(viewer_url)}" width="100%" '
                     'height="750" style="border:none;" allow="fullscreen" '
                     "allowfullscreen></iframe>"
+                    "</div>"
                 )
                 st.markdown(pdf_display, unsafe_allow_html=True)
 
                 st.caption(
                     "Use the toolbar's highlight tool to annotate the PDF - "
-                    "your edits save to Drive automatically as you work."
+                    "your edits save to Drive automatically as you work. "
+                    "Use Expand to fill the browser window while keeping "
+                    "annotation tools active."
                 )
             else:
                 st.warning("PDF could not be loaded from Drive.")
