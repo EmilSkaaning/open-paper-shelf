@@ -600,7 +600,7 @@ def create_paper_folders_batch(
             )
         try:
             batch.execute()
-        except HttpError as e:
+        except Exception as e:
             for paper_id in chunk:
                 errors.setdefault(paper_id, e)
 
