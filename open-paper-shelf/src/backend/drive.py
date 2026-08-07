@@ -1,4 +1,4 @@
-from typing import Optional, List, Dict, Any
+from typing import NamedTuple, Optional, List, Dict, Any
 from pathlib import Path
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import Flow
@@ -267,14 +267,14 @@ def _collect_ids_recursive(service: DriveService, folder_id: str) -> List[str]:
 
 
 # Drive's batch endpoint accepts at most 100 sub-requests per HTTP call.
-BATCH_TRASH_CHUNK_SIZE = 100
+DRIVE_BATCH_CHUNK_SIZE = 100
 
 
 def _batch_trash(service: DriveService, file_ids: List[str]) -> None:
     """Trashes a list of Drive file/folder IDs via batched HTTP requests.
 
     Batching turns what would otherwise be one HTTP round-trip per file
-    into `ceil(len(file_ids) / BATCH_TRASH_CHUNK_SIZE)` round-trips, which
+    into `ceil(len(file_ids) / DRIVE_BATCH_CHUNK_SIZE)` round-trips, which
     matters for libraries with many papers.
 
     Args:
@@ -294,9 +294,9 @@ def _batch_trash(service: DriveService, file_ids: List[str]) -> None:
         if exception is not None:
             errors[request_id] = exception
 
-    for start in range(0, len(file_ids), BATCH_TRASH_CHUNK_SIZE):
+    for start in range(0, len(file_ids), DRIVE_BATCH_CHUNK_SIZE):
         batch = service.new_batch_http_request(callback=_record_error)
-        for file_id in file_ids[start : start + BATCH_TRASH_CHUNK_SIZE]:
+        for file_id in file_ids[start : start + DRIVE_BATCH_CHUNK_SIZE]:
             batch.add(
                 service.files().update(fileId=file_id, body={"trashed": True}),
                 request_id=file_id,
@@ -529,6 +529,82 @@ def create_paper_folder(
     """
     service: DriveService = build("drive", "v3", credentials=creds)
     return _get_or_create_folder(service, paper_id, papers_folder_id)
+
+
+class BatchFolderResult(NamedTuple):
+    """Per-paper outcome of a batched folder-creation call.
+
+    Attributes:
+        folder_ids: Maps each paper ID that was created successfully to its
+            new Drive folder ID.
+        errors: Maps each paper ID that failed to create to the error Drive
+            returned for it.
+    """
+
+    folder_ids: Dict[str, str]
+    errors: Dict[str, Exception]
+
+
+def create_paper_folders_batch(
+    creds: Credentials, papers_folder_id: str, paper_ids: List[str]
+) -> BatchFolderResult:
+    """Creates multiple per-paper folders via batched HTTP requests.
+
+    Unlike `create_paper_folder`, this always creates a new folder rather
+    than getting-or-creating one, since callers use it only for paper IDs
+    they just generated (freshly minted UUIDs that cannot already have a
+    folder) — skipping the existence check lets the create calls be
+    metadata-only and therefore batchable, turning what would otherwise be
+    one HTTP round-trip per paper into
+    `ceil(len(paper_ids) / DRIVE_BATCH_CHUNK_SIZE)` round-trips.
+
+    A failure creating one paper's folder does not prevent the others in
+    the same call from being created; each paper's outcome (its new folder
+    ID, or the error Drive returned for it) is reported independently via
+    the returned `BatchFolderResult`.
+
+    Args:
+        creds (Credentials): The Google OAuth credentials.
+        papers_folder_id (str): The Google Drive file ID of the papers
+            folder each new folder is created inside.
+        paper_ids (List[str]): The unique paper IDs to create folders for,
+            used as each folder's name.
+
+    Returns:
+        BatchFolderResult: The per-paper folder IDs and errors.
+    """
+    service: DriveService = build("drive", "v3", credentials=creds)
+    folder_ids: Dict[str, str] = {}
+    errors: Dict[str, Exception] = {}
+
+    def _record_result(
+        request_id: str, response: DriveMetadata, exception: Optional[HttpError]
+    ) -> None:
+        if exception is not None:
+            errors[request_id] = exception
+        else:
+            folder_ids[request_id] = str(response["id"])
+
+    for start in range(0, len(paper_ids), DRIVE_BATCH_CHUNK_SIZE):
+        chunk = paper_ids[start : start + DRIVE_BATCH_CHUNK_SIZE]
+        batch = service.new_batch_http_request(callback=_record_result)
+        for paper_id in chunk:
+            folder_metadata = {
+                "name": paper_id,
+                "mimeType": FOLDER_MIME_TYPE,
+                "parents": [papers_folder_id],
+            }
+            batch.add(
+                service.files().create(body=folder_metadata, fields="id"),
+                request_id=paper_id,
+            )
+        try:
+            batch.execute()
+        except Exception as e:
+            for paper_id in chunk:
+                errors.setdefault(paper_id, e)
+
+    return BatchFolderResult(folder_ids=folder_ids, errors=errors)
 
 
 def upload_file_to_folder(
