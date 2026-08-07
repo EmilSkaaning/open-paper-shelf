@@ -914,16 +914,58 @@ def main() -> None:
                 viewer_url = (
                     f"{base_url.rstrip('/')}/pdfjs/web/viewer.html?{viewer_query}"
                 )
+
+                pdf_expanded = st.session_state.get("pdf_expanded", False)
+                toggle_label = "✖ Exit full screen" if pdf_expanded else "⛶ Full screen"
+                # Streamlit's own header/sidebar chrome use z-index 999990/
+                # 999991, so the overlay must clear that to actually cover
+                # the full viewport, and the toggle button's wrapping
+                # container needs an even higher z-index (via its stable
+                # `st-key-*` class) so it stays reachable on top of the
+                # overlay instead of being buried underneath it.
+                overlay_z_index = 1_000_000
+                toggle_container = st.container(key="pdf_expand_toggle_container")
+                with toggle_container:
+                    if st.button(toggle_label, key="pdf_expand_toggle"):
+                        st.session_state.pdf_expanded = not pdf_expanded
+                        st.rerun()
+
+                # A CSS-only expand, not the Fullscreen API - PDF.js's native
+                # Presentation Mode disables the annotation editor on entry,
+                # which breaks the app's highlight-and-autosave workflow.
+                wrapper_class = (
+                    "pdf-viewer-expanded" if pdf_expanded else "pdf-viewer-normal"
+                )
+                # Parked in the lower-right corner while expanded so it
+                # doesn't overlap the PDF.js toolbar (top) or sidebar tools.
+                toggle_float_css = (
+                    ".st-key-pdf_expand_toggle_container{position:fixed !"
+                    "important;bottom:1.5rem;right:1.5rem;"
+                    f"z-index:{overlay_z_index + 1} !important;"
+                    "width:fit-content !important;}"
+                    if pdf_expanded
+                    else ""
+                )
                 pdf_display = (
+                    "<style>.pdf-viewer-expanded{position:fixed;inset:0;"
+                    "width:100vw;height:100vh;"
+                    f"z-index:{overlay_z_index};background:#fff;}}"
+                    ".pdf-viewer-expanded iframe{width:100%;height:100%;}"
+                    f"{toggle_float_css}"
+                    "</style>"
+                    f'<div class="{wrapper_class}">'
                     f'<iframe src="{html.escape(viewer_url)}" width="100%" '
                     'height="750" style="border:none;" allow="fullscreen" '
                     "allowfullscreen></iframe>"
+                    "</div>"
                 )
                 st.markdown(pdf_display, unsafe_allow_html=True)
 
                 st.caption(
                     "Use the toolbar's highlight tool to annotate the PDF - "
-                    "your edits save to Drive automatically as you work."
+                    "your edits save to Drive automatically as you work. "
+                    "Use Expand to fill the browser window while keeping "
+                    "annotation tools active."
                 )
             else:
                 st.warning("PDF could not be loaded from Drive.")

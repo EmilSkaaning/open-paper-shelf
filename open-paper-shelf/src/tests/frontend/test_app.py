@@ -5949,3 +5949,97 @@ class TestPdfEditedCopy:
         assert any(
             f"pid={pid}" in call and "libId=lib_123" in call for call in markdown_calls
         )
+
+
+class TestPdfExpandToggle:
+    """Test suite for the app-level expand-to-viewport toggle (issue #107).
+
+    This is deliberately independent of PDF.js's native Presentation Mode
+    (which disables the annotation editor) - it's a CSS class on the
+    wrapping div, toggled via a Streamlit button + rerun, so the PDF.js
+    toolbar (including the highlight tool) stays fully active.
+    """
+
+    def test_pdf_wrapper_uses_normal_class_by_default(
+        self, fake_st: MagicMock, mocker: MockerFixture, tmp_path: Path
+    ) -> None:
+        """Test that with no prior toggle, the viewer renders collapsed."""
+        pid = "e" * 32
+        _select_paper(fake_st, mocker, tmp_path, pid)
+        mocker.patch.object(app, "sync_paper_metadata", return_value=True)
+        fake_st.form_submit_button.return_value = False
+        fake_st.button.side_effect = lambda label, **kw: False
+
+        app.main()
+
+        markdown_calls = [str(call.args) for call in fake_st.markdown.call_args_list]
+        assert any(
+            'class="pdf-viewer-normal"' in call and "iframe" in call
+            for call in markdown_calls
+        )
+        assert not any('class="pdf-viewer-expanded"' in call for call in markdown_calls)
+
+    def test_pdf_wrapper_uses_expanded_class_when_toggled_on(
+        self, fake_st: MagicMock, mocker: MockerFixture, tmp_path: Path
+    ) -> None:
+        """Test that once pdf_expanded is set, the wrapper div picks up the
+        expanded CSS class so the viewer fills the viewport."""
+        pid = "f" * 32
+        _select_paper(fake_st, mocker, tmp_path, pid)
+        fake_st.session_state.pdf_expanded = True
+        mocker.patch.object(app, "sync_paper_metadata", return_value=True)
+        fake_st.form_submit_button.return_value = False
+        fake_st.button.side_effect = lambda label, **kw: False
+
+        app.main()
+
+        markdown_calls = [str(call.args) for call in fake_st.markdown.call_args_list]
+        assert any(
+            'class="pdf-viewer-expanded"' in call and "iframe" in call
+            for call in markdown_calls
+        )
+
+    def test_clicking_expand_button_flips_state_and_reruns(
+        self,
+        fake_st: MagicMock,
+        mocker: MockerFixture,
+        tmp_path: Path,
+        stop_rerun: type[BaseException],
+    ) -> None:
+        """Test that clicking the toggle button while collapsed flips
+        pdf_expanded to True and triggers a rerun to re-render expanded."""
+        pid = "g" * 32
+        _select_paper(fake_st, mocker, tmp_path, pid)
+        mocker.patch.object(app, "sync_paper_metadata", return_value=True)
+        fake_st.form_submit_button.return_value = False
+        fake_st.button.side_effect = lambda label, **kw: (
+            kw.get("key") == "pdf_expand_toggle"
+        )
+
+        with pytest.raises(stop_rerun):
+            app.main()
+
+        assert fake_st.session_state.pdf_expanded is True
+
+    def test_clicking_collapse_button_flips_state_back(
+        self,
+        fake_st: MagicMock,
+        mocker: MockerFixture,
+        tmp_path: Path,
+        stop_rerun: type[BaseException],
+    ) -> None:
+        """Test that clicking the toggle button while expanded flips
+        pdf_expanded back to False."""
+        pid = "h" * 32
+        _select_paper(fake_st, mocker, tmp_path, pid)
+        fake_st.session_state.pdf_expanded = True
+        mocker.patch.object(app, "sync_paper_metadata", return_value=True)
+        fake_st.form_submit_button.return_value = False
+        fake_st.button.side_effect = lambda label, **kw: (
+            kw.get("key") == "pdf_expand_toggle"
+        )
+
+        with pytest.raises(stop_rerun):
+            app.main()
+
+        assert fake_st.session_state.pdf_expanded is False
