@@ -917,9 +917,18 @@ def main() -> None:
 
                 pdf_expanded = st.session_state.get("pdf_expanded", False)
                 toggle_label = "Collapse" if pdf_expanded else "Expand"
-                if st.button(toggle_label, key="pdf_expand_toggle"):
-                    st.session_state.pdf_expanded = not pdf_expanded
-                    st.rerun()
+                # Streamlit's own header/sidebar chrome use z-index 999990/
+                # 999991, so the overlay must clear that to actually cover
+                # the full viewport, and the toggle button's wrapping
+                # container needs an even higher z-index (via its stable
+                # `st-key-*` class) so it stays reachable on top of the
+                # overlay instead of being buried underneath it.
+                overlay_z_index = 1_000_000
+                toggle_container = st.container(key="pdf_expand_toggle_container")
+                with toggle_container:
+                    if st.button(toggle_label, key="pdf_expand_toggle"):
+                        st.session_state.pdf_expanded = not pdf_expanded
+                        st.rerun()
 
                 # A CSS-only expand, not the Fullscreen API - PDF.js's native
                 # Presentation Mode disables the annotation editor on entry,
@@ -927,10 +936,20 @@ def main() -> None:
                 wrapper_class = (
                     "pdf-viewer-expanded" if pdf_expanded else "pdf-viewer-normal"
                 )
+                toggle_float_css = (
+                    ".st-key-pdf_expand_toggle_container{position:fixed !"
+                    "important;top:0.75rem;right:1.5rem;"
+                    f"z-index:{overlay_z_index + 1} !important;"
+                    "width:fit-content !important;}"
+                    if pdf_expanded
+                    else ""
+                )
                 pdf_display = (
                     "<style>.pdf-viewer-expanded{position:fixed;inset:0;"
-                    "width:100vw;height:100vh;z-index:9999;background:#fff;}"
+                    "width:100vw;height:100vh;"
+                    f"z-index:{overlay_z_index};background:#fff;}}"
                     ".pdf-viewer-expanded iframe{width:100%;height:100%;}"
+                    f"{toggle_float_css}"
                     "</style>"
                     f'<div class="{wrapper_class}">'
                     f'<iframe src="{html.escape(viewer_url)}" width="100%" '
