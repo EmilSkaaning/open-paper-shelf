@@ -916,7 +916,7 @@ def main() -> None:
                 )
 
                 pdf_expanded = st.session_state.get("pdf_expanded", False)
-                toggle_label = "Collapse" if pdf_expanded else "Expand"
+                toggle_label = "✖ Exit full screen" if pdf_expanded else "⛶ Full screen"
                 # Streamlit's own header/sidebar chrome use z-index 999990/
                 # 999991, so the overlay must clear that to actually cover
                 # the full viewport, and the toggle button's wrapping
@@ -936,9 +936,11 @@ def main() -> None:
                 wrapper_class = (
                     "pdf-viewer-expanded" if pdf_expanded else "pdf-viewer-normal"
                 )
+                # Parked in the lower-right corner while expanded so it
+                # doesn't overlap the PDF.js toolbar (top) or sidebar tools.
                 toggle_float_css = (
                     ".st-key-pdf_expand_toggle_container{position:fixed !"
-                    "important;top:0.75rem;right:1.5rem;"
+                    "important;bottom:1.5rem;right:1.5rem;"
                     f"z-index:{overlay_z_index + 1} !important;"
                     "width:fit-content !important;}"
                     if pdf_expanded
