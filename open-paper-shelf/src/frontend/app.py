@@ -425,6 +425,40 @@ def main() -> None:
                 for pid in st.session_state.index.papers
                 if st.session_state.get(f"chk_{pid}")
             ]
+
+            # search_box/tag_search are custom st_keyup iframe components,
+            # not native widgets - popping their session-state key (like the
+            # native status_filter/tags_filter multiselects below) leaves
+            # the iframe showing its last-typed text, since Streamlit only
+            # re-renders a widget when its *key* changes, not its value
+            # (see uploader_key above for the same fixed-by-remount pattern
+            # applied to the file uploader).
+            filter_nonce = st.session_state.get("filter_nonce", 0)
+            search_box_key = f"search_box_{filter_nonce}"
+            tag_search_key = f"tag_search_{filter_nonce}"
+
+            def clear_filters() -> None:
+                """Resets the Search, Status, Tags, and tag-search filters.
+
+                Bumps ``filter_nonce`` to force the two st_keyup text boxes
+                to remount empty, in addition to popping the native
+                Status/Tags multiselect state - see the comment above.
+                """
+                for k in [
+                    search_box_key,
+                    "status_filter",
+                    "tags_filter",
+                    tag_search_key,
+                ]:
+                    st.session_state.pop(k, None)
+                st.session_state.filter_nonce = filter_nonce + 1
+
+            filters_active = bool(
+                st.session_state.get(search_box_key)
+                or st.session_state.get("status_filter")
+                or st.session_state.get("tags_filter")
+                or st.session_state.get(tag_search_key)
+            )
             # Narrow columns with no gap keep the two icons adjacent instead
             # of centered in two full-width halves; the trailing column
             # just absorbs the remaining space. All three icons use a fixed
@@ -465,18 +499,21 @@ def main() -> None:
                 "div[data-testid='stColumn']:has(.st-key-bulk_generate_icon),"
                 "div[data-testid='stColumn']:has(.st-key-generate_missing_icon),"
                 "div[data-testid='stColumn']:has(.st-key-add_tag_icon),"
-                "div[data-testid='stColumn']:has(.st-key-remove_tag_icon)"
+                "div[data-testid='stColumn']:has(.st-key-remove_tag_icon),"
+                "div[data-testid='stColumn']:has(.st-key-clear_filters_icon)"
                 "{ flex: 0 0 auto; width: auto; min-width: 2.5rem; }"
                 ".st-key-trash_icon button,"
                 ".st-key-bulk_generate_icon button,"
                 ".st-key-generate_missing_icon button,"
                 ".st-key-add_tag_icon button,"
-                ".st-key-remove_tag_icon button"
+                ".st-key-remove_tag_icon button,"
+                ".st-key-clear_filters_icon button"
                 "{ width: 2.5rem; height: 2.5rem; min-width: 2.5rem; padding: 0;"
                 " display: flex; align-items: center; justify-content: center;"
                 " overflow: hidden; line-height: 1; margin-bottom: 0.4rem; }"
                 ".st-key-trash_icon button, .st-key-bulk_generate_icon button,"
-                ".st-key-generate_missing_icon button, .st-key-add_tag_icon button"
+                ".st-key-generate_missing_icon button, .st-key-add_tag_icon button,"
+                ".st-key-remove_tag_icon button"
                 "{ margin-right: 0.4rem; }"
                 "</style>",
                 unsafe_allow_html=True,
@@ -487,8 +524,9 @@ def main() -> None:
                 icon_col3,
                 icon_col4,
                 icon_col5,
+                icon_col6,
                 _icon_spacer,
-            ) = st.columns([1, 1, 1, 1, 1, 5], gap=None)
+            ) = st.columns([1, 1, 1, 1, 1, 1, 4], gap=None)
             # Rendered outside the columns below so a wide message box never
             # stretches the auto-width icon columns and shoves the later
             # icons out of place.
@@ -556,6 +594,14 @@ def main() -> None:
                     else:
                         _clear_bulk_actions()
                         icon_bar_message = ("warning", "No papers selected.")
+            with icon_col6:
+                st.button(
+                    "🧹",
+                    key="clear_filters_icon",
+                    help="Clear filters",
+                    type="primary" if filters_active else "secondary",
+                    on_click=clear_filters,
+                )
 
             if icon_bar_message is not None:
                 message_kind, message_text = icon_bar_message
@@ -690,38 +736,48 @@ def main() -> None:
                                 st.rerun()
 
             search_box = st_keyup(
-                "Search", placeholder="Search papers...", key="search_box"
+                "Search", placeholder="Search papers...", key=search_box_key
             )
             search_query = (search_box or "").lower()
 
-            status_col, tags_col = st.columns([1, 1])
+            status_filter_labels = st.multiselect(
+                "Status",
+                options=list(STATUS_LABELS.values()) + [SIMILAR_FILTER_LABEL],
+                key="status_filter",
+            )
+            status_filter = [
+                LABEL_TO_STATUS[label]
+                for label in status_filter_labels
+                if label in LABEL_TO_STATUS
+            ]
+            include_similar_filter = SIMILAR_FILTER_LABEL in status_filter_labels
 
-            with status_col:
-                status_filter_labels = st.multiselect(
-                    "Status",
-                    options=list(STATUS_LABELS.values()) + [SIMILAR_FILTER_LABEL],
-                    key="status_filter",
-                )
-                status_filter = [
-                    LABEL_TO_STATUS[label]
-                    for label in status_filter_labels
-                    if label in LABEL_TO_STATUS
+            all_tags = get_all_tags(st.session_state.index)
+            # A previously selected tag may no longer exist (its last
+            # paper was deleted or retagged since the last rerun). Drop
+            # it from the persisted selection before the widget reads
+            # it so a stale value never lingers against the current
+            # options.
+            if "tags_filter" in st.session_state:
+                st.session_state.tags_filter = [
+                    tag for tag in st.session_state.tags_filter if tag in all_tags
                 ]
-                include_similar_filter = SIMILAR_FILTER_LABEL in status_filter_labels
-            with tags_col:
-                all_tags = get_all_tags(st.session_state.index)
-                # A previously selected tag may no longer exist (its last
-                # paper was deleted or retagged since the last rerun). Drop
-                # it from the persisted selection before the widget reads
-                # it so a stale value never lingers against the current
-                # options.
-                if "tags_filter" in st.session_state:
-                    st.session_state.tags_filter = [
-                        tag for tag in st.session_state.tags_filter if tag in all_tags
-                    ]
-                tags_filter = st.multiselect(
-                    "Tags", options=all_tags, key="tags_filter"
+            tag_search = st_keyup(
+                "Search tags", placeholder="Search tags...", key=tag_search_key
+            )
+            tag_query = (tag_search or "").lower()
+            selected_tags = st.session_state.get("tags_filter", [])
+            # Union the query-matched tags with whatever is already selected
+            # so typing a new tag-search query never silently drops a
+            # previously chosen tag from the options list (which would
+            # deselect it).
+            matched_tags = [t for t in all_tags if tag_query in t.lower()]
+            tag_options = list(
+                dict.fromkeys(
+                    matched_tags + [t for t in selected_tags if t not in matched_tags]
                 )
+            )
+            tags_filter = st.multiselect("Tags", options=tag_options, key="tags_filter")
 
             # Re-filter after the block above so a partial batch-delete
             # failure (which skips st.rerun() to keep its error visible)
