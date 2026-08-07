@@ -2425,7 +2425,7 @@ class TestMainLibraryView:
             }
         )
         fake_st.session_state.selected_paper = None
-        fake_st.session_state.tags_filter = ["urgent", "obsolete-tag"]
+        fake_st.session_state.tags_filter_0 = ["urgent", "obsolete-tag"]
         fake_st.file_uploader.return_value = None
         fake_st.multiselect.side_effect = lambda label, **kw: (
             fake_st.session_state.get(kw.get("key"), list[str]())
@@ -2437,8 +2437,94 @@ class TestMainLibraryView:
 
         app.main()
 
-        assert fake_st.session_state.tags_filter == ["urgent"]
+        assert fake_st.session_state.tags_filter_0 == ["urgent"]
         fake_st.error.assert_not_called()
+
+    def test_clear_filters_icon_resets_search_status_tags(
+        self,
+        fake_st: MagicMock,
+        mocker: MockerFixture,
+        stop_rerun: type[BaseException],
+    ) -> None:
+        """Test clicking the "Clear filters" toolbar icon resets Search,
+        Status, and Tags in one click, and bumps the filter nonce so the
+        search box's st_keyup iframe and the two native multiselects all
+        remount empty instead of keeping their last-picked value (see
+        clear_filters()'s docstring)."""
+        fake_st.session_state.current_lib_id = "lib_123"
+        fake_st.session_state.current_papers_id = "papers_123"
+        fake_st.session_state.root_id = "root_123"
+        fake_st.session_state.index = LibraryIndex()
+        fake_st.session_state.selected_paper = None
+        fake_st.session_state.search_box_0 = "attention"
+        fake_st.session_state.status_filter_0 = ["✅ Read"]
+        fake_st.session_state.tags_filter_0 = ["nlp"]
+        fake_st.file_uploader.return_value = None
+
+        def button_side_effect(label: str, *args: Any, **kwargs: Any) -> bool:
+            if kwargs.get("key") == "clear_filters_icon":
+                kwargs["on_click"]()
+                raise stop_rerun
+            return False
+
+        fake_st.button.side_effect = button_side_effect
+        mocker.patch.object(app, "st_keyup", return_value="")
+        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
+
+        with pytest.raises(stop_rerun):
+            app.main()
+
+        assert "search_box_0" not in fake_st.session_state
+        assert "status_filter_0" not in fake_st.session_state
+        assert "tags_filter_0" not in fake_st.session_state
+        assert fake_st.session_state.filter_nonce == 1
+
+    def test_clear_filters_icon_is_primary_when_a_filter_is_active(
+        self, fake_st: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """Test the "Clear filters" icon renders as the primary button
+        style once any filter has an active value."""
+        fake_st.session_state.current_lib_id = "lib_123"
+        fake_st.session_state.current_papers_id = "papers_123"
+        fake_st.session_state.root_id = "root_123"
+        fake_st.session_state.index = LibraryIndex()
+        fake_st.session_state.selected_paper = None
+        fake_st.session_state.search_box_0 = "attention"
+        fake_st.file_uploader.return_value = None
+        mocker.patch.object(app, "st_keyup", return_value="")
+        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
+
+        app.main()
+
+        clear_call = next(
+            c
+            for c in fake_st.button.call_args_list
+            if c.kwargs.get("key") == "clear_filters_icon"
+        )
+        assert clear_call.kwargs["type"] == "primary"
+
+    def test_clear_filters_icon_is_secondary_when_no_filter_is_active(
+        self, fake_st: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """Test the "Clear filters" icon stays the default secondary style
+        when no filter currently has a value."""
+        fake_st.session_state.current_lib_id = "lib_123"
+        fake_st.session_state.current_papers_id = "papers_123"
+        fake_st.session_state.root_id = "root_123"
+        fake_st.session_state.index = LibraryIndex()
+        fake_st.session_state.selected_paper = None
+        fake_st.file_uploader.return_value = None
+        mocker.patch.object(app, "st_keyup", return_value="")
+        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
+
+        app.main()
+
+        clear_call = next(
+            c
+            for c in fake_st.button.call_args_list
+            if c.kwargs.get("key") == "clear_filters_icon"
+        )
+        assert clear_call.kwargs["type"] == "secondary"
 
     def test_paper_row_icon_reflects_status(
         self, fake_st: MagicMock, mocker: MockerFixture
@@ -4214,7 +4300,7 @@ class TestMainBulkGenerateFlow:
         icon_bar_call = next(
             c
             for c in fake_st.columns.call_args_list
-            if c.args and c.args[0] == [1, 1, 1, 1, 1, 5]
+            if c.args and c.args[0] == [1, 1, 1, 1, 1, 1, 4]
         )
         assert "gap" in icon_bar_call.kwargs
         assert icon_bar_call.kwargs["gap"] is None
@@ -4300,7 +4386,7 @@ class TestMainBulkGenerateFlow:
             "vertical wrap gap should match the horizontal gap between icons"
         )
 
-        column_rule_match = re.search(r"st-key-remove_tag_icon\)\s*\{([^}]*)\}", css)
+        column_rule_match = re.search(r"st-key-clear_filters_icon\)\s*\{([^}]*)\}", css)
         assert column_rule_match, "expected a column-sizing CSS rule"
         assert "margin-top" not in column_rule_match.group(1), (
             "per-column margin-top duplicates onto every wrapped row; "
@@ -4458,7 +4544,7 @@ class TestMainBulkGenerateFlow:
         self, fake_st: MagicMock, mocker: MockerFixture
     ) -> None:
         """Test the wand icon's "already has metadata" info box renders at
-        the same call position (immediately after all five icon buttons)
+        the same call position (immediately after all six icon buttons)
         as the trash icon's "No papers selected." warning, instead of being
         nested inside its own icon column - a stray per-column message
         would stretch just that column's auto width and shove the icons
@@ -4488,17 +4574,17 @@ class TestMainBulkGenerateFlow:
         button_names = [
             c[0] for c in fake_st.mock_calls if c[0] in ("button", "info", "warning")
         ]
-        remove_tag_index = next(
+        clear_filters_index = next(
             i
             for i, c in enumerate(fake_st.mock_calls)
-            if c[0] == "button" and c.kwargs.get("key") == "remove_tag_icon"
+            if c[0] == "button" and c.kwargs.get("key") == "clear_filters_icon"
         )
         info_index = next(
             i
             for i, c in enumerate(fake_st.mock_calls)
             if c[0] == "info" and "already has metadata" in str(c.args)
         )
-        assert info_index == remove_tag_index + 1, (
+        assert info_index == clear_filters_index + 1, (
             f"expected the info box to render immediately after the last "
             f"icon button, got call order {button_names}"
         )
