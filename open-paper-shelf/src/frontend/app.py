@@ -916,7 +916,8 @@ def main() -> None:
                 )
                 pdf_display = (
                     f'<iframe src="{html.escape(viewer_url)}" width="100%" '
-                    'height="750" style="border:none;"></iframe>'
+                    'height="750" style="border:none;" allow="fullscreen" '
+                    "allowfullscreen></iframe>"
                 )
                 st.markdown(pdf_display, unsafe_allow_html=True)
 
