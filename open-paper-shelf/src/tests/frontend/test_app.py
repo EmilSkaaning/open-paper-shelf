@@ -2425,7 +2425,7 @@ class TestMainLibraryView:
             }
         )
         fake_st.session_state.selected_paper = None
-        fake_st.session_state.tags_filter = ["urgent", "obsolete-tag"]
+        fake_st.session_state.tags_filter_0 = ["urgent", "obsolete-tag"]
         fake_st.file_uploader.return_value = None
         fake_st.multiselect.side_effect = lambda label, **kw: (
             fake_st.session_state.get(kw.get("key"), list[str]())
@@ -2437,90 +2437,7 @@ class TestMainLibraryView:
 
         app.main()
 
-        assert fake_st.session_state.tags_filter == ["urgent"]
-        fake_st.error.assert_not_called()
-
-    def test_tag_search_narrows_tag_multiselect_options(
-        self, fake_st: MagicMock, mocker: MockerFixture
-    ) -> None:
-        """Test typing in the tag-search box narrows the Tags multiselect's
-        options to only tags matching the query."""
-        pid = "a" * 32
-        fake_st.session_state.current_lib_id = "lib_123"
-        fake_st.session_state.current_papers_id = "papers_123"
-        fake_st.session_state.root_id = "root_123"
-        fake_st.session_state.index = LibraryIndex(
-            papers={
-                pid: PaperIndexEntry(
-                    title="Some Paper",
-                    pdf_file_id="p1",
-                    meta_file_id="m1",
-                    folder_id="f1",
-                    tags=["nlp", "vision", "robotics"],
-                )
-            }
-        )
-        fake_st.session_state.selected_paper = None
-        fake_st.file_uploader.return_value = None
-        fake_st.multiselect.side_effect = lambda label, **kw: (
-            list(kw.get("options", [])) if label == "Tags" else list[str]()
-        )
-        mocker.patch.object(
-            app,
-            "st_keyup",
-            side_effect=lambda label, **kw: "vis" if label == "Search tags" else "",
-        )
-        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
-
-        app.main()
-
-        tags_call = next(
-            c for c in fake_st.multiselect.call_args_list if c.args[:1] == ("Tags",)
-        )
-        assert tags_call.kwargs["options"] == ["vision"]
-
-    def test_tag_search_query_does_not_deselect_previous_tag(
-        self, fake_st: MagicMock, mocker: MockerFixture
-    ) -> None:
-        """Test a tag already selected in the Tags filter stays available as
-        an option even when a new tag-search query no longer matches it, so
-        typing a query never silently deselects it."""
-        pid = "a" * 32
-        fake_st.session_state.current_lib_id = "lib_123"
-        fake_st.session_state.current_papers_id = "papers_123"
-        fake_st.session_state.root_id = "root_123"
-        fake_st.session_state.index = LibraryIndex(
-            papers={
-                pid: PaperIndexEntry(
-                    title="Some Paper",
-                    pdf_file_id="p1",
-                    meta_file_id="m1",
-                    folder_id="f1",
-                    tags=["nlp", "vision"],
-                )
-            }
-        )
-        fake_st.session_state.selected_paper = None
-        fake_st.session_state.tags_filter = ["nlp"]
-        fake_st.file_uploader.return_value = None
-        fake_st.multiselect.side_effect = lambda label, **kw: (
-            fake_st.session_state.get(kw.get("key"), list[str]())
-            if label == "Tags"
-            else list[str]()
-        )
-        mocker.patch.object(
-            app,
-            "st_keyup",
-            side_effect=lambda label, **kw: "vis" if label == "Search tags" else "",
-        )
-        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
-
-        app.main()
-
-        tags_call = next(
-            c for c in fake_st.multiselect.call_args_list if c.args[:1] == ("Tags",)
-        )
-        assert set(tags_call.kwargs["options"]) == {"vision", "nlp"}
+        assert fake_st.session_state.tags_filter_0 == ["urgent"]
         fake_st.error.assert_not_called()
 
     def test_clear_filters_icon_resets_search_status_tags(
@@ -2530,18 +2447,18 @@ class TestMainLibraryView:
         stop_rerun: type[BaseException],
     ) -> None:
         """Test clicking the "Clear filters" toolbar icon resets Search,
-        Status, Tags, and the tag-search box in one click, and bumps the
-        filter nonce so the two st_keyup iframes remount empty instead of
-        keeping their last-typed text (see clear_filters()'s docstring)."""
+        Status, and Tags in one click, and bumps the filter nonce so the
+        search box's st_keyup iframe and the two native multiselects all
+        remount empty instead of keeping their last-picked value (see
+        clear_filters()'s docstring)."""
         fake_st.session_state.current_lib_id = "lib_123"
         fake_st.session_state.current_papers_id = "papers_123"
         fake_st.session_state.root_id = "root_123"
         fake_st.session_state.index = LibraryIndex()
         fake_st.session_state.selected_paper = None
         fake_st.session_state.search_box_0 = "attention"
-        fake_st.session_state.status_filter = ["✅ Read"]
-        fake_st.session_state.tags_filter = ["nlp"]
-        fake_st.session_state.tag_search_0 = "nl"
+        fake_st.session_state.status_filter_0 = ["✅ Read"]
+        fake_st.session_state.tags_filter_0 = ["nlp"]
         fake_st.file_uploader.return_value = None
 
         def button_side_effect(label: str, *args: Any, **kwargs: Any) -> bool:
@@ -2558,9 +2475,8 @@ class TestMainLibraryView:
             app.main()
 
         assert "search_box_0" not in fake_st.session_state
-        assert "status_filter" not in fake_st.session_state
-        assert "tags_filter" not in fake_st.session_state
-        assert "tag_search_0" not in fake_st.session_state
+        assert "status_filter_0" not in fake_st.session_state
+        assert "tags_filter_0" not in fake_st.session_state
         assert fake_st.session_state.filter_nonce == 1
 
     def test_clear_filters_icon_is_primary_when_a_filter_is_active(

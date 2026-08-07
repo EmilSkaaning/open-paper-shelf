@@ -426,38 +426,36 @@ def main() -> None:
                 if st.session_state.get(f"chk_{pid}")
             ]
 
-            # search_box/tag_search are custom st_keyup iframe components,
-            # not native widgets - popping their session-state key (like the
-            # native status_filter/tags_filter multiselects below) leaves
-            # the iframe showing its last-typed text, since Streamlit only
-            # re-renders a widget when its *key* changes, not its value
-            # (see uploader_key above for the same fixed-by-remount pattern
-            # applied to the file uploader).
+            # Both search_box (a custom st_keyup iframe) and the native
+            # status_filter/tags_filter multiselects below keep showing
+            # their last value if only their session-state key is popped -
+            # Streamlit only re-renders a widget when its *key* changes, not
+            # its value (see uploader_key above for the same
+            # fixed-by-remount pattern applied to the file uploader).
             filter_nonce = st.session_state.get("filter_nonce", 0)
             search_box_key = f"search_box_{filter_nonce}"
-            tag_search_key = f"tag_search_{filter_nonce}"
+            status_filter_key = f"status_filter_{filter_nonce}"
+            tags_filter_key = f"tags_filter_{filter_nonce}"
 
             def clear_filters() -> None:
-                """Resets the Search, Status, Tags, and tag-search filters.
+                """Resets the Search, Status, and Tags filters.
 
-                Bumps ``filter_nonce`` to force the two st_keyup text boxes
-                to remount empty, in addition to popping the native
-                Status/Tags multiselect state - see the comment above.
+                Bumps ``filter_nonce`` to force the search box and the
+                Status/Tags multiselects to remount empty. Popping their
+                session-state keys alone doesn't reset a native st.multiselect
+                in practice - its frontend component keeps showing the
+                last-picked chips across reruns unless its `key` itself
+                changes, the same remount-on-nonce pattern the search box
+                uses for its st_keyup iframe.
                 """
-                for k in [
-                    search_box_key,
-                    "status_filter",
-                    "tags_filter",
-                    tag_search_key,
-                ]:
+                for k in [search_box_key, status_filter_key, tags_filter_key]:
                     st.session_state.pop(k, None)
                 st.session_state.filter_nonce = filter_nonce + 1
 
             filters_active = bool(
                 st.session_state.get(search_box_key)
-                or st.session_state.get("status_filter")
-                or st.session_state.get("tags_filter")
-                or st.session_state.get(tag_search_key)
+                or st.session_state.get(status_filter_key)
+                or st.session_state.get(tags_filter_key)
             )
             # Narrow columns with no gap keep the two icons adjacent instead
             # of centered in two full-width halves; the trailing column
@@ -743,7 +741,7 @@ def main() -> None:
             status_filter_labels = st.multiselect(
                 "Status",
                 options=list(STATUS_LABELS.values()) + [SIMILAR_FILTER_LABEL],
-                key="status_filter",
+                key=status_filter_key,
             )
             status_filter = [
                 LABEL_TO_STATUS[label]
@@ -758,26 +756,11 @@ def main() -> None:
             # it from the persisted selection before the widget reads
             # it so a stale value never lingers against the current
             # options.
-            if "tags_filter" in st.session_state:
-                st.session_state.tags_filter = [
-                    tag for tag in st.session_state.tags_filter if tag in all_tags
+            if tags_filter_key in st.session_state:
+                st.session_state[tags_filter_key] = [
+                    tag for tag in st.session_state[tags_filter_key] if tag in all_tags
                 ]
-            tag_search = st_keyup(
-                "Search tags", placeholder="Search tags...", key=tag_search_key
-            )
-            tag_query = (tag_search or "").lower()
-            selected_tags = st.session_state.get("tags_filter", [])
-            # Union the query-matched tags with whatever is already selected
-            # so typing a new tag-search query never silently drops a
-            # previously chosen tag from the options list (which would
-            # deselect it).
-            matched_tags = [t for t in all_tags if tag_query in t.lower()]
-            tag_options = list(
-                dict.fromkeys(
-                    matched_tags + [t for t in selected_tags if t not in matched_tags]
-                )
-            )
-            tags_filter = st.multiselect("Tags", options=tag_options, key="tags_filter")
+            tags_filter = st.multiselect("Tags", options=all_tags, key=tags_filter_key)
 
             # Re-filter after the block above so a partial batch-delete
             # failure (which skips st.rerun() to keep its error visible)
