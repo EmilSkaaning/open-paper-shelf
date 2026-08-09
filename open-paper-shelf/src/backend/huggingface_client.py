@@ -431,14 +431,30 @@ def find_similar_papers(
         stored embedding yet, or whose embedding has a different dimension
         than `embedding` (e.g. a legacy/corrupted entry), are excluded.
     """
+    # Performance optimization: pre-calculate the query embedding's norm
+    # to avoid recomputing it for every paper in the library.
+    if not embedding:
+        return []
+
+    norm_query = sum(x * x for x in embedding) ** 0.5
+    if norm_query == 0.0:
+        return []
+
     matches = []
     for pid, entry in index.papers.items():
         if pid == exclude_pid or not entry.embedding:
             continue
-        try:
-            score = cosine_similarity(embedding, entry.embedding)
-        except ValueError:
+        if len(embedding) != len(entry.embedding):
             continue
+
+        # Inline cosine similarity for performance to avoid O(N) function call overhead
+        dot = sum(x * y for x, y in zip(embedding, entry.embedding))
+        norm_entry = sum(y * y for y in entry.embedding) ** 0.5
+        if norm_entry == 0.0:
+            continue
+
+        score = dot / (norm_query * norm_entry)
+
         if score >= threshold:
             matches.append((pid, entry.title, score))
     matches.sort(key=lambda m: m[2], reverse=True)
