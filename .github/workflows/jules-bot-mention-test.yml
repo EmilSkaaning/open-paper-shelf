@@ -1,11 +1,9 @@
 name: Jules Bot Mention Test (throwaway)
 
 on:
-  workflow_dispatch:
-    inputs:
-      pr_number:
-        description: PR number to comment on
-        required: true
+  push:
+    branches:
+      - investigation/28-jules-review-timeout
 
 jobs:
   post-comment:
@@ -17,6 +15,6 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh pr comment ${{ github.event.inputs.pr_number }} \
+          gh pr comment 110 \
             --repo ${{ github.repository }} \
             --body "@jules review this pull request and list any blocking issues."
