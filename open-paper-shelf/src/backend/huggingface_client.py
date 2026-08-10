@@ -384,12 +384,17 @@ def embed_text(
     return vector
 
 
-def cosine_similarity(a: Sequence[float], b: Sequence[float]) -> float:
+def cosine_similarity(
+    a: Sequence[float], b: Sequence[float], norm_a: Optional[float] = None
+) -> float:
     """Computes the cosine similarity between two vectors.
 
     Args:
         a: The first vector.
         b: The second vector.
+        norm_a: `a`'s pre-computed Euclidean norm, if the caller already has
+            it (e.g. from comparing `a` against many vectors in a loop).
+            Computed from `a` when omitted.
 
     Returns:
         A similarity score in [-1, 1], or 0.0 if either vector is empty or
@@ -403,7 +408,8 @@ def cosine_similarity(a: Sequence[float], b: Sequence[float]) -> float:
     if not a or not b:
         return 0.0
     dot = sum(x * y for x, y in zip(a, b))
-    norm_a = sum(x * x for x in a) ** 0.5
+    if norm_a is None:
+        norm_a = sum(x * x for x in a) ** 0.5
     norm_b = sum(y * y for y in b) ** 0.5
     if norm_a == 0.0 or norm_b == 0.0:
         return 0.0
@@ -429,15 +435,17 @@ def find_similar_papers(
         A list of `(paper_id, title, score)` tuples for every paper at or
         above `threshold`, sorted by score descending. Papers with no
         stored embedding yet, or whose embedding has a different dimension
-        than `embedding` (e.g. a legacy/corrupted entry), are excluded.
+        than `embedding` (e.g. a legacy/corrupted entry), are excluded. If
+        `embedding` is empty or has zero norm, every score against it would
+        be 0.0; that case short-circuits to `[]` immediately whenever
+        `threshold > 0.0` (nothing could match), and otherwise still scores
+        each paper normally so a non-positive `threshold` behaves exactly
+        as if the loop had run.
     """
-    # Performance optimization: pre-calculate the query embedding's norm
-    # to avoid recomputing it for every paper in the library.
-    if not embedding:
-        return []
-
-    norm_query = sum(x * x for x in embedding) ** 0.5
-    if norm_query == 0.0:
+    # Pre-calculate the query embedding's norm once so cosine_similarity()
+    # doesn't recompute it for every paper in the library.
+    norm_query = sum(x * x for x in embedding) ** 0.5 if embedding else 0.0
+    if norm_query == 0.0 and threshold > 0.0:
         return []
 
     matches = []
@@ -446,15 +454,7 @@ def find_similar_papers(
             continue
         if len(embedding) != len(entry.embedding):
             continue
-
-        # Inline cosine similarity for performance to avoid O(N) function call overhead
-        dot = sum(x * y for x, y in zip(embedding, entry.embedding))
-        norm_entry = sum(y * y for y in entry.embedding) ** 0.5
-        if norm_entry == 0.0:
-            continue
-
-        score = dot / (norm_query * norm_entry)
-
+        score = cosine_similarity(embedding, entry.embedding, norm_a=norm_query)
         if score >= threshold:
             matches.append((pid, entry.title, score))
     matches.sort(key=lambda m: m[2], reverse=True)
