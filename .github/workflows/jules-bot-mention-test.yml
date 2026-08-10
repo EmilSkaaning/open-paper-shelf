@@ -1,0 +1,22 @@
+name: Jules Bot Mention Test (throwaway)
+
+on:
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: PR number to comment on
+        required: true
+
+jobs:
+  post-comment:
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Post @jules mention via GITHUB_TOKEN
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr comment ${{ github.event.inputs.pr_number }} \
+            --repo ${{ github.repository }} \
+            --body "@jules review this pull request and list any blocking issues."
