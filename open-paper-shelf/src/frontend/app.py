@@ -734,7 +734,10 @@ def main() -> None:
                                 st.rerun()
 
             search_box = st_keyup(
-                "Search", placeholder="Search papers...", key=search_box_key
+                "Search",
+                placeholder="Search papers...",
+                key=search_box_key,
+                label_visibility="collapsed",
             )
             search_query = (search_box or "").lower()
 
@@ -742,6 +745,8 @@ def main() -> None:
                 "Status",
                 options=list(STATUS_LABELS.values()) + [SIMILAR_FILTER_LABEL],
                 key=status_filter_key,
+                placeholder="Filter by status...",
+                label_visibility="collapsed",
             )
             status_filter = [
                 LABEL_TO_STATUS[label]
@@ -760,7 +765,13 @@ def main() -> None:
                 st.session_state[tags_filter_key] = [
                     tag for tag in st.session_state[tags_filter_key] if tag in all_tags
                 ]
-            tags_filter = st.multiselect("Tags", options=all_tags, key=tags_filter_key)
+            tags_filter = st.multiselect(
+                "Tags",
+                options=all_tags,
+                key=tags_filter_key,
+                placeholder="Filter by tags...",
+                label_visibility="collapsed",
+            )
 
             # Re-filter after the block above so a partial batch-delete
             # failure (which skips st.rerun() to keep its error visible)
