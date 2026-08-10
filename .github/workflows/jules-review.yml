@@ -57,3 +57,4 @@ jobs:
             -f state='error' \
             -f description='Jules Code Review failed after retry (timeout or API error)' \
             -f context='jules/review'
+          exit 1
