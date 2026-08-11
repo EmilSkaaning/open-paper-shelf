@@ -24,7 +24,7 @@ import frontend.uploads as uploads
 from backend.drive import BatchFolderResult
 from backend.huggingface_client import GeneratedMetadata
 from backend.models import LibraryIndex, PaperIndexEntry, PaperMetadata
-from frontend.constants import PDF_FILENAME
+from frontend.constants import MAX_DUPLICATE_NAMES_TO_LIST, PDF_FILENAME
 from tests.frontend.conftest import make_uploaded_file
 
 
@@ -4872,6 +4872,36 @@ class TestMainBulkDownloadFlow:
         fake_st.warning.assert_any_call("Couldn't include: Some Paper")
         fake_st.error.assert_any_call("No PDFs could be included in the download.")
         fake_st.download_button.assert_not_called()
+
+    def test_download_panel_truncates_many_skipped_papers(
+        self, fake_st: MagicMock, mocker: MockerFixture, tmp_path: Path
+    ) -> None:
+        """Test that when more than MAX_DUPLICATE_NAMES_TO_LIST papers are
+        skipped, the warning shows a count instead of every title."""
+        pid = "a" * 32
+        entry = PaperIndexEntry(
+            title="Some Paper", pdf_file_id="pdf1", meta_file_id="meta1", folder_id="f1"
+        )
+        fake_st.session_state.current_lib_id = "lib_123"
+        fake_st.session_state.current_papers_id = "papers_123"
+        fake_st.session_state.root_id = "root_123"
+        fake_st.session_state.index = LibraryIndex(papers={pid: entry})
+        fake_st.session_state.selected_paper = None
+        fake_st.session_state.local_lib_dir = tmp_path
+        fake_st.session_state.show_download_pids = [pid]
+        fake_st.file_uploader.return_value = None
+        fake_st.button.return_value = False
+        skipped_titles = [f"Paper {i}" for i in range(MAX_DUPLICATE_NAMES_TO_LIST + 1)]
+        zip_result = downloads.ZipBuildResult(
+            data=b"", included=[], skipped=skipped_titles
+        )
+        mocker.patch.object(app, "zip_marked_pdfs", return_value=zip_result)
+        mocker.patch.object(app, "st_keyup", return_value="")
+        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
+
+        app.main()
+
+        fake_st.warning.assert_any_call(f"Couldn't include {len(skipped_titles)} PDFs.")
 
     def test_cancelling_download_clears_staged_state_and_cached_zip(
         self,

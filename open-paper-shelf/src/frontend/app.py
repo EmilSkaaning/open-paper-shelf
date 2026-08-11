@@ -767,7 +767,14 @@ def main() -> None:
                             )
                         st.session_state.download_zip_result = zip_result
                     if zip_result.skipped:
-                        st.warning("Couldn't include: " + ", ".join(zip_result.skipped))
+                        if len(zip_result.skipped) > MAX_DUPLICATE_NAMES_TO_LIST:
+                            st.warning(
+                                f"Couldn't include {len(zip_result.skipped)} PDFs."
+                            )
+                        else:
+                            st.warning(
+                                "Couldn't include: " + ", ".join(zip_result.skipped)
+                            )
                     if zip_result.included:
                         lib_name = st.session_state.get(
                             "current_lib_name", st.session_state.current_lib_id
