@@ -4801,16 +4801,17 @@ class TestMainBulkDownloadFlow:
             key="confirm_download_btn",
         )
 
-    def test_clicking_download_button_clears_panel_without_showing_cancel(
+    def test_clicking_download_button_keeps_panel_open(
         self,
         fake_st: MagicMock,
         mocker: MockerFixture,
         tmp_path: Path,
-        stop_rerun: type[BaseException],
     ) -> None:
-        """Test that once the zip is actually downloaded, the panel (both
-        the Download and Cancel buttons) disappears automatically instead
-        of staying staged."""
+        """Test that clicking Download doesn't rerun immediately, since an
+        st.rerun() right after a download_button click would interrupt the
+        browser's in-flight download before the payload is delivered. The
+        panel (and its Cancel button) must stay open until the user
+        explicitly dismisses it."""
         pid = "a" * 32
         entry = PaperIndexEntry(
             title="Some Paper", pdf_file_id="pdf1", meta_file_id="meta1", folder_id="f1"
@@ -4833,12 +4834,11 @@ class TestMainBulkDownloadFlow:
         mocker.patch.object(app, "st_keyup", return_value="")
         mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
 
-        with pytest.raises(stop_rerun):
-            app.main()
+        app.main()
 
-        assert fake_st.session_state.show_download_pids is None
-        assert "download_zip_result" not in fake_st.session_state
-        assert not any(
+        assert fake_st.session_state.show_download_pids == [pid]
+        assert fake_st.session_state.download_zip_result is not None
+        assert any(
             c.kwargs.get("key") == "cancel_download_btn"
             for c in fake_st.button.call_args_list
         )
