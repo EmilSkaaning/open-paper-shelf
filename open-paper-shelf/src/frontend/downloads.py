@@ -1,6 +1,7 @@
 """Bulk PDF packaging for the "Download marked PDFs" icon-bar action."""
 
 import io
+import logging
 import re
 import zipfile
 from dataclasses import dataclass
@@ -13,6 +14,8 @@ from google.oauth2.credentials import Credentials
 from backend.drive import download_file
 from backend.models import LibraryIndex
 from frontend.constants import EDITED_PDF_FILENAME, PDF_FILENAME
+
+logger = logging.getLogger(__name__)
 
 _UNSAFE_FILENAME_CHARS = re.compile(r'[\\/:*?"<>|]')
 
@@ -83,6 +86,9 @@ def zip_marked_pdfs(
                     local_paper_dir.mkdir(parents=True, exist_ok=True)
                     download_file(creds, file_id, local_path)
                 except Exception:
+                    logger.exception(
+                        "Failed to download PDF for paper %r (pid=%s)", entry.title, pid
+                    )
                     skipped.append(entry.title)
                     continue
 

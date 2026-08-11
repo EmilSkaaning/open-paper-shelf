@@ -1,11 +1,13 @@
 """Tests for frontend.downloads.zip_marked_pdfs."""
 
 import io
+import logging
 import zipfile
 from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import pytest
 from pytest_mock import MockerFixture
 
 from backend.models import LibraryIndex, PaperIndexEntry
@@ -92,7 +94,7 @@ class TestZipMarkedPdfs:
             assert zf.read("Paper One.pdf") == b"edited"
 
     def test_skips_paper_on_download_failure(
-        self, tmp_path: Path, mocker: MockerFixture
+        self, tmp_path: Path, mocker: MockerFixture, caplog: pytest.LogCaptureFixture
     ) -> None:
         index = LibraryIndex(
             papers={
@@ -107,15 +109,18 @@ class TestZipMarkedPdfs:
 
         mocker.patch.object(downloads, "download_file", side_effect=fake_download)
 
-        result = downloads.zip_marked_pdfs(
-            creds=mocker.Mock(),
-            pids=["p1", "p2"],
-            index=index,
-            local_lib_dir=tmp_path,
-        )
+        with caplog.at_level(logging.ERROR):
+            result = downloads.zip_marked_pdfs(
+                creds=mocker.Mock(),
+                pids=["p1", "p2"],
+                index=index,
+                local_lib_dir=tmp_path,
+            )
 
         assert result.included == ["Good Paper"]
         assert result.skipped == ["Broken Paper"]
+        assert "Broken Paper" in caplog.text
+        assert "boom" in caplog.text
 
     def test_dedupes_identical_titles(
         self, tmp_path: Path, mocker: MockerFixture
