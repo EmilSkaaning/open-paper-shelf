@@ -17,13 +17,14 @@ from pytest_mock import MockerFixture
 
 import frontend.app as app
 import frontend.auth as auth
+import frontend.downloads as downloads
 import frontend.library as library
 import frontend.metadata_generation as metadata_generation
 import frontend.uploads as uploads
 from backend.drive import BatchFolderResult
 from backend.huggingface_client import GeneratedMetadata
 from backend.models import LibraryIndex, PaperIndexEntry, PaperMetadata
-from frontend.constants import PDF_FILENAME
+from frontend.constants import MAX_DUPLICATE_NAMES_TO_LIST, PDF_FILENAME
 from tests.frontend.conftest import make_uploaded_file
 
 
@@ -3594,6 +3595,7 @@ class TestMainAddRemoveTagFlow:
         fake_st.session_state.selected_paper = None
         fake_st.session_state.show_remove_tag_pids = [pid]
         fake_st.session_state.confirm_delete_pids = [pid]
+        fake_st.session_state.show_download_pids = [pid]
         fake_st.session_state[f"chk_{pid}"] = True
         fake_st.file_uploader.return_value = None
         fake_st.button.side_effect = lambda label, **kw: kw.get("key") == "add_tag_icon"
@@ -3605,6 +3607,7 @@ class TestMainAddRemoveTagFlow:
         assert fake_st.session_state.show_add_tag_pids == [pid]
         assert "show_remove_tag_pids" not in fake_st.session_state
         assert "confirm_delete_pids" not in fake_st.session_state
+        assert "show_download_pids" not in fake_st.session_state
 
     def test_staging_delete_clears_a_lingering_add_tag_box(
         self, fake_st: MagicMock, mocker: MockerFixture
@@ -4300,7 +4303,7 @@ class TestMainBulkGenerateFlow:
         icon_bar_call = next(
             c
             for c in fake_st.columns.call_args_list
-            if c.args and c.args[0] == [1, 1, 1, 1, 1, 1, 4]
+            if c.args and c.args[0] == [1, 1, 1, 1, 1, 1, 1, 4]
         )
         assert "gap" in icon_bar_call.kwargs
         assert icon_bar_call.kwargs["gap"] is None
@@ -4656,6 +4659,287 @@ class TestMainBulkGenerateFlow:
 
         mock_generate.assert_not_called()
         assert fake_st.session_state.confirm_generate_pids is None
+
+
+class TestMainBulkDownloadFlow:
+    """Test suite for main()'s sidebar icon-bar bulk download flow."""
+
+    def test_download_with_no_checked_papers_warns(
+        self, fake_st: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """Test clicking the download icon with nothing checked just warns."""
+        pid = "a" * 32
+        entry = PaperIndexEntry(
+            title="Some Paper", pdf_file_id="pdf1", meta_file_id="meta1", folder_id="f1"
+        )
+        fake_st.session_state.current_lib_id = "lib_123"
+        fake_st.session_state.current_papers_id = "papers_123"
+        fake_st.session_state.root_id = "root_123"
+        fake_st.session_state.index = LibraryIndex(papers={pid: entry})
+        fake_st.session_state.selected_paper = None
+        fake_st.file_uploader.return_value = None
+        fake_st.checkbox.return_value = False
+        fake_st.button.side_effect = lambda label, **kw: (
+            kw.get("key") == "download_icon"
+        )
+        mocker.patch.object(app, "st_keyup", return_value="")
+        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
+
+        app.main()
+
+        fake_st.warning.assert_any_call("No papers selected.")
+        assert "show_download_pids" not in fake_st.session_state
+
+    def test_download_icon_stays_secondary_when_a_paper_is_checked(
+        self, fake_st: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """Test the download icon keeps its fixed "secondary" type
+        regardless of checkbox state, matching the other icon-bar buttons."""
+        pid = "a" * 32
+        entry = PaperIndexEntry(
+            title="Some Paper", pdf_file_id="pdf1", meta_file_id="meta1", folder_id="f1"
+        )
+        fake_st.session_state.current_lib_id = "lib_123"
+        fake_st.session_state.current_papers_id = "papers_123"
+        fake_st.session_state.root_id = "root_123"
+        fake_st.session_state.index = LibraryIndex(papers={pid: entry})
+        fake_st.session_state.selected_paper = None
+        fake_st.file_uploader.return_value = None
+        fake_st.session_state[f"chk_{pid}"] = True
+        fake_st.button.return_value = False
+        mocker.patch.object(app, "st_keyup", return_value="")
+        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
+
+        app.main()
+
+        download_call = next(
+            c
+            for c in fake_st.button.call_args_list
+            if c.kwargs.get("key") == "download_icon"
+        )
+        assert download_call.kwargs.get("type") == "secondary"
+
+    def test_download_with_checked_paper_shows_zip_panel(
+        self, fake_st: MagicMock, mocker: MockerFixture, tmp_path: Path
+    ) -> None:
+        """Test clicking the download icon with a checked paper builds and
+        offers the zip immediately, with no separate confirm step."""
+        pid = "a" * 32
+        entry = PaperIndexEntry(
+            title="Some Paper", pdf_file_id="pdf1", meta_file_id="meta1", folder_id="f1"
+        )
+        fake_st.session_state.current_lib_id = "lib_123"
+        fake_st.session_state.current_lib_name = "My Library"
+        fake_st.session_state.current_papers_id = "papers_123"
+        fake_st.session_state.root_id = "root_123"
+        fake_st.session_state.index = LibraryIndex(papers={pid: entry})
+        fake_st.session_state.selected_paper = None
+        fake_st.session_state.local_lib_dir = tmp_path
+        fake_st.session_state[f"chk_{pid}"] = True
+        fake_st.file_uploader.return_value = None
+        fake_st.button.side_effect = lambda label, **kw: (
+            kw.get("key") == "download_icon"
+        )
+        fake_st.download_button.return_value = False
+        zip_result = downloads.ZipBuildResult(
+            data=b"zip-bytes", included=["Some Paper"], skipped=[]
+        )
+        mock_zip = mocker.patch.object(app, "zip_marked_pdfs", return_value=zip_result)
+        mocker.patch.object(app, "st_keyup", return_value="")
+        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
+
+        app.main()
+
+        assert fake_st.session_state.show_download_pids == [pid]
+        mock_zip.assert_called_once_with(
+            mocker.ANY, [pid], fake_st.session_state.index, tmp_path
+        )
+        fake_st.spinner.assert_any_call("Preparing zip...")
+        fake_st.download_button.assert_any_call(
+            "Download zip",
+            data=b"zip-bytes",
+            file_name=downloads.zip_download_filename("My Library"),
+            mime="application/zip",
+            key="confirm_download_btn",
+        )
+
+    def test_download_zip_result_is_cached_across_reruns(
+        self, fake_st: MagicMock, mocker: MockerFixture, tmp_path: Path
+    ) -> None:
+        """Test a previously built zip isn't rebuilt on a later rerun."""
+        pid = "a" * 32
+        entry = PaperIndexEntry(
+            title="Some Paper", pdf_file_id="pdf1", meta_file_id="meta1", folder_id="f1"
+        )
+        fake_st.session_state.current_lib_id = "lib_123"
+        fake_st.session_state.current_lib_name = "My Library"
+        fake_st.session_state.current_papers_id = "papers_123"
+        fake_st.session_state.root_id = "root_123"
+        fake_st.session_state.index = LibraryIndex(papers={pid: entry})
+        fake_st.session_state.selected_paper = None
+        fake_st.session_state.local_lib_dir = tmp_path
+        fake_st.session_state.show_download_pids = [pid]
+        cached_result = downloads.ZipBuildResult(
+            data=b"cached-bytes", included=["Some Paper"], skipped=[]
+        )
+        fake_st.session_state.download_zip_result = cached_result
+        fake_st.file_uploader.return_value = None
+        fake_st.button.return_value = False
+        fake_st.download_button.return_value = False
+        mock_zip = mocker.patch.object(app, "zip_marked_pdfs")
+        mocker.patch.object(app, "st_keyup", return_value="")
+        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
+
+        app.main()
+
+        mock_zip.assert_not_called()
+        fake_st.download_button.assert_any_call(
+            "Download zip",
+            data=b"cached-bytes",
+            file_name=downloads.zip_download_filename("My Library"),
+            mime="application/zip",
+            key="confirm_download_btn",
+        )
+
+    def test_clicking_download_button_keeps_panel_open(
+        self,
+        fake_st: MagicMock,
+        mocker: MockerFixture,
+        tmp_path: Path,
+    ) -> None:
+        """Test that clicking Download doesn't rerun immediately, since an
+        st.rerun() right after a download_button click would interrupt the
+        browser's in-flight download before the payload is delivered. The
+        panel (and its Cancel button) must stay open until the user
+        explicitly dismisses it."""
+        pid = "a" * 32
+        entry = PaperIndexEntry(
+            title="Some Paper", pdf_file_id="pdf1", meta_file_id="meta1", folder_id="f1"
+        )
+        fake_st.session_state.current_lib_id = "lib_123"
+        fake_st.session_state.current_lib_name = "My Library"
+        fake_st.session_state.current_papers_id = "papers_123"
+        fake_st.session_state.root_id = "root_123"
+        fake_st.session_state.index = LibraryIndex(papers={pid: entry})
+        fake_st.session_state.selected_paper = None
+        fake_st.session_state.local_lib_dir = tmp_path
+        fake_st.session_state.show_download_pids = [pid]
+        fake_st.session_state.download_zip_result = downloads.ZipBuildResult(
+            data=b"zip-bytes", included=["Some Paper"], skipped=[]
+        )
+        fake_st.file_uploader.return_value = None
+        fake_st.button.return_value = False
+        fake_st.download_button.return_value = True
+        mocker.patch.object(app, "zip_marked_pdfs")
+        mocker.patch.object(app, "st_keyup", return_value="")
+        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
+
+        app.main()
+
+        assert fake_st.session_state.show_download_pids == [pid]
+        assert fake_st.session_state.download_zip_result is not None
+        assert any(
+            c.kwargs.get("key") == "cancel_download_btn"
+            for c in fake_st.button.call_args_list
+        )
+
+    def test_download_panel_warns_on_skipped_papers(
+        self, fake_st: MagicMock, mocker: MockerFixture, tmp_path: Path
+    ) -> None:
+        """Test papers that couldn't be zipped are surfaced as a warning."""
+        pid = "a" * 32
+        entry = PaperIndexEntry(
+            title="Some Paper", pdf_file_id="pdf1", meta_file_id="meta1", folder_id="f1"
+        )
+        fake_st.session_state.current_lib_id = "lib_123"
+        fake_st.session_state.current_papers_id = "papers_123"
+        fake_st.session_state.root_id = "root_123"
+        fake_st.session_state.index = LibraryIndex(papers={pid: entry})
+        fake_st.session_state.selected_paper = None
+        fake_st.session_state.local_lib_dir = tmp_path
+        fake_st.session_state.show_download_pids = [pid]
+        fake_st.file_uploader.return_value = None
+        fake_st.button.return_value = False
+        zip_result = downloads.ZipBuildResult(
+            data=b"", included=[], skipped=["Some Paper"]
+        )
+        mocker.patch.object(app, "zip_marked_pdfs", return_value=zip_result)
+        mocker.patch.object(app, "st_keyup", return_value="")
+        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
+
+        app.main()
+
+        fake_st.warning.assert_any_call("Couldn't include: Some Paper")
+        fake_st.error.assert_any_call("No PDFs could be included in the download.")
+        fake_st.download_button.assert_not_called()
+
+    def test_download_panel_truncates_many_skipped_papers(
+        self, fake_st: MagicMock, mocker: MockerFixture, tmp_path: Path
+    ) -> None:
+        """Test that when more than MAX_DUPLICATE_NAMES_TO_LIST papers are
+        skipped, the warning shows a count instead of every title."""
+        pid = "a" * 32
+        entry = PaperIndexEntry(
+            title="Some Paper", pdf_file_id="pdf1", meta_file_id="meta1", folder_id="f1"
+        )
+        fake_st.session_state.current_lib_id = "lib_123"
+        fake_st.session_state.current_papers_id = "papers_123"
+        fake_st.session_state.root_id = "root_123"
+        fake_st.session_state.index = LibraryIndex(papers={pid: entry})
+        fake_st.session_state.selected_paper = None
+        fake_st.session_state.local_lib_dir = tmp_path
+        fake_st.session_state.show_download_pids = [pid]
+        fake_st.file_uploader.return_value = None
+        fake_st.button.return_value = False
+        skipped_titles = [f"Paper {i}" for i in range(MAX_DUPLICATE_NAMES_TO_LIST + 1)]
+        zip_result = downloads.ZipBuildResult(
+            data=b"", included=[], skipped=skipped_titles
+        )
+        mocker.patch.object(app, "zip_marked_pdfs", return_value=zip_result)
+        mocker.patch.object(app, "st_keyup", return_value="")
+        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
+
+        app.main()
+
+        fake_st.warning.assert_any_call(f"Couldn't include {len(skipped_titles)} PDFs.")
+
+    def test_cancelling_download_clears_staged_state_and_cached_zip(
+        self,
+        fake_st: MagicMock,
+        mocker: MockerFixture,
+        tmp_path: Path,
+        stop_rerun: type[BaseException],
+    ) -> None:
+        """Test clicking Cancel on the download panel clears both the
+        staged pids and the cached zip bytes."""
+        pid = "a" * 32
+        entry = PaperIndexEntry(
+            title="Some Paper", pdf_file_id="pdf1", meta_file_id="meta1", folder_id="f1"
+        )
+        fake_st.session_state.current_lib_id = "lib_123"
+        fake_st.session_state.current_papers_id = "papers_123"
+        fake_st.session_state.root_id = "root_123"
+        fake_st.session_state.index = LibraryIndex(papers={pid: entry})
+        fake_st.session_state.selected_paper = None
+        fake_st.session_state.local_lib_dir = tmp_path
+        fake_st.session_state.show_download_pids = [pid]
+        fake_st.session_state.download_zip_result = downloads.ZipBuildResult(
+            data=b"zip-bytes", included=["Some Paper"], skipped=[]
+        )
+        fake_st.file_uploader.return_value = None
+        fake_st.button.side_effect = lambda label, **kw: (
+            kw.get("key") == "cancel_download_btn"
+        )
+        mock_zip = mocker.patch.object(app, "zip_marked_pdfs")
+        mocker.patch.object(app, "st_keyup", return_value="")
+        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
+
+        with pytest.raises(stop_rerun):
+            app.main()
+
+        mock_zip.assert_not_called()
+        assert fake_st.session_state.show_download_pids is None
+        assert "download_zip_result" not in fake_st.session_state
 
 
 class TestToggleSelectAll:

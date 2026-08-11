@@ -43,6 +43,7 @@ from frontend.constants import (  # noqa: E402
     STATUS_ICONS,
     STATUS_LABELS,
 )
+from frontend.downloads import zip_download_filename, zip_marked_pdfs  # noqa: E402
 from frontend.library import (  # noqa: E402
     add_tags_to_selected,
     delete_selected_papers,
@@ -113,6 +114,7 @@ BULK_ACTION_STATE_KEYS = (
     "confirm_generate_pids",
     "show_add_tag_pids",
     "show_remove_tag_pids",
+    "show_download_pids",
 )
 
 
@@ -134,6 +136,7 @@ def _clear_bulk_actions() -> None:
     """Clears any staged icon-bar action without staging a new one."""
     for key in BULK_ACTION_STATE_KEYS:
         st.session_state.pop(key, None)
+    st.session_state.pop("download_zip_result", None)
 
 
 def _toggle_select_all(filtered_pids: list[str]) -> None:
@@ -303,6 +306,8 @@ def main() -> None:
                 "confirm_generate_pids",
                 "show_add_tag_pids",
                 "show_remove_tag_pids",
+                "show_download_pids",
+                "download_zip_result",
             ]:
                 st.session_state.pop(k, None)
 
@@ -498,6 +503,7 @@ def main() -> None:
                 "div[data-testid='stColumn']:has(.st-key-generate_missing_icon),"
                 "div[data-testid='stColumn']:has(.st-key-add_tag_icon),"
                 "div[data-testid='stColumn']:has(.st-key-remove_tag_icon),"
+                "div[data-testid='stColumn']:has(.st-key-download_icon),"
                 "div[data-testid='stColumn']:has(.st-key-clear_filters_icon)"
                 "{ flex: 0 0 auto; width: auto; min-width: 2.5rem; }"
                 ".st-key-trash_icon button,"
@@ -505,13 +511,14 @@ def main() -> None:
                 ".st-key-generate_missing_icon button,"
                 ".st-key-add_tag_icon button,"
                 ".st-key-remove_tag_icon button,"
+                ".st-key-download_icon button,"
                 ".st-key-clear_filters_icon button"
                 "{ width: 2.5rem; height: 2.5rem; min-width: 2.5rem; padding: 0;"
                 " display: flex; align-items: center; justify-content: center;"
                 " overflow: hidden; line-height: 1; margin-bottom: 0.4rem; }"
                 ".st-key-trash_icon button, .st-key-bulk_generate_icon button,"
                 ".st-key-generate_missing_icon button, .st-key-add_tag_icon button,"
-                ".st-key-remove_tag_icon button"
+                ".st-key-remove_tag_icon button, .st-key-download_icon button"
                 "{ margin-right: 0.4rem; }"
                 "</style>",
                 unsafe_allow_html=True,
@@ -523,8 +530,9 @@ def main() -> None:
                 icon_col4,
                 icon_col5,
                 icon_col6,
+                icon_col7,
                 _icon_spacer,
-            ) = st.columns([1, 1, 1, 1, 1, 1, 4], gap=None)
+            ) = st.columns([1, 1, 1, 1, 1, 1, 1, 4], gap=None)
             # Rendered outside the columns below so a wide message box never
             # stretches the auto-width icon columns and shoves the later
             # icons out of place.
@@ -593,6 +601,19 @@ def main() -> None:
                         _clear_bulk_actions()
                         icon_bar_message = ("warning", "No papers selected.")
             with icon_col6:
+                if st.button(
+                    "📥",
+                    key="download_icon",
+                    help="Download PDFs for selected papers as a zip",
+                    type="secondary",
+                ):
+                    if checked_pids:
+                        _stage_bulk_action("show_download_pids", checked_pids)
+                        st.session_state.pop("download_zip_result", None)
+                    else:
+                        _clear_bulk_actions()
+                        icon_bar_message = ("warning", "No papers selected.")
+            with icon_col7:
                 st.button(
                     "🧹",
                     key="clear_filters_icon",
@@ -732,6 +753,45 @@ def main() -> None:
                             if st.button("Cancel", key="cancel_remove_tag_btn"):
                                 st.session_state.show_remove_tag_pids = None
                                 st.rerun()
+
+                if st.session_state.get("show_download_pids"):
+                    pids_to_download = st.session_state.show_download_pids
+                    zip_result = st.session_state.get("download_zip_result")
+                    if zip_result is None:
+                        with st.spinner("Preparing zip..."):
+                            zip_result = zip_marked_pdfs(
+                                creds,
+                                pids_to_download,
+                                st.session_state.index,
+                                st.session_state.local_lib_dir,
+                            )
+                        st.session_state.download_zip_result = zip_result
+                    if zip_result.skipped:
+                        if len(zip_result.skipped) > MAX_DUPLICATE_NAMES_TO_LIST:
+                            st.warning(
+                                f"Couldn't include {len(zip_result.skipped)} PDFs."
+                            )
+                        else:
+                            st.warning(
+                                "Couldn't include: " + ", ".join(zip_result.skipped)
+                            )
+                    if zip_result.included:
+                        lib_name = st.session_state.get(
+                            "current_lib_name", st.session_state.current_lib_id
+                        )
+                        st.download_button(
+                            "Download zip",
+                            data=zip_result.data,
+                            file_name=zip_download_filename(lib_name),
+                            mime="application/zip",
+                            key="confirm_download_btn",
+                        )
+                    else:
+                        st.error("No PDFs could be included in the download.")
+                    if st.button("Cancel", key="cancel_download_btn"):
+                        st.session_state.show_download_pids = None
+                        st.session_state.pop("download_zip_result", None)
+                        st.rerun()
 
             search_box = st_keyup(
                 "Search",
