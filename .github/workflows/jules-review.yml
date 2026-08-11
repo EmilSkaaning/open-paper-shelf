@@ -30,6 +30,7 @@ jobs:
         id: jules_attempt_1
         if: github.event.pull_request.draft == false
         continue-on-error: true
+        timeout-minutes: 45
         uses: ./.github/actions/jules-attempt
         with:
           jules_api_key: ${{ secrets.JULES_API_KEY }}
@@ -39,6 +40,7 @@ jobs:
         id: jules_attempt_2
         if: github.event.pull_request.draft == false && steps.jules_attempt_1.outcome == 'failure'
         continue-on-error: true
+        timeout-minutes: 45
         uses: ./.github/actions/jules-attempt
         with:
           jules_api_key: ${{ secrets.JULES_API_KEY }}
@@ -48,6 +50,7 @@ jobs:
         id: jules_attempt_3
         if: github.event.pull_request.draft == false && steps.jules_attempt_2.outcome == 'failure'
         continue-on-error: true
+        timeout-minutes: 45
         uses: ./.github/actions/jules-attempt
         with:
           jules_api_key: ${{ secrets.JULES_API_KEY }}

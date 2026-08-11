@@ -1,5 +1,5 @@
 name: 'Jules PR Review Attempt'
-description: 'Runs the Jules PR reviewer with a fixed 45-minute timeout'
+description: 'Runs the Jules PR reviewer (caller sets timeout-minutes)'
 inputs:
   jules_api_key:
     description: 'Jules API key'
@@ -11,7 +11,6 @@ runs:
   using: 'composite'
   steps:
     - name: Run Jules PR Reviewer
-      timeout-minutes: 45
       uses: sanjay3290/jules-pr-reviewer@v1
       with:
         jules_api_key: ${{ inputs.jules_api_key }}
