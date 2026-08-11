@@ -4729,6 +4729,7 @@ class TestMainBulkDownloadFlow:
             title="Some Paper", pdf_file_id="pdf1", meta_file_id="meta1", folder_id="f1"
         )
         fake_st.session_state.current_lib_id = "lib_123"
+        fake_st.session_state.current_lib_name = "My Library"
         fake_st.session_state.current_papers_id = "papers_123"
         fake_st.session_state.root_id = "root_123"
         fake_st.session_state.index = LibraryIndex(papers={pid: entry})
@@ -4756,7 +4757,7 @@ class TestMainBulkDownloadFlow:
         fake_st.download_button.assert_any_call(
             "Download zip",
             data=b"zip-bytes",
-            file_name="papers_1.zip",
+            file_name=downloads.zip_download_filename("My Library"),
             mime="application/zip",
             key="confirm_download_btn",
         )
@@ -4770,6 +4771,7 @@ class TestMainBulkDownloadFlow:
             title="Some Paper", pdf_file_id="pdf1", meta_file_id="meta1", folder_id="f1"
         )
         fake_st.session_state.current_lib_id = "lib_123"
+        fake_st.session_state.current_lib_name = "My Library"
         fake_st.session_state.current_papers_id = "papers_123"
         fake_st.session_state.root_id = "root_123"
         fake_st.session_state.index = LibraryIndex(papers={pid: entry})
@@ -4792,7 +4794,7 @@ class TestMainBulkDownloadFlow:
         fake_st.download_button.assert_any_call(
             "Download zip",
             data=b"cached-bytes",
-            file_name="papers_1.zip",
+            file_name=downloads.zip_download_filename("My Library"),
             mime="application/zip",
             key="confirm_download_btn",
         )

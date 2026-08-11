@@ -2,6 +2,7 @@
 
 import io
 import zipfile
+from datetime import date
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -176,3 +177,22 @@ class TestZipMarkedPdfs:
         assert result.skipped == []
         with zipfile.ZipFile(io.BytesIO(result.data)) as zf:
             assert zf.namelist() == []
+
+
+class TestZipDownloadFilename:
+    def test_builds_date_library_format(self) -> None:
+        name = downloads.zip_download_filename("My Library", today=date(2026, 8, 11))
+
+        assert name == "2026-08-11-My Library.zip"
+
+    def test_sanitizes_unsafe_characters_in_library_name(self) -> None:
+        name = downloads.zip_download_filename(
+            "Lib/With:Bad*Chars?", today=date(2026, 8, 11)
+        )
+
+        assert name == "2026-08-11-Lib_With_Bad_Chars_.zip"
+
+    def test_defaults_to_todays_date_when_not_given(self) -> None:
+        name = downloads.zip_download_filename("My Library")
+
+        assert name == f"{date.today().isoformat()}-My Library.zip"

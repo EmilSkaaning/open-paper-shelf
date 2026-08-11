@@ -43,7 +43,7 @@ from frontend.constants import (  # noqa: E402
     STATUS_ICONS,
     STATUS_LABELS,
 )
-from frontend.downloads import zip_marked_pdfs  # noqa: E402
+from frontend.downloads import zip_download_filename, zip_marked_pdfs  # noqa: E402
 from frontend.library import (  # noqa: E402
     add_tags_to_selected,
     delete_selected_papers,
@@ -769,10 +769,13 @@ def main() -> None:
                     if zip_result.skipped:
                         st.warning("Couldn't include: " + ", ".join(zip_result.skipped))
                     if zip_result.included:
+                        lib_name = st.session_state.get(
+                            "current_lib_name", st.session_state.current_lib_id
+                        )
                         st.download_button(
                             "Download zip",
                             data=zip_result.data,
-                            file_name=f"papers_{len(zip_result.included)}.zip",
+                            file_name=zip_download_filename(lib_name),
                             mime="application/zip",
                             key="confirm_download_btn",
                         )
