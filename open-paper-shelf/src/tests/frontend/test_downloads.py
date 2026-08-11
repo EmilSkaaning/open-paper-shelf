@@ -2,7 +2,7 @@
 
 import io
 import zipfile
-from datetime import date
+from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -180,19 +180,25 @@ class TestZipMarkedPdfs:
 
 
 class TestZipDownloadFilename:
-    def test_builds_date_library_format(self) -> None:
-        name = downloads.zip_download_filename("My Library", today=date(2026, 8, 11))
+    def test_builds_timestamp_library_format(self) -> None:
+        name = downloads.zip_download_filename(
+            "My Library", now=datetime(2026, 8, 11, 14, 5, 9)
+        )
 
-        assert name == "2026-08-11-My Library.zip"
+        assert name == "2026-08-11-140509-My Library.zip"
 
     def test_sanitizes_unsafe_characters_in_library_name(self) -> None:
         name = downloads.zip_download_filename(
-            "Lib/With:Bad*Chars?", today=date(2026, 8, 11)
+            "Lib/With:Bad*Chars?", now=datetime(2026, 8, 11, 14, 5, 9)
         )
 
-        assert name == "2026-08-11-Lib_With_Bad_Chars_.zip"
+        assert name == "2026-08-11-140509-Lib_With_Bad_Chars_.zip"
 
-    def test_defaults_to_todays_date_when_not_given(self) -> None:
+    def test_defaults_to_current_timestamp_when_not_given(self) -> None:
+        before = datetime.now().replace(microsecond=0)
         name = downloads.zip_download_filename("My Library")
+        after = datetime.now().replace(microsecond=0) + timedelta(seconds=1)
 
-        assert name == f"{date.today().isoformat()}-My Library.zip"
+        stamp = name.removesuffix("-My Library.zip")
+        parsed = datetime.strptime(stamp, "%Y-%m-%d-%H%M%S")
+        assert before <= parsed <= after

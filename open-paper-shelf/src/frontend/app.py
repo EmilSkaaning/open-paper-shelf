@@ -768,11 +768,12 @@ def main() -> None:
                         st.session_state.download_zip_result = zip_result
                     if zip_result.skipped:
                         st.warning("Couldn't include: " + ", ".join(zip_result.skipped))
+                    downloaded = False
                     if zip_result.included:
                         lib_name = st.session_state.get(
                             "current_lib_name", st.session_state.current_lib_id
                         )
-                        st.download_button(
+                        downloaded = st.download_button(
                             "Download zip",
                             data=zip_result.data,
                             file_name=zip_download_filename(lib_name),
@@ -781,7 +782,7 @@ def main() -> None:
                         )
                     else:
                         st.error("No PDFs could be included in the download.")
-                    if st.button("Cancel", key="cancel_download_btn"):
+                    if downloaded or st.button("Cancel", key="cancel_download_btn"):
                         st.session_state.show_download_pids = None
                         st.session_state.pop("download_zip_result", None)
                         st.rerun()

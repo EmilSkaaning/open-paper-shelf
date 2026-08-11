@@ -4,7 +4,7 @@ import io
 import re
 import zipfile
 from dataclasses import dataclass
-from datetime import date
+from datetime import datetime
 from pathlib import Path
 from typing import Sequence
 
@@ -93,17 +93,21 @@ def zip_marked_pdfs(
     return ZipBuildResult(data=buffer.getvalue(), included=included, skipped=skipped)
 
 
-def zip_download_filename(library_name: str, today: date | None = None) -> str:
+def zip_download_filename(library_name: str, now: datetime | None = None) -> str:
     """Builds the download filename for a marked-PDFs zip.
+
+    The full `yyyy-mm-dd-HHMMSS` timestamp (not just the date) makes the
+    filename close to unique across repeated downloads of the same
+    library on the same day.
 
     Args:
         library_name: The current library's display name.
-        today: The date to stamp the filename with; defaults to today.
+        now: The timestamp to stamp the filename with; defaults to now.
 
     Returns:
-        str: `<yyyy-mm-dd>-<sanitized library name>.zip`.
+        str: `<yyyy-mm-dd-HHMMSS>-<sanitized library name>.zip`.
     """
-    stamp = (today or date.today()).isoformat()
+    stamp = (now or datetime.now()).strftime("%Y-%m-%d-%H%M%S")
     sanitized = _UNSAFE_FILENAME_CHARS.sub("_", library_name).strip() or library_name
     return f"{stamp}-{sanitized}.zip"
 
