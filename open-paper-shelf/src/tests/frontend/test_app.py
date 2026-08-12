@@ -5654,6 +5654,7 @@ class TestMainMetadataView:
     ) -> None:
         """Test the Generate metadata button explains what it does and
         which Hugging Face models it calls."""
+        mocker.patch.dict("os.environ", {"HF_TOKEN": "test_token"}, clear=True)
         pid = "9" * 32
         _select_paper(fake_st, mocker, tmp_path, pid)
         mocker.patch.object(app, "sync_paper_metadata", return_value=True)
