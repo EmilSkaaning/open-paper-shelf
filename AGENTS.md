@@ -27,6 +27,12 @@ pytest/ruff/pyrefly via `uv`).
   `fix/73-oversized-upload` → `.worktrees/73-oversized-upload`.
 * Create with: `git worktree add .worktrees/{name} -b {type}/{name} origin/main`.
 
+### Plan Files
+* Longer implementation plans or future-scoping/roadmap plans (multi-step features,
+  epics, release evaluations, architecture proposals) should be written to `plans/` at
+  the repo root — it is gitignored, so files there stay local and don't need to be
+  committed, but are easy to find again in the working directory.
+
 ## 3. Coding Style
 
 **Immutability:** Prefer returning new objects/copies over mutating in place — e.g. Pydantic

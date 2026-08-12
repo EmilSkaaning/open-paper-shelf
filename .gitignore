@@ -40,3 +40,6 @@ papers/
 
 # Local-only agent reference (not for commit)
 ECC_MANUAL.md
+
+# Local plan files (not for commit)
+plans/
