@@ -2533,11 +2533,12 @@ class TestMainLibraryView:
         assert "tags_filter_0" not in fake_st.session_state
         assert fake_st.session_state.filter_nonce == 1
 
-    def test_clear_filters_icon_is_primary_when_a_filter_is_active(
+    def test_clear_filters_icon_enabled_when_a_filter_is_active(
         self, fake_st: MagicMock, mocker: MockerFixture
     ) -> None:
-        """Test the "Clear filters" icon renders as the primary button
-        style once any filter has an active value."""
+        """Test the "Clear filters" icon stays the secondary button style
+        (no more red "primary" glow) but is enabled once any filter has an
+        active value."""
         fake_st.session_state.current_lib_id = "lib_123"
         fake_st.session_state.current_papers_id = "papers_123"
         fake_st.session_state.root_id = "root_123"
@@ -2555,13 +2556,14 @@ class TestMainLibraryView:
             for c in fake_st.button.call_args_list
             if c.kwargs.get("key") == "clear_filters_icon"
         )
-        assert clear_call.kwargs["type"] == "primary"
+        assert clear_call.kwargs["type"] == "secondary"
+        assert clear_call.kwargs.get("disabled") is False
 
-    def test_clear_filters_icon_is_secondary_when_no_filter_is_active(
+    def test_clear_filters_icon_disabled_when_no_filter_is_active(
         self, fake_st: MagicMock, mocker: MockerFixture
     ) -> None:
-        """Test the "Clear filters" icon stays the default secondary style
-        when no filter currently has a value."""
+        """Test the "Clear filters" icon is disabled (grayed out) when no
+        filter currently has a value."""
         fake_st.session_state.current_lib_id = "lib_123"
         fake_st.session_state.current_papers_id = "papers_123"
         fake_st.session_state.root_id = "root_123"
@@ -2579,6 +2581,7 @@ class TestMainLibraryView:
             if c.kwargs.get("key") == "clear_filters_icon"
         )
         assert clear_call.kwargs["type"] == "secondary"
+        assert clear_call.kwargs.get("disabled") is True
 
     def test_paper_row_icon_reflects_status(
         self, fake_st: MagicMock, mocker: MockerFixture
@@ -2983,10 +2986,10 @@ class TestMainUploadFlow:
 class TestMainDeleteFlow:
     """Test suite for main()'s sidebar icon-bar delete flow."""
 
-    def test_trash_with_no_checked_papers_warns(
+    def test_trash_disabled_with_no_checked_papers(
         self, fake_st: MagicMock, mocker: MockerFixture
     ) -> None:
-        """Test clicking trash with nothing checked just warns."""
+        """Test the bin icon is disabled when nothing is checked."""
         pid = "a" * 32
         entry = PaperIndexEntry(
             title="Some Paper", pdf_file_id="pdf1", meta_file_id="meta1", folder_id="f1"
@@ -2998,13 +3001,12 @@ class TestMainDeleteFlow:
         fake_st.session_state.selected_paper = None
         fake_st.file_uploader.return_value = None
         fake_st.checkbox.return_value = False
-        fake_st.button.side_effect = lambda label, **kw: kw.get("key") == "trash_icon"
+        fake_st.button.return_value = False
         mocker.patch.object(app, "st_keyup", return_value="")
         mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
 
         app.main()
 
-        fake_st.warning.assert_any_call("No papers selected.")
         assert "confirm_delete_pids" not in fake_st.session_state
 
         trash_call = next(
@@ -3013,6 +3015,7 @@ class TestMainDeleteFlow:
             if c.kwargs.get("key") == "trash_icon"
         )
         assert trash_call.kwargs.get("type") == "secondary"
+        assert trash_call.kwargs.get("disabled") is True
 
     def test_trash_icon_stays_secondary_when_a_paper_is_checked(
         self, fake_st: MagicMock, mocker: MockerFixture
@@ -3043,6 +3046,7 @@ class TestMainDeleteFlow:
             if c.kwargs.get("key") == "trash_icon"
         )
         assert trash_call.kwargs.get("type") == "secondary"
+        assert trash_call.kwargs.get("disabled") is False
 
     def test_trash_with_checked_paper_shows_confirmation(
         self, fake_st: MagicMock, mocker: MockerFixture
@@ -3244,10 +3248,10 @@ class TestMainDeleteFlow:
 class TestMainAddRemoveTagFlow:
     """Test suite for main()'s sidebar icon-bar bulk add/remove tag flow."""
 
-    def test_add_tag_icon_with_no_checked_papers_warns(
+    def test_add_tag_icon_disabled_with_no_checked_papers(
         self, fake_st: MagicMock, mocker: MockerFixture
     ) -> None:
-        """Test clicking the add-tag icon with nothing checked just warns."""
+        """Test the add-tag icon is disabled when nothing is checked."""
         pid = "a" * 32
         entry = PaperIndexEntry(
             title="Some Paper", pdf_file_id="pdf1", meta_file_id="meta1", folder_id="f1"
@@ -3259,14 +3263,19 @@ class TestMainAddRemoveTagFlow:
         fake_st.session_state.selected_paper = None
         fake_st.file_uploader.return_value = None
         fake_st.checkbox.return_value = False
-        fake_st.button.side_effect = lambda label, **kw: kw.get("key") == "add_tag_icon"
+        fake_st.button.return_value = False
         mocker.patch.object(app, "st_keyup", return_value="")
         mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
 
         app.main()
 
-        fake_st.warning.assert_any_call("No papers selected.")
         assert "show_add_tag_pids" not in fake_st.session_state
+        add_tag_call = next(
+            c
+            for c in fake_st.button.call_args_list
+            if c.kwargs.get("key") == "add_tag_icon"
+        )
+        assert add_tag_call.kwargs.get("disabled") is True
 
     def test_add_tag_icon_with_checked_paper_stages_form(
         self, fake_st: MagicMock, mocker: MockerFixture
@@ -3293,6 +3302,34 @@ class TestMainAddRemoveTagFlow:
 
         assert fake_st.session_state.show_add_tag_pids == [pid]
         mock_add.assert_not_called()
+
+    def test_add_tag_icon_enabled_when_a_paper_is_checked(
+        self, fake_st: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """Test the add-tag icon is enabled once a paper is checked."""
+        pid = "a" * 32
+        entry = PaperIndexEntry(
+            title="Some Paper", pdf_file_id="pdf1", meta_file_id="meta1", folder_id="f1"
+        )
+        fake_st.session_state.current_lib_id = "lib_123"
+        fake_st.session_state.current_papers_id = "papers_123"
+        fake_st.session_state.root_id = "root_123"
+        fake_st.session_state.index = LibraryIndex(papers={pid: entry})
+        fake_st.session_state.selected_paper = None
+        fake_st.file_uploader.return_value = None
+        fake_st.session_state[f"chk_{pid}"] = True
+        fake_st.button.return_value = False
+        mocker.patch.object(app, "st_keyup", return_value="")
+        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
+
+        app.main()
+
+        add_tag_call = next(
+            c
+            for c in fake_st.button.call_args_list
+            if c.kwargs.get("key") == "add_tag_icon"
+        )
+        assert add_tag_call.kwargs.get("disabled") is False
 
     def test_confirming_add_tag_calls_add_tags_to_selected_and_reruns(
         self,
@@ -3447,10 +3484,10 @@ class TestMainAddRemoveTagFlow:
         mock_add.assert_not_called()
         assert fake_st.session_state.show_add_tag_pids is None
 
-    def test_remove_tag_icon_with_no_checked_papers_warns(
+    def test_remove_tag_icon_disabled_with_no_checked_papers(
         self, fake_st: MagicMock, mocker: MockerFixture
     ) -> None:
-        """Test clicking the remove-tag icon with nothing checked just warns."""
+        """Test the remove-tag icon is disabled when nothing is checked."""
         pid = "a" * 32
         entry = PaperIndexEntry(
             title="Some Paper", pdf_file_id="pdf1", meta_file_id="meta1", folder_id="f1"
@@ -3462,16 +3499,47 @@ class TestMainAddRemoveTagFlow:
         fake_st.session_state.selected_paper = None
         fake_st.file_uploader.return_value = None
         fake_st.checkbox.return_value = False
-        fake_st.button.side_effect = lambda label, **kw: (
-            kw.get("key") == "remove_tag_icon"
-        )
+        fake_st.button.return_value = False
         mocker.patch.object(app, "st_keyup", return_value="")
         mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
 
         app.main()
 
-        fake_st.warning.assert_any_call("No papers selected.")
         assert "show_remove_tag_pids" not in fake_st.session_state
+        remove_tag_call = next(
+            c
+            for c in fake_st.button.call_args_list
+            if c.kwargs.get("key") == "remove_tag_icon"
+        )
+        assert remove_tag_call.kwargs.get("disabled") is True
+
+    def test_remove_tag_icon_enabled_when_a_paper_is_checked(
+        self, fake_st: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """Test the remove-tag icon is enabled once a paper is checked."""
+        pid = "a" * 32
+        entry = PaperIndexEntry(
+            title="Some Paper", pdf_file_id="pdf1", meta_file_id="meta1", folder_id="f1"
+        )
+        fake_st.session_state.current_lib_id = "lib_123"
+        fake_st.session_state.current_papers_id = "papers_123"
+        fake_st.session_state.root_id = "root_123"
+        fake_st.session_state.index = LibraryIndex(papers={pid: entry})
+        fake_st.session_state.selected_paper = None
+        fake_st.file_uploader.return_value = None
+        fake_st.session_state[f"chk_{pid}"] = True
+        fake_st.button.return_value = False
+        mocker.patch.object(app, "st_keyup", return_value="")
+        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
+
+        app.main()
+
+        remove_tag_call = next(
+            c
+            for c in fake_st.button.call_args_list
+            if c.kwargs.get("key") == "remove_tag_icon"
+        )
+        assert remove_tag_call.kwargs.get("disabled") is False
 
     def test_remove_tag_with_no_tags_among_selection_shows_info(
         self, fake_st: MagicMock, mocker: MockerFixture
@@ -3688,12 +3756,12 @@ class TestMainAddRemoveTagFlow:
         assert fake_st.session_state.confirm_delete_pids == [pid]
         assert "show_add_tag_pids" not in fake_st.session_state
 
-    def test_no_op_icon_click_clears_a_lingering_generate_missing_box(
+    def test_staging_another_icon_clears_a_lingering_generate_missing_box(
         self, fake_st: MagicMock, mocker: MockerFixture
     ) -> None:
         """Regression test: after staging the magic-wand's "generate missing"
-        confirmation, clicking another icon with nothing checked must still
-        dismiss that staged box instead of leaving both boxes visible."""
+        confirmation, clicking another icon-bar action must still dismiss
+        that staged box instead of leaving both boxes visible."""
         pid = "a" * 32
         entry = PaperIndexEntry(
             title="Some Paper", pdf_file_id="pdf1", meta_file_id="meta1", folder_id="f1"
@@ -3704,6 +3772,7 @@ class TestMainAddRemoveTagFlow:
         fake_st.session_state.index = LibraryIndex(papers={pid: entry})
         fake_st.session_state.selected_paper = None
         fake_st.session_state.confirm_generate_pids = [pid]
+        fake_st.session_state[f"chk_{pid}"] = True
         fake_st.file_uploader.return_value = None
         fake_st.button.side_effect = lambda label, **kw: kw.get("key") == "add_tag_icon"
         mocker.patch.object(app, "st_keyup", return_value="")
@@ -3712,7 +3781,7 @@ class TestMainAddRemoveTagFlow:
         app.main()
 
         assert "confirm_generate_pids" not in fake_st.session_state
-        assert "show_add_tag_pids" not in fake_st.session_state
+        assert fake_st.session_state.show_add_tag_pids == [pid]
 
 
 class TestPersistGeneratedMetadata:
@@ -4789,10 +4858,10 @@ class TestMainBulkGenerateFlow:
 class TestMainBulkDownloadFlow:
     """Test suite for main()'s sidebar icon-bar bulk download flow."""
 
-    def test_download_with_no_checked_papers_warns(
+    def test_download_icon_disabled_with_no_checked_papers(
         self, fake_st: MagicMock, mocker: MockerFixture
     ) -> None:
-        """Test clicking the download icon with nothing checked just warns."""
+        """Test the download icon is disabled when nothing is checked."""
         pid = "a" * 32
         entry = PaperIndexEntry(
             title="Some Paper", pdf_file_id="pdf1", meta_file_id="meta1", folder_id="f1"
@@ -4804,22 +4873,26 @@ class TestMainBulkDownloadFlow:
         fake_st.session_state.selected_paper = None
         fake_st.file_uploader.return_value = None
         fake_st.checkbox.return_value = False
-        fake_st.button.side_effect = lambda label, **kw: (
-            kw.get("key") == "download_icon"
-        )
+        fake_st.button.return_value = False
         mocker.patch.object(app, "st_keyup", return_value="")
         mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
 
         app.main()
 
-        fake_st.warning.assert_any_call("No papers selected.")
         assert "show_download_pids" not in fake_st.session_state
+        download_call = next(
+            c
+            for c in fake_st.button.call_args_list
+            if c.kwargs.get("key") == "download_icon"
+        )
+        assert download_call.kwargs.get("disabled") is True
 
-    def test_download_icon_stays_secondary_when_a_paper_is_checked(
+    def test_download_icon_enabled_when_a_paper_is_checked(
         self, fake_st: MagicMock, mocker: MockerFixture
     ) -> None:
         """Test the download icon keeps its fixed "secondary" type
-        regardless of checkbox state, matching the other icon-bar buttons."""
+        regardless of checkbox state, matching the other icon-bar buttons,
+        and is enabled once a paper is checked."""
         pid = "a" * 32
         entry = PaperIndexEntry(
             title="Some Paper", pdf_file_id="pdf1", meta_file_id="meta1", folder_id="f1"
@@ -4843,6 +4916,7 @@ class TestMainBulkDownloadFlow:
             if c.kwargs.get("key") == "download_icon"
         )
         assert download_call.kwargs.get("type") == "secondary"
+        assert download_call.kwargs.get("disabled") is False
 
     def test_download_with_checked_paper_shows_zip_panel(
         self, fake_st: MagicMock, mocker: MockerFixture, tmp_path: Path

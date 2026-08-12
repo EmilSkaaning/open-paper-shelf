@@ -548,12 +548,9 @@ def main() -> None:
                     key="trash_icon",
                     help="Delete selected papers",
                     type="secondary",
+                    disabled=not checked_pids,
                 ):
-                    if checked_pids:
-                        _stage_bulk_action("confirm_delete_pids", checked_pids)
-                    else:
-                        _clear_bulk_actions()
-                        icon_bar_message = ("warning", "No papers selected.")
+                    _stage_bulk_action("confirm_delete_pids", checked_pids)
             hf_token_configured = is_hf_token_configured()
             with icon_col2:
                 if st.button(
@@ -598,43 +595,35 @@ def main() -> None:
                     key="add_tag_icon",
                     help="Add a tag to selected papers",
                     type="secondary",
+                    disabled=not checked_pids,
                 ):
-                    if checked_pids:
-                        _stage_bulk_action("show_add_tag_pids", checked_pids)
-                    else:
-                        _clear_bulk_actions()
-                        icon_bar_message = ("warning", "No papers selected.")
+                    _stage_bulk_action("show_add_tag_pids", checked_pids)
             with icon_col5:
                 if st.button(
                     "🚫",
                     key="remove_tag_icon",
                     help="Remove a tag from selected papers",
                     type="secondary",
+                    disabled=not checked_pids,
                 ):
-                    if checked_pids:
-                        _stage_bulk_action("show_remove_tag_pids", checked_pids)
-                    else:
-                        _clear_bulk_actions()
-                        icon_bar_message = ("warning", "No papers selected.")
+                    _stage_bulk_action("show_remove_tag_pids", checked_pids)
             with icon_col6:
                 if st.button(
                     "📥",
                     key="download_icon",
                     help="Download PDFs for selected papers as a zip",
                     type="secondary",
+                    disabled=not checked_pids,
                 ):
-                    if checked_pids:
-                        _stage_bulk_action("show_download_pids", checked_pids)
-                        st.session_state.pop("download_zip_result", None)
-                    else:
-                        _clear_bulk_actions()
-                        icon_bar_message = ("warning", "No papers selected.")
+                    _stage_bulk_action("show_download_pids", checked_pids)
+                    st.session_state.pop("download_zip_result", None)
             with icon_col7:
                 st.button(
                     "🧹",
                     key="clear_filters_icon",
                     help="Clear filters",
-                    type="primary" if filters_active else "secondary",
+                    type="secondary",
+                    disabled=not filters_active,
                     on_click=clear_filters,
                 )
 
