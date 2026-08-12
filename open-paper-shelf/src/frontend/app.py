@@ -33,6 +33,7 @@ from frontend.constants import (  # noqa: E402
     DEFAULT_FASTAPI_URL,
     EDITED_PDF_FILENAME,
     GENERATE_METADATA_HELP,
+    HF_TOKEN_MISSING_HELP,
     JSON_MIME_TYPE,
     LABEL_TO_STATUS,
     MAX_DUPLICATE_NAMES_TO_LIST,
@@ -89,6 +90,7 @@ from backend.huggingface_client import (  # noqa: E402,F401
     extract_pdf_text as extract_pdf_text,
     find_similar_papers as find_similar_papers,
     generate_paper_metadata as generate_paper_metadata,
+    is_hf_token_configured,
 )
 from frontend.constants import (  # noqa: E402,F401
     BULK_GENERATE_DELAY_SECONDS as BULK_GENERATE_DELAY_SECONDS,
@@ -549,11 +551,17 @@ def main() -> None:
                     else:
                         _clear_bulk_actions()
                         icon_bar_message = ("warning", "No papers selected.")
+            hf_token_configured = is_hf_token_configured()
             with icon_col2:
                 if st.button(
                     "✨",
                     key="bulk_generate_icon",
-                    help=GENERATE_METADATA_HELP,
+                    disabled=not hf_token_configured,
+                    help=(
+                        GENERATE_METADATA_HELP
+                        if hf_token_configured
+                        else HF_TOKEN_MISSING_HELP
+                    ),
                     type="secondary",
                 ):
                     if checked_pids:
@@ -565,7 +573,12 @@ def main() -> None:
                 if st.button(
                     "🪄",
                     key="generate_missing_icon",
-                    help="Generate metadata for every paper that doesn't have any yet",
+                    disabled=not hf_token_configured,
+                    help=(
+                        "Generate metadata for every paper that doesn't have any yet"
+                        if hf_token_configured
+                        else HF_TOKEN_MISSING_HELP
+                    ),
                     type="secondary",
                 ):
                     missing_pids = list(
@@ -1049,11 +1062,16 @@ def main() -> None:
                     "disabled to avoid overwriting your saved data."
                 )
 
+            hf_token_configured = is_hf_token_configured()
             if st.button(
                 "✨ Generate metadata",
                 key=f"generate_btn_{pid}",
-                disabled=not pdf_available,
-                help=GENERATE_METADATA_HELP,
+                disabled=not pdf_available or not hf_token_configured,
+                help=(
+                    GENERATE_METADATA_HELP
+                    if hf_token_configured
+                    else HF_TOKEN_MISSING_HELP
+                ),
             ):
                 has_unsaved_edits = (
                     st.session_state.get(f"title_{pid}", meta.title) != meta.title

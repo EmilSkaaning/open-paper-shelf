@@ -24,7 +24,12 @@ import frontend.uploads as uploads
 from backend.drive import BatchFolderResult
 from backend.huggingface_client import GeneratedMetadata
 from backend.models import LibraryIndex, PaperIndexEntry, PaperMetadata
-from frontend.constants import MAX_DUPLICATE_NAMES_TO_LIST, PDF_FILENAME
+from frontend.constants import (
+    GENERATE_METADATA_HELP,
+    HF_TOKEN_MISSING_HELP,
+    MAX_DUPLICATE_NAMES_TO_LIST,
+    PDF_FILENAME,
+)
 from tests.frontend.conftest import make_uploaded_file
 
 
@@ -4277,6 +4282,78 @@ class TestMainBulkGenerateFlow:
         )
         assert generate_call.kwargs.get("type") == "secondary"
 
+    def test_generate_icons_disabled_when_hf_token_missing(
+        self, fake_st: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """Test the bulk and missing-metadata generate icons are disabled
+        with an explanatory tooltip when HF_TOKEN is not set (issue #65)."""
+        pid = "a" * 32
+        entry = PaperIndexEntry(
+            title="Some Paper", pdf_file_id="pdf1", meta_file_id="meta1", folder_id="f1"
+        )
+        fake_st.session_state.current_lib_id = "lib_123"
+        fake_st.session_state.current_papers_id = "papers_123"
+        fake_st.session_state.root_id = "root_123"
+        fake_st.session_state.index = LibraryIndex(papers={pid: entry})
+        fake_st.session_state.selected_paper = None
+        fake_st.file_uploader.return_value = None
+        fake_st.checkbox.return_value = False
+        fake_st.button.return_value = False
+        mocker.patch.object(app, "st_keyup", return_value="")
+        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
+        mocker.patch.dict("os.environ", {}, clear=True)
+
+        app.main()
+
+        for key in ("bulk_generate_icon", "generate_missing_icon"):
+            call = next(
+                c for c in fake_st.button.call_args_list if c.kwargs.get("key") == key
+            )
+            assert call.kwargs.get("disabled") is True
+            assert call.kwargs.get("help") == HF_TOKEN_MISSING_HELP
+
+    def test_generate_icons_enabled_when_hf_token_set(
+        self, fake_st: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """Test the bulk and missing-metadata generate icons stay enabled
+        with their original help text when HF_TOKEN is set."""
+        pid = "a" * 32
+        entry = PaperIndexEntry(
+            title="Some Paper", pdf_file_id="pdf1", meta_file_id="meta1", folder_id="f1"
+        )
+        fake_st.session_state.current_lib_id = "lib_123"
+        fake_st.session_state.current_papers_id = "papers_123"
+        fake_st.session_state.root_id = "root_123"
+        fake_st.session_state.index = LibraryIndex(papers={pid: entry})
+        fake_st.session_state.selected_paper = None
+        fake_st.file_uploader.return_value = None
+        fake_st.checkbox.return_value = False
+        fake_st.button.return_value = False
+        mocker.patch.object(app, "st_keyup", return_value="")
+        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
+        mocker.patch.dict("os.environ", {"HF_TOKEN": "some-token"}, clear=True)
+
+        app.main()
+
+        bulk_call = next(
+            c
+            for c in fake_st.button.call_args_list
+            if c.kwargs.get("key") == "bulk_generate_icon"
+        )
+        assert bulk_call.kwargs.get("disabled") is False
+        assert bulk_call.kwargs.get("help") == GENERATE_METADATA_HELP
+
+        missing_call = next(
+            c
+            for c in fake_st.button.call_args_list
+            if c.kwargs.get("key") == "generate_missing_icon"
+        )
+        assert missing_call.kwargs.get("disabled") is False
+        assert (
+            missing_call.kwargs.get("help")
+            == "Generate metadata for every paper that doesn't have any yet"
+        )
+
     def test_icon_bar_columns_use_no_gap(
         self, fake_st: MagicMock, mocker: MockerFixture
     ) -> None:
@@ -5187,6 +5264,48 @@ class TestMainMetadataView:
             "PDF could not be loaded" in str(call.args)
             for call in fake_st.warning.call_args_list
         )
+
+    def test_generate_button_disabled_when_hf_token_missing(
+        self, fake_st: MagicMock, mocker: MockerFixture, tmp_path: Path
+    ) -> None:
+        """Test the per-paper generate button is disabled with an
+        explanatory tooltip when HF_TOKEN is not set (issue #65)."""
+        pid = "a" * 32
+        _select_paper(fake_st, mocker, tmp_path, pid)
+        mocker.patch.object(app, "sync_paper_metadata", return_value=True)
+        mocker.patch.dict("os.environ", {}, clear=True)
+        fake_st.form_submit_button.return_value = False
+
+        app.main()
+
+        generate_call = next(
+            c
+            for c in fake_st.button.call_args_list
+            if c.kwargs.get("key") == f"generate_btn_{pid}"
+        )
+        assert generate_call.kwargs.get("disabled") is True
+        assert generate_call.kwargs.get("help") == HF_TOKEN_MISSING_HELP
+
+    def test_generate_button_enabled_when_hf_token_set(
+        self, fake_st: MagicMock, mocker: MockerFixture, tmp_path: Path
+    ) -> None:
+        """Test the per-paper generate button keeps its original help text
+        and pdf-availability behavior when HF_TOKEN is set."""
+        pid = "a" * 32
+        _select_paper(fake_st, mocker, tmp_path, pid)
+        mocker.patch.object(app, "sync_paper_metadata", return_value=True)
+        mocker.patch.dict("os.environ", {"HF_TOKEN": "some-token"}, clear=True)
+        fake_st.form_submit_button.return_value = False
+
+        app.main()
+
+        generate_call = next(
+            c
+            for c in fake_st.button.call_args_list
+            if c.kwargs.get("key") == f"generate_btn_{pid}"
+        )
+        assert generate_call.kwargs.get("disabled") is False
+        assert generate_call.kwargs.get("help") == GENERATE_METADATA_HELP
 
     def test_recovers_valid_fields_after_validation_error(
         self, fake_st: MagicMock, mocker: MockerFixture, tmp_path: Path
