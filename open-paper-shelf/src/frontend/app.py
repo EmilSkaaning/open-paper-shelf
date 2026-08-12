@@ -220,6 +220,9 @@ def main() -> None:
 
         st.subheader("Select or Create a Library")
 
+        if not is_hf_token_configured():
+            st.info(HF_TOKEN_MISSING_HELP)
+
         col1, col2 = st.columns(2)
         with col1:
             if libraries:

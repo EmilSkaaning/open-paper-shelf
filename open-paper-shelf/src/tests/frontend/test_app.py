@@ -1127,6 +1127,54 @@ class TestMainLibrarySelection:
         mock_init.assert_not_called()
         fake_st.subheader.assert_called_once_with("Select or Create a Library")
 
+    def test_shows_hf_token_warning_when_missing(
+        self,
+        fake_st: MagicMock,
+        mocker: MockerFixture,
+    ) -> None:
+        """Test the selection screen shows an info box when HF_TOKEN is unset."""
+        fake_st.session_state.root_id = "root_123"
+        fake_st.button.return_value = False
+        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
+        mocker.patch.object(
+            app,
+            "list_libraries",
+            return_value=[
+                {"id": "lib1", "name": "Lib One"},
+                {"id": "lib2", "name": "Lib Two"},
+            ],
+        )
+        mocker.patch.dict("os.environ", {}, clear=True)
+
+        app.main()
+
+        fake_st.info.assert_any_call(HF_TOKEN_MISSING_HELP)
+
+    def test_no_hf_token_warning_when_configured(
+        self,
+        fake_st: MagicMock,
+        mocker: MockerFixture,
+    ) -> None:
+        """Test the selection screen shows no info box when HF_TOKEN is set."""
+        fake_st.session_state.root_id = "root_123"
+        fake_st.button.return_value = False
+        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
+        mocker.patch.object(
+            app,
+            "list_libraries",
+            return_value=[
+                {"id": "lib1", "name": "Lib One"},
+                {"id": "lib2", "name": "Lib Two"},
+            ],
+        )
+        mocker.patch.dict("os.environ", {"HF_TOKEN": "token"}, clear=True)
+
+        app.main()
+
+        assert HF_TOKEN_MISSING_HELP not in [
+            call.args[0] for call in fake_st.info.call_args_list
+        ]
+
     def test_creates_new_library(
         self,
         fake_st: MagicMock,
