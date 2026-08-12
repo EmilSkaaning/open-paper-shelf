@@ -10,6 +10,11 @@ GENERATE_METADATA_HELP = (
     f"and a similarity-detection embedding with {DEFAULT_EMBEDDING_MODEL}."
 )
 
+HF_TOKEN_MISSING_HELP = (
+    "Requires a Hugging Face API token. Set the HF_TOKEN environment "
+    "variable and restart the app to enable AI metadata generation."
+)
+
 BULK_GENERATE_DELAY_SECONDS: float = 1.5
 
 

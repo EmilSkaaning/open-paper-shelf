@@ -144,6 +144,16 @@ def get_inference_client(token: Optional[str] = None) -> InferenceClient:
     return InferenceClient(token=resolved)
 
 
+def is_hf_token_configured() -> bool:
+    """Checks whether an HF_TOKEN is available in the environment.
+
+    Returns:
+        True if the HF_TOKEN environment variable is set to a non-empty
+        value, False otherwise.
+    """
+    return bool(os.environ.get("HF_TOKEN"))
+
+
 def _call_with_retry(
     fn: Callable[[], T],
     max_retries: int = MAX_RETRIES,
