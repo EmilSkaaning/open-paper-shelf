@@ -9,6 +9,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from backend.drive import PAPERS_DIR, load_credentials_from_file
+from backend.host_check import get_non_loopback_host_warning
 from backend.pdf_upload import InvalidIdError, InvalidPdfError, MAX_EDITED_PDF_BYTES
 from backend.pdf_upload import save_edited_pdf as _save_edited_pdf
 
@@ -20,6 +21,10 @@ app = FastAPI(title="Open Paper Shelf API")
 
 # Ensure the local papers directory exists before mounting
 PAPERS_DIR.mkdir(exist_ok=True)
+
+_host_warning = get_non_loopback_host_warning()
+if _host_warning is not None:
+    logger.warning(_host_warning)
 
 
 class WelcomeResponse(BaseModel):
