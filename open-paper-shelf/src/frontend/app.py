@@ -93,6 +93,7 @@ from backend.huggingface_client import (  # noqa: E402,F401
     generate_paper_metadata as generate_paper_metadata,
     is_hf_token_configured,
 )
+from backend.host_check import get_non_loopback_host_warning  # noqa: E402
 from frontend.constants import (  # noqa: E402,F401
     BULK_GENERATE_DELAY_SECONDS as BULK_GENERATE_DELAY_SECONDS,
 )
@@ -202,6 +203,10 @@ def main() -> None:
         return
 
     st.title("📚 Open Paper Shelf")
+
+    host_warning = get_non_loopback_host_warning()
+    if host_warning is not None:
+        st.warning(host_warning)
 
     if "root_id" not in st.session_state:
         st.session_state.root_id = get_or_create_root_folder(creds)
