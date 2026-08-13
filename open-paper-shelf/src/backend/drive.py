@@ -354,7 +354,9 @@ def _batch_trash(
             return
 
         if not all(_is_transient_http_error(exc) for exc in errors.values()):
-            raise next(iter(errors.values()))
+            raise next(
+                exc for exc in errors.values() if not _is_transient_http_error(exc)
+            )
 
         last_errors = errors
         pending_ids = list(errors.keys())
