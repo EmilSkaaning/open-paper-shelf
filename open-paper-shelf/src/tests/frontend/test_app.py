@@ -21,7 +21,7 @@ import frontend.downloads as downloads
 import frontend.library as library
 import frontend.metadata_generation as metadata_generation
 import frontend.uploads as uploads
-from backend.drive import BatchFolderResult
+from backend.drive import BatchFolderResult, DriveTransientError
 from backend.huggingface_client import GeneratedMetadata
 from backend.models import LibraryIndex, PaperIndexEntry, PaperMetadata
 from frontend.constants import (
@@ -1234,14 +1234,16 @@ class TestMainLibrarySelection:
         assert fake_st.session_state.confirm_delete_lib_id == "lib1"
         mock_delete.assert_not_called()
 
-    def test_confirm_delete_library_deletes_and_reruns(
+    def test_confirm_delete_library_stages_deleting_state_and_reruns(
         self,
         fake_st: MagicMock,
         mocker: MockerFixture,
         stop_rerun: type[BaseException],
     ) -> None:
-        """Test confirming the staged library deletion calls delete_library
-        and reruns."""
+        """Test clicking Confirm stages a `deleting_lib_id` flag and reruns
+        immediately, without calling delete_library yet - so the next run
+        can render the disabled buttons and spinner before the request goes
+        out."""
         fake_st.session_state.root_id = "root_123"
         fake_st.session_state.manual_library_selection = True
         fake_st.session_state.confirm_delete_lib_id = "lib1"
@@ -1260,8 +1262,39 @@ class TestMainLibrarySelection:
         with pytest.raises(stop_rerun):
             app.main()
 
+        mock_delete.assert_not_called()
+        assert fake_st.session_state.deleting_lib_id == "lib1"
+        assert fake_st.session_state.confirm_delete_lib_id == "lib1"
+
+    def test_confirm_delete_library_deletes_and_reruns(
+        self,
+        fake_st: MagicMock,
+        mocker: MockerFixture,
+        stop_rerun: type[BaseException],
+    ) -> None:
+        """Test an in-flight deletion (deleting_lib_id already staged from
+        the prior rerun) calls delete_library, clears both staged ids, and
+        reruns."""
+        fake_st.session_state.root_id = "root_123"
+        fake_st.session_state.manual_library_selection = True
+        fake_st.session_state.confirm_delete_lib_id = "lib1"
+        fake_st.session_state.deleting_lib_id = "lib1"
+        fake_st.button.return_value = False
+        fake_st.selectbox.return_value = "lib1"
+        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
+        mocker.patch.object(
+            app,
+            "list_libraries",
+            return_value=[{"id": "lib1", "name": "Lib One"}],
+        )
+        mock_delete = mocker.patch.object(app, "delete_library")
+
+        with pytest.raises(stop_rerun):
+            app.main()
+
         mock_delete.assert_called_once_with(mocker.ANY, "lib1")
         assert fake_st.session_state.confirm_delete_lib_id is None
+        assert fake_st.session_state.deleting_lib_id is None
 
     def test_cancel_delete_library_clears_state_without_deleting(
         self,
@@ -1321,17 +1354,20 @@ class TestMainLibrarySelection:
         mock_delete.assert_not_called()
 
     def test_confirm_delete_library_failure_shows_error_and_stays_staged(
-        self, fake_st: MagicMock, mocker: MockerFixture
+        self,
+        fake_st: MagicMock,
+        mocker: MockerFixture,
+        stop_rerun: type[BaseException],
     ) -> None:
         """Test a failed Drive deletion surfaces a user-facing error instead
-        of leaking the raw exception, and keeps the confirmation staged
-        rather than silently discarding it."""
+        of leaking the raw exception, keeps the confirmation staged rather
+        than silently discarding it, and clears the in-flight deleting flag
+        (via rerun) so the buttons re-enable for a retry."""
         fake_st.session_state.root_id = "root_123"
         fake_st.session_state.manual_library_selection = True
         fake_st.session_state.confirm_delete_lib_id = "lib1"
-        fake_st.button.side_effect = lambda label, **kw: (
-            kw.get("key") == "confirm_delete_lib_btn"
-        )
+        fake_st.session_state.deleting_lib_id = "lib1"
+        fake_st.button.return_value = False
         fake_st.selectbox.return_value = "lib1"
         mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
         mocker.patch.object(
@@ -1341,12 +1377,48 @@ class TestMainLibrarySelection:
         )
         mocker.patch.object(app, "delete_library", side_effect=RuntimeError("boom"))
 
-        app.main()
+        with pytest.raises(stop_rerun):
+            app.main()
 
         fake_st.error.assert_called_once()
         assert "boom" not in fake_st.error.call_args[0][0]
         assert fake_st.session_state.confirm_delete_lib_id == "lib1"
-        fake_st.rerun.assert_not_called()
+        assert fake_st.session_state.deleting_lib_id is None
+
+    def test_confirm_delete_library_transient_failure_shows_friendly_error(
+        self,
+        fake_st: MagicMock,
+        mocker: MockerFixture,
+        stop_rerun: type[BaseException],
+    ) -> None:
+        """Test a DriveTransientError (retries exhausted on a Drive 5xx)
+        surfaces a friendly "try again" message rather than the generic
+        delete-failure error."""
+        fake_st.session_state.root_id = "root_123"
+        fake_st.session_state.manual_library_selection = True
+        fake_st.session_state.confirm_delete_lib_id = "lib1"
+        fake_st.session_state.deleting_lib_id = "lib1"
+        fake_st.button.return_value = False
+        fake_st.selectbox.return_value = "lib1"
+        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
+        mocker.patch.object(
+            app,
+            "list_libraries",
+            return_value=[{"id": "lib1", "name": "Lib One"}],
+        )
+        mocker.patch.object(
+            app,
+            "delete_library",
+            side_effect=DriveTransientError("boom"),
+        )
+
+        with pytest.raises(stop_rerun):
+            app.main()
+
+        fake_st.error.assert_called_once()
+        assert "temporarily unavailable" in fake_st.error.call_args[0][0]
+        assert fake_st.session_state.confirm_delete_lib_id == "lib1"
+        assert fake_st.session_state.deleting_lib_id is None
 
     def test_returns_early_when_not_authenticated(
         self, fake_st: MagicMock, mocker: MockerFixture

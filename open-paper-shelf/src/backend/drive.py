@@ -1,4 +1,4 @@
-from typing import NamedTuple, Optional, List, Dict, Any
+from typing import Callable, NamedTuple, Optional, List, Dict, Any
 from pathlib import Path
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import Flow
@@ -10,6 +10,7 @@ from pydantic import ValidationError
 import json
 import logging
 import tempfile
+import time
 import uuid
 
 from backend.models import LibraryIndex
@@ -269,42 +270,101 @@ def _collect_ids_recursive(service: DriveService, folder_id: str) -> List[str]:
 # Drive's batch endpoint accepts at most 100 sub-requests per HTTP call.
 DRIVE_BATCH_CHUNK_SIZE = 100
 
+# Drive's API is documented to return transient 5xx errors under normal
+# operation, which should be retried rather than treated as fatal.
+_TRANSIENT_HTTP_STATUSES = frozenset({500, 502, 503, 504})
+DRIVE_BATCH_TRASH_MAX_RETRIES: int = 3
+DRIVE_BATCH_TRASH_RETRY_DELAY_SECONDS: float = 2.0
 
-def _batch_trash(service: DriveService, file_ids: List[str]) -> None:
+
+class DriveTransientError(Exception):
+    """Raised when trashing Drive files keeps failing with transient (5xx)
+    errors after all retries are exhausted, so callers can show a
+    user-friendly message instead of a raw HttpError traceback."""
+
+
+def _is_transient_http_error(exc: HttpError) -> bool:
+    """Returns whether `exc` looks like a transient Drive failure worth
+    retrying (a 5xx status), as opposed to a permanent one (e.g. a 403
+    lack of authorization) that retrying can't fix.
+
+    Args:
+        exc (HttpError): The per-item error returned by a batch request.
+
+    Returns:
+        bool: True if `exc`'s HTTP status is one of the retryable 5xx codes.
+    """
+    return exc.resp.status in _TRANSIENT_HTTP_STATUSES
+
+
+def _batch_trash(
+    service: DriveService,
+    file_ids: List[str],
+    max_retries: int = DRIVE_BATCH_TRASH_MAX_RETRIES,
+    delay_seconds: float = DRIVE_BATCH_TRASH_RETRY_DELAY_SECONDS,
+    sleep_fn: Callable[[float], None] = time.sleep,
+) -> None:
     """Trashes a list of Drive file/folder IDs via batched HTTP requests.
 
     Batching turns what would otherwise be one HTTP round-trip per file
     into `ceil(len(file_ids) / DRIVE_BATCH_CHUNK_SIZE)` round-trips, which
-    matters for libraries with many papers.
+    matters for libraries with many papers. Items that fail with a
+    transient (5xx) error are retried with a fixed delay between attempts;
+    items that fail with a non-transient error (e.g. a 403 lack of
+    authorization) are surfaced immediately without retrying.
 
     Args:
         service (DriveService): An authenticated Drive API client.
         file_ids (List[str]): The Google Drive file IDs to trash.
+        max_retries (int): Maximum attempts for a batch of file IDs still
+            failing with transient errors before giving up.
+        delay_seconds (float): Delay passed to `sleep_fn` between retries.
+        sleep_fn (Callable[[float], None]): Called between retries;
+            injected so tests never sleep for real.
 
     Raises:
-        HttpError: Re-raises the first per-item error encountered, if any
-            item in `file_ids` failed to trash (e.g. the app lacks
-            authorization for that specific item).
+        HttpError: Re-raises the first non-transient per-item error
+            encountered, if any item in `file_ids` failed for a reason
+            that retrying can't fix.
+        DriveTransientError: If items are still failing with transient
+            errors after `max_retries` attempts.
     """
-    errors: Dict[str, HttpError] = {}
+    pending_ids = file_ids
+    last_errors: Dict[str, HttpError] = {}
 
-    def _record_error(
-        request_id: str, _response: DriveMetadata, exception: Optional[HttpError]
-    ) -> None:
-        if exception is not None:
-            errors[request_id] = exception
+    for attempt in range(max_retries):
+        errors: Dict[str, HttpError] = {}
 
-    for start in range(0, len(file_ids), DRIVE_BATCH_CHUNK_SIZE):
-        batch = service.new_batch_http_request(callback=_record_error)
-        for file_id in file_ids[start : start + DRIVE_BATCH_CHUNK_SIZE]:
-            batch.add(
-                service.files().update(fileId=file_id, body={"trashed": True}),
-                request_id=file_id,
-            )
-        batch.execute()
+        def _record_error(
+            request_id: str, _response: DriveMetadata, exception: Optional[HttpError]
+        ) -> None:
+            if exception is not None:
+                errors[request_id] = exception
 
-    if errors:
-        raise next(iter(errors.values()))
+        for start in range(0, len(pending_ids), DRIVE_BATCH_CHUNK_SIZE):
+            batch = service.new_batch_http_request(callback=_record_error)
+            for file_id in pending_ids[start : start + DRIVE_BATCH_CHUNK_SIZE]:
+                batch.add(
+                    service.files().update(fileId=file_id, body={"trashed": True}),
+                    request_id=file_id,
+                )
+            batch.execute()
+
+        if not errors:
+            return
+
+        if not all(_is_transient_http_error(exc) for exc in errors.values()):
+            raise next(iter(errors.values()))
+
+        last_errors = errors
+        pending_ids = list(errors.keys())
+        if attempt < max_retries - 1:
+            sleep_fn(delay_seconds)
+
+    raise DriveTransientError(
+        f"Google Drive is temporarily unavailable; failed to trash "
+        f"{len(pending_ids)} item(s) after {max_retries} attempts."
+    ) from next(iter(last_errors.values()))
 
 
 def delete_library(creds: Credentials, lib_id: str) -> None:

@@ -26,6 +26,7 @@ from backend.drive import (  # noqa: E402
     list_libraries,
     upload_file_to_folder,
     upload_library_index,
+    DriveTransientError,
 )
 from backend.models import LibraryIndex, PaperMetadata  # noqa: E402
 from frontend.auth import authenticate_user  # noqa: E402
@@ -249,6 +250,9 @@ def main() -> None:
 
                 if st.session_state.get("confirm_delete_lib_id") in lib_options:
                     lib_id_to_delete = st.session_state.confirm_delete_lib_id
+                    is_deleting_lib = (
+                        st.session_state.get("deleting_lib_id") == lib_id_to_delete
+                    )
                     st.warning(
                         f"Delete library '{lib_options[lib_id_to_delete]}' and "
                         "all its papers? This will move the library and all "
@@ -256,19 +260,39 @@ def main() -> None:
                     )
                     confirm_col, cancel_col = st.columns(2)
                     with confirm_col:
-                        if st.button("Confirm", key="confirm_delete_lib_btn"):
+                        if st.button(
+                            "Confirm",
+                            key="confirm_delete_lib_btn",
+                            disabled=is_deleting_lib,
+                        ):
+                            st.session_state.deleting_lib_id = lib_id_to_delete
+                            st.rerun()
+                    with cancel_col:
+                        if st.button(
+                            "Cancel",
+                            key="cancel_delete_lib_btn",
+                            disabled=is_deleting_lib,
+                        ):
+                            st.session_state.confirm_delete_lib_id = None
+                            st.rerun()
+                    if is_deleting_lib:
+                        with st.spinner("Deleting library..."):
                             try:
                                 delete_library(creds, lib_id_to_delete)
+                            except DriveTransientError:
+                                logger.exception("Failed to delete library")
+                                st.error(
+                                    "Google Drive is temporarily unavailable. "
+                                    "Please try again in a moment."
+                                )
                             except Exception:
                                 logger.exception("Failed to delete library")
                                 st.error("Failed to delete library. Please try again.")
                             else:
                                 st.session_state.confirm_delete_lib_id = None
+                            finally:
+                                st.session_state.deleting_lib_id = None
                                 st.rerun()
-                    with cancel_col:
-                        if st.button("Cancel", key="cancel_delete_lib_btn"):
-                            st.session_state.confirm_delete_lib_id = None
-                            st.rerun()
             else:
                 st.info("No existing libraries found.")
 
