@@ -1380,8 +1380,7 @@ class TestMainLibrarySelection:
         with pytest.raises(stop_rerun):
             app.main()
 
-        fake_st.error.assert_called_once()
-        assert "boom" not in fake_st.error.call_args[0][0]
+        assert "boom" not in fake_st.session_state.delete_lib_error
         assert fake_st.session_state.confirm_delete_lib_id == "lib1"
         assert fake_st.session_state.deleting_lib_id is None
 
@@ -1415,10 +1414,39 @@ class TestMainLibrarySelection:
         with pytest.raises(stop_rerun):
             app.main()
 
-        fake_st.error.assert_called_once()
-        assert "temporarily unavailable" in fake_st.error.call_args[0][0]
+        assert "temporarily unavailable" in fake_st.session_state.delete_lib_error
         assert fake_st.session_state.confirm_delete_lib_id == "lib1"
         assert fake_st.session_state.deleting_lib_id is None
+
+    def test_stashed_delete_error_renders_on_next_run_then_clears(
+        self,
+        fake_st: MagicMock,
+        mocker: MockerFixture,
+    ) -> None:
+        """Test a delete error stashed in session_state (from the previous
+        run's rerun) is rendered via st.error() on the following run and
+        popped so it doesn't reappear on subsequent reruns."""
+        fake_st.session_state.root_id = "root_123"
+        fake_st.session_state.manual_library_selection = True
+        fake_st.session_state.confirm_delete_lib_id = "lib1"
+        fake_st.session_state.delete_lib_error = (
+            "Failed to delete library. Please try again."
+        )
+        fake_st.button.return_value = False
+        fake_st.selectbox.return_value = "lib1"
+        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
+        mocker.patch.object(
+            app,
+            "list_libraries",
+            return_value=[{"id": "lib1", "name": "Lib One"}],
+        )
+
+        app.main()
+
+        fake_st.error.assert_called_once_with(
+            "Failed to delete library. Please try again."
+        )
+        assert "delete_lib_error" not in fake_st.session_state
 
     def test_returns_early_when_not_authenticated(
         self, fake_st: MagicMock, mocker: MockerFixture

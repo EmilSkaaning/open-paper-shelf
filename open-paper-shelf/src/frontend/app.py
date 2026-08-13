@@ -258,6 +258,9 @@ def main() -> None:
                     is_deleting_lib = (
                         st.session_state.get("deleting_lib_id") == lib_id_to_delete
                     )
+                    delete_lib_error = st.session_state.pop("delete_lib_error", None)
+                    if delete_lib_error is not None:
+                        st.error(delete_lib_error)
                     st.warning(
                         f"Delete library '{lib_options[lib_id_to_delete]}' and "
                         "all its papers? This will move the library and all "
@@ -286,13 +289,15 @@ def main() -> None:
                                 delete_library(creds, lib_id_to_delete)
                             except DriveTransientError:
                                 logger.exception("Failed to delete library")
-                                st.error(
+                                st.session_state.delete_lib_error = (
                                     "Google Drive is temporarily unavailable. "
                                     "Please try again in a moment."
                                 )
                             except Exception:
                                 logger.exception("Failed to delete library")
-                                st.error("Failed to delete library. Please try again.")
+                                st.session_state.delete_lib_error = (
+                                    "Failed to delete library. Please try again."
+                                )
                             else:
                                 st.session_state.confirm_delete_lib_id = None
                             finally:
