@@ -9,6 +9,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from backend.drive import PAPERS_DIR, load_credentials_from_file
+from backend.host_check import get_non_loopback_host_warning
 from backend.pdf_upload import InvalidIdError, InvalidPdfError, MAX_EDITED_PDF_BYTES
 from backend.pdf_upload import save_edited_pdf as _save_edited_pdf
 
@@ -16,10 +17,14 @@ logger = logging.getLogger(__name__)
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
-app = FastAPI(title="Open Paper Shelf API")
+app = FastAPI(title="Paper Butler API")
 
 # Ensure the local papers directory exists before mounting
 PAPERS_DIR.mkdir(exist_ok=True)
+
+_host_warning = get_non_loopback_host_warning()
+if _host_warning is not None:
+    logger.warning(_host_warning)
 
 
 class WelcomeResponse(BaseModel):
@@ -35,7 +40,7 @@ def read_root() -> WelcomeResponse:
     Returns:
         WelcomeResponse: A welcome message wrapped in a Pydantic model.
     """
-    return WelcomeResponse(message="Welcome to Open Paper Shelf API")
+    return WelcomeResponse(message="Welcome to Paper Butler API")
 
 
 class EditedPdfSavedResponse(BaseModel):

@@ -24,7 +24,7 @@ h1, h2, h3, [data-testid="stHeading"] {
 
 
 def apply_branding() -> None:
-    """Injects the Open Paper Shelf brand fonts into the current page.
+    """Injects the Paper Butler brand fonts into the current page.
 
     Must be called once per page, after `st.set_page_config`.
 

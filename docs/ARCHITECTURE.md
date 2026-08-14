@@ -1,16 +1,16 @@
 # Architecture & Technical Notes
 
-This document covers the internals of Open Paper Shelf: how the backend and Google
+This document covers the internals of Paper Butler: how the backend and Google
 Drive integration work, AI metadata generation defaults, deployment/security caveats,
 and dev tooling. See the [README](../README.md) for user-facing setup and quick-start
 instructions.
 
 ## Components
 
-- **Frontend** (`open-paper-shelf/src/frontend/app.py`) — Streamlit UI. Renders the
+- **Frontend** (`paper-butler/src/frontend/app.py`) — Streamlit UI. Renders the
   library sidebar (search, status/tag filters, bulk select), the upload flow, and the
   paper detail view (embedded PDF viewer + editable metadata form).
-- **Backend** (`open-paper-shelf/src/backend/`) — FastAPI app with three responsibilities:
+- **Backend** (`paper-butler/src/backend/`) — FastAPI app with three responsibilities:
   - `main.py` — serves cached PDFs to the Streamlit iframe via a `/papers` `StaticFiles`
     mount, plus a `GET /` welcome route.
   - `drive.py` — Google Drive integration: OAuth credential flow (load/cache/save),

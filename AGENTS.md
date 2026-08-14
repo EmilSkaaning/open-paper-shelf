@@ -33,6 +33,12 @@ or adding new colors/fonts/icons to the Streamlit UI.
   `fix/73-oversized-upload` → `.worktrees/73-oversized-upload`.
 * Create with: `git worktree add .worktrees/{name} -b {type}/{name} origin/main`.
 
+### Plan Files
+* Longer implementation plans or future-scoping/roadmap plans (multi-step features,
+  epics, release evaluations, architecture proposals) should be written to `plans/` at
+  the repo root — it is gitignored, so files there stay local and don't need to be
+  committed, but are easy to find again in the working directory.
+
 ## 3. Coding Style
 
 **Immutability:** Prefer returning new objects/copies over mutating in place — e.g. Pydantic
@@ -114,8 +120,7 @@ this is on top of the mandatory `ruff`/`pyrefly` gates, not a substitute for the
 ## 6. Security Guidelines
 
 * **No hardcoded secrets**: Google OAuth client secrets, API keys, and tokens must never be
-  committed. `token.json` and `credentials.json` stay gitignored; only `credentials.example.json`
-  is tracked.
+  committed. `token.json` and `credentials.json` stay gitignored.
 * **Boundary validation**: All external input is validated via Pydantic models at API boundaries
   (see Section 3's "Input Verification").
 * **No sensitive data in errors**: Error messages returned to the FastAPI or Streamlit UI must not

@@ -2,6 +2,9 @@
 
 import io
 import json
+import re
+import threading
+import time
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
@@ -14,12 +17,52 @@ from pytest_mock import MockerFixture
 
 import frontend.app as app
 import frontend.auth as auth
+import frontend.downloads as downloads
 import frontend.library as library
 import frontend.metadata_generation as metadata_generation
 import frontend.uploads as uploads
+from backend.drive import BatchFolderResult, DriveTransientError
 from backend.huggingface_client import GeneratedMetadata
 from backend.models import LibraryIndex, PaperIndexEntry, PaperMetadata
+from frontend.constants import (
+    GENERATE_METADATA_HELP,
+    HF_TOKEN_MISSING_HELP,
+    MAX_DUPLICATE_NAMES_TO_LIST,
+    PDF_FILENAME,
+)
 from tests.frontend.conftest import make_uploaded_file
+
+
+def _mock_paper_ids(mocker: MockerFixture, *hexes: str) -> None:
+    """Patches `uuid.uuid4()` in uploads.py to return fixed IDs in order.
+
+    Lets tests predict each pending paper's ID (and therefore the folder ID
+    a mocked `create_paper_folders_batch` should hand back for it) instead
+    of matching against a real, unpredictable UUID.
+    """
+    mocker.patch.object(
+        uploads.uuid, "uuid4", side_effect=[MagicMock(hex=h) for h in hexes]
+    )
+
+
+def _batch_result(
+    folder_ids: dict[str, str] | None = None,
+    errors: dict[str, Exception] | None = None,
+) -> BatchFolderResult:
+    """Builds a `create_paper_folders_batch` return value."""
+    return BatchFolderResult(folder_ids=folder_ids or {}, errors=errors or {})
+
+
+def _fake_upload_ok(
+    creds: Any, folder_id: str, file_path: Path, filename: str, mime_type: str
+) -> str:
+    """A deterministic `upload_file_to_folder` stand-in for TestUploadPapers.
+
+    Keyed by (folder_id, filename) rather than call order, since pending
+    papers' uploads now run concurrently across a thread pool instead of
+    one full pair of round-trips at a time.
+    """
+    return f"{folder_id}:{filename}"
 
 
 def _real_pdf_bytes(pages: int = 1) -> bytes:
@@ -292,13 +335,14 @@ class TestUploadPapers:
         fake_st.session_state.current_papers_id = "papers_123"
         fake_st.session_state.index = LibraryIndex()
         files = [make_uploaded_file("a.pdf"), make_uploaded_file("b.pdf")]
-        mocker.patch.object(
-            uploads, "create_paper_folder", side_effect=["folder1", "folder2"]
-        )
+        _mock_paper_ids(mocker, "paper1", "paper2")
         mocker.patch.object(
             uploads,
-            "upload_file_to_folder",
-            side_effect=["pdf1", "meta1", "pdf2", "meta2"],
+            "create_paper_folders_batch",
+            return_value=_batch_result({"paper1": "folder1", "paper2": "folder2"}),
+        )
+        mocker.patch.object(
+            uploads, "upload_file_to_folder", side_effect=_fake_upload_ok
         )
 
         result = app.upload_papers(creds=MagicMock(), uploaded_files=files)
@@ -307,13 +351,152 @@ class TestUploadPapers:
         assert len(fake_st.session_state.index.papers) == 2
         fake_st.error.assert_not_called()
 
+    def test_returns_false_and_cleans_up_when_batch_call_raises(
+        self, fake_st: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """Regression test: if `create_paper_folders_batch` itself raises
+        (e.g. a network/HTTP error from `batch.execute()`), `upload_papers`
+        must not crash — it should report every pending paper as failed and
+        still clean up its temp PDF file, instead of leaking it."""
+        fake_st.session_state.current_papers_id = "papers_123"
+        fake_st.session_state.index = LibraryIndex()
+        files = [make_uploaded_file("a.pdf")]
+        _mock_paper_ids(mocker, "paper1")
+        mocker.patch.object(
+            uploads,
+            "create_paper_folders_batch",
+            side_effect=RuntimeError("network error"),
+        )
+        mock_upload_file = mocker.patch.object(uploads, "upload_file_to_folder")
+        written_tmp_paths: list[Path] = []
+        original_named_temp_file = uploads.tempfile.NamedTemporaryFile
+
+        def _capture_tmp_path(*args: Any, **kwargs: Any) -> Any:
+            tmp = original_named_temp_file(*args, **kwargs)
+            written_tmp_paths.append(Path(tmp.name))
+            return tmp
+
+        mocker.patch.object(
+            uploads.tempfile, "NamedTemporaryFile", side_effect=_capture_tmp_path
+        )
+
+        result = app.upload_papers(creds=MagicMock(), uploaded_files=files)
+
+        assert result is False
+        assert len(fake_st.session_state.index.papers) == 0
+        mock_upload_file.assert_not_called()
+        fake_st.error.assert_called_once()
+        assert len(written_tmp_paths) == 1
+        assert not written_tmp_paths[0].exists()
+
+    def test_cleans_up_tmp_file_when_writing_it_fails(
+        self, fake_st: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """Regression test: if writing the uploaded PDF's bytes to the local
+        temp file raises partway through, the delete=False temp file must
+        still be removed instead of leaking on disk."""
+        fake_st.session_state.current_papers_id = "papers_123"
+        fake_st.session_state.index = LibraryIndex()
+        files = [make_uploaded_file("a.pdf")]
+        _mock_paper_ids(mocker, "paper1")
+        written_tmp_paths: list[Path] = []
+        original_named_temp_file = uploads.tempfile.NamedTemporaryFile
+
+        def _capture_tmp_path(*args: Any, **kwargs: Any) -> Any:
+            tmp = original_named_temp_file(*args, **kwargs)
+            written_tmp_paths.append(Path(tmp.name))
+            return tmp
+
+        mocker.patch.object(
+            uploads.tempfile, "NamedTemporaryFile", side_effect=_capture_tmp_path
+        )
+        mocker.patch.object(files[0], "getvalue", side_effect=OSError("disk full"))
+        mocker.patch.object(uploads, "create_paper_folders_batch")
+
+        result = app.upload_papers(creds=MagicMock(), uploaded_files=files)
+
+        assert result is False
+        assert len(fake_st.session_state.index.papers) == 0
+        fake_st.error.assert_called_once()
+        assert len(written_tmp_paths) == 1
+        assert not written_tmp_paths[0].exists()
+
+    def test_folders_are_created_in_a_single_batched_call(
+        self, fake_st: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """Regression test (#90): all pending papers' Drive folders must be
+        created via one batched call, not one `create_paper_folder` call per
+        paper, so an N-paper upload doesn't pay N sequential round-trips
+        just to create folders."""
+        fake_st.session_state.current_papers_id = "papers_123"
+        fake_st.session_state.index = LibraryIndex()
+        files = [make_uploaded_file("a.pdf"), make_uploaded_file("b.pdf")]
+        _mock_paper_ids(mocker, "paper1", "paper2")
+        mock_batch = mocker.patch.object(
+            uploads,
+            "create_paper_folders_batch",
+            return_value=_batch_result({"paper1": "folder1", "paper2": "folder2"}),
+        )
+        mocker.patch.object(
+            uploads, "upload_file_to_folder", side_effect=_fake_upload_ok
+        )
+
+        result = app.upload_papers(creds=MagicMock(), uploaded_files=files)
+
+        assert result is True
+        mock_batch.assert_called_once_with(
+            mocker.ANY, "papers_123", ["paper1", "paper2"]
+        )
+
+    def test_pdf_and_meta_uploads_for_different_papers_run_concurrently(
+        self, fake_st: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """Regression test (#90): the per-paper PDF/metadata media uploads,
+        which can't be batched, must still run concurrently across papers
+        (via a bounded thread pool) rather than one full pair of
+        round-trips at a time."""
+        fake_st.session_state.current_papers_id = "papers_123"
+        fake_st.session_state.index = LibraryIndex()
+        files = [make_uploaded_file("a.pdf"), make_uploaded_file("b.pdf")]
+        _mock_paper_ids(mocker, "paper1", "paper2")
+        mocker.patch.object(
+            uploads,
+            "create_paper_folders_batch",
+            return_value=_batch_result({"paper1": "folder1", "paper2": "folder2"}),
+        )
+        in_flight = threading.Event()
+        both_in_flight_at_once = threading.Event()
+
+        def _fake_upload_blocking(
+            creds: Any, folder_id: str, file_path: Path, filename: str, mime_type: str
+        ) -> str:
+            if filename != PDF_FILENAME:
+                return f"{folder_id}:{filename}"
+            if in_flight.is_set():
+                both_in_flight_at_once.set()
+            in_flight.set()
+            time.sleep(0.05)
+            return f"{folder_id}:{filename}"
+
+        mocker.patch.object(
+            uploads, "upload_file_to_folder", side_effect=_fake_upload_blocking
+        )
+
+        result = app.upload_papers(creds=MagicMock(), uploaded_files=files)
+
+        assert result is True
+        assert both_in_flight_at_once.is_set()
+
     def test_skips_file_matching_existing_paper_title(
         self, fake_st: MagicMock, mocker: MockerFixture
     ) -> None:
         """Regression test: re-uploading a file whose title already exists
         in the index must be skipped (no new Drive folder, no new index
-        entry) and reported via st.warning, instead of silently creating a
-        duplicate paper."""
+        entry) and recorded in `duplicate_uploads_skipped`, instead of
+        silently creating a duplicate paper. upload_papers() itself renders
+        no UI feedback for the skip — that's the caller's responsibility, so
+        the skipped file doesn't briefly flash its own warning box before a
+        caller's rerun wipes it."""
         fake_st.session_state.current_papers_id = "papers_123"
         fake_st.session_state.index = LibraryIndex(
             papers={
@@ -326,17 +509,19 @@ class TestUploadPapers:
             }
         )
         files = [make_uploaded_file("Attention Is All You Need.pdf")]
-        mock_create_folder = mocker.patch.object(uploads, "create_paper_folder")
+        mock_create_folders = mocker.patch.object(uploads, "create_paper_folders_batch")
         mock_upload_file = mocker.patch.object(uploads, "upload_file_to_folder")
 
         result = app.upload_papers(creds=MagicMock(), uploaded_files=files)
 
         assert result is True
         assert len(fake_st.session_state.index.papers) == 1
-        mock_create_folder.assert_not_called()
+        mock_create_folders.assert_not_called()
         mock_upload_file.assert_not_called()
-        fake_st.warning.assert_called_once()
-        assert "Attention Is All You Need" in fake_st.warning.call_args[0][0]
+        fake_st.warning.assert_not_called()
+        assert fake_st.session_state.duplicate_uploads_skipped == [
+            "Attention Is All You Need.pdf"
+        ]
 
     def test_skips_second_of_two_identical_files_in_same_batch(
         self, fake_st: MagicMock, mocker: MockerFixture
@@ -350,18 +535,21 @@ class TestUploadPapers:
             make_uploaded_file("Attention Is All You Need.pdf"),
             make_uploaded_file("Attention Is All You Need.pdf"),
         ]
-        mock_create_folder = mocker.patch.object(
-            uploads, "create_paper_folder", return_value="folder1"
+        _mock_paper_ids(mocker, "paper1")
+        mock_create_folders = mocker.patch.object(
+            uploads,
+            "create_paper_folders_batch",
+            return_value=_batch_result({"paper1": "folder1"}),
         )
         mocker.patch.object(
-            uploads, "upload_file_to_folder", side_effect=["pdf1", "meta1"]
+            uploads, "upload_file_to_folder", side_effect=_fake_upload_ok
         )
 
         result = app.upload_papers(creds=MagicMock(), uploaded_files=files)
 
         assert result is True
         assert len(fake_st.session_state.index.papers) == 1
-        mock_create_folder.assert_called_once()
+        mock_create_folders.assert_called_once()
         assert fake_st.session_state.duplicate_uploads_skipped == [
             "Attention Is All You Need.pdf"
         ]
@@ -373,9 +561,14 @@ class TestUploadPapers:
         fake_st.session_state.current_papers_id = "papers_123"
         fake_st.session_state.index = LibraryIndex()
         files = [make_uploaded_file("Attention Is All You Need.pdf")]
-        mocker.patch.object(uploads, "create_paper_folder", return_value="folder1")
+        _mock_paper_ids(mocker, "paper1")
         mocker.patch.object(
-            uploads, "upload_file_to_folder", side_effect=["pdf1", "meta1"]
+            uploads,
+            "create_paper_folders_batch",
+            return_value=_batch_result({"paper1": "folder1"}),
+        )
+        mocker.patch.object(
+            uploads, "upload_file_to_folder", side_effect=_fake_upload_ok
         )
 
         result = app.upload_papers(creds=MagicMock(), uploaded_files=files)
@@ -394,13 +587,16 @@ class TestUploadPapers:
         fake_st.session_state.current_papers_id = "papers_123"
         fake_st.session_state.index = LibraryIndex()
         files = [make_uploaded_file("a.pdf"), make_uploaded_file("b.pdf")]
+        _mock_paper_ids(mocker, "paper1", "paper2")
         mocker.patch.object(
             uploads,
-            "create_paper_folder",
-            side_effect=["folder1", RuntimeError("boom")],
+            "create_paper_folders_batch",
+            return_value=_batch_result(
+                {"paper1": "folder1"}, {"paper2": RuntimeError("boom")}
+            ),
         )
         mocker.patch.object(
-            uploads, "upload_file_to_folder", side_effect=["pdf1", "meta1"]
+            uploads, "upload_file_to_folder", side_effect=_fake_upload_ok
         )
 
         result = app.upload_papers(creds=MagicMock(), uploaded_files=files)
@@ -418,7 +614,7 @@ class TestUploadPapers:
         fake_st.session_state.current_papers_id = "papers_123"
         fake_st.session_state.index = LibraryIndex()
         files = [make_uploaded_file("")]
-        mocker.patch.object(uploads, "create_paper_folder")
+        mocker.patch.object(uploads, "create_paper_folders_batch")
         mocker.patch.object(uploads, "upload_file_to_folder")
 
         result = app.upload_papers(creds=MagicMock(), uploaded_files=files)
@@ -435,7 +631,12 @@ class TestUploadPapers:
         fake_st.session_state.current_papers_id = "papers_123"
         fake_st.session_state.index = LibraryIndex()
         files = [make_uploaded_file("a.pdf")]
-        mocker.patch.object(uploads, "create_paper_folder", return_value="folder1")
+        _mock_paper_ids(mocker, "paper1")
+        mocker.patch.object(
+            uploads,
+            "create_paper_folders_batch",
+            return_value=_batch_result({"paper1": "folder1"}),
+        )
         mocker.patch.object(
             uploads, "upload_file_to_folder", side_effect=RuntimeError("boom")
         )
@@ -456,10 +657,21 @@ class TestUploadPapers:
         fake_st.session_state.current_papers_id = "papers_123"
         fake_st.session_state.index = LibraryIndex()
         files = [make_uploaded_file("a.pdf")]
-        mocker.patch.object(uploads, "create_paper_folder", return_value="folder1")
+        _mock_paper_ids(mocker, "paper1")
         mocker.patch.object(
-            uploads, "upload_file_to_folder", side_effect=["pdf1", RuntimeError("boom")]
+            uploads,
+            "create_paper_folders_batch",
+            return_value=_batch_result({"paper1": "folder1"}),
         )
+
+        def _fake_upload(
+            creds: Any, folder_id: str, file_path: Path, filename: str, mime_type: str
+        ) -> str:
+            if filename == PDF_FILENAME:
+                return "pdf1"
+            raise RuntimeError("boom")
+
+        mocker.patch.object(uploads, "upload_file_to_folder", side_effect=_fake_upload)
         mock_delete = mocker.patch.object(uploads, "delete_paper_folder")
 
         result = app.upload_papers(creds=MagicMock(), uploaded_files=files)
@@ -476,8 +688,11 @@ class TestUploadPapers:
         fake_st.session_state.current_papers_id = "papers_123"
         fake_st.session_state.index = LibraryIndex()
         files = [make_uploaded_file("a.pdf")]
+        _mock_paper_ids(mocker, "paper1")
         mocker.patch.object(
-            uploads, "create_paper_folder", side_effect=RuntimeError("boom")
+            uploads,
+            "create_paper_folders_batch",
+            return_value=_batch_result({}, {"paper1": RuntimeError("boom")}),
         )
         mock_delete = mocker.patch.object(uploads, "delete_paper_folder")
 
@@ -495,7 +710,12 @@ class TestUploadPapers:
         fake_st.session_state.current_papers_id = "papers_123"
         fake_st.session_state.index = LibraryIndex()
         files = [make_uploaded_file("a.pdf")]
-        mocker.patch.object(uploads, "create_paper_folder", return_value="folder1")
+        _mock_paper_ids(mocker, "paper1")
+        mocker.patch.object(
+            uploads,
+            "create_paper_folders_batch",
+            return_value=_batch_result({"paper1": "folder1"}),
+        )
         mocker.patch.object(
             uploads, "upload_file_to_folder", side_effect=RuntimeError("boom")
         )
@@ -520,13 +740,14 @@ class TestUploadPapers:
         fake_st.session_state.current_papers_id = "papers_123"
         fake_st.session_state.index = LibraryIndex()
         files = [make_uploaded_file("a.pdf"), make_uploaded_file("b.pdf")]
-        mocker.patch.object(
-            uploads, "create_paper_folder", side_effect=["folder1", "folder2"]
-        )
+        _mock_paper_ids(mocker, "paper1", "paper2")
         mocker.patch.object(
             uploads,
-            "upload_file_to_folder",
-            side_effect=["pdf1", "meta1", "pdf2", "meta2"],
+            "create_paper_folders_batch",
+            return_value=_batch_result({"paper1": "folder1", "paper2": "folder2"}),
+        )
+        mocker.patch.object(
+            uploads, "upload_file_to_folder", side_effect=_fake_upload_ok
         )
         on_progress = MagicMock()
 
@@ -548,13 +769,16 @@ class TestUploadPapers:
         fake_st.session_state.current_papers_id = "papers_123"
         fake_st.session_state.index = LibraryIndex()
         files = [make_uploaded_file("a.pdf"), make_uploaded_file("b.pdf")]
+        _mock_paper_ids(mocker, "paper1", "paper2")
         mocker.patch.object(
             uploads,
-            "create_paper_folder",
-            side_effect=["folder1", RuntimeError("boom")],
+            "create_paper_folders_batch",
+            return_value=_batch_result(
+                {"paper1": "folder1"}, {"paper2": RuntimeError("boom")}
+            ),
         )
         mocker.patch.object(
-            uploads, "upload_file_to_folder", side_effect=["pdf1", "meta1"]
+            uploads, "upload_file_to_folder", side_effect=_fake_upload_ok
         )
         on_progress = MagicMock()
 
@@ -576,13 +800,14 @@ class TestUploadPapers:
         fake_st.session_state.current_papers_id = "papers_123"
         fake_st.session_state.index = LibraryIndex()
         files = [make_uploaded_file("a.pdf"), make_uploaded_file("b.pdf")]
-        mocker.patch.object(
-            uploads, "create_paper_folder", side_effect=["folder1", "folder2"]
-        )
+        _mock_paper_ids(mocker, "paper1", "paper2")
         mocker.patch.object(
             uploads,
-            "upload_file_to_folder",
-            side_effect=["pdf1", "meta1", "pdf2", "meta2"],
+            "create_paper_folders_batch",
+            return_value=_batch_result({"paper1": "folder1", "paper2": "folder2"}),
+        )
+        mocker.patch.object(
+            uploads, "upload_file_to_folder", side_effect=_fake_upload_ok
         )
         on_progress = MagicMock(side_effect=RuntimeError("widget gone"))
 
@@ -605,9 +830,14 @@ class TestUploadPapers:
         fake_st.session_state.current_papers_id = "papers_123"
         fake_st.session_state.index = LibraryIndex()
         files = [make_uploaded_file("a.pdf")]
-        mocker.patch.object(uploads, "create_paper_folder", return_value="folder1")
+        _mock_paper_ids(mocker, "paper1")
         mocker.patch.object(
-            uploads, "upload_file_to_folder", side_effect=["pdf1", "meta1"]
+            uploads,
+            "create_paper_folders_batch",
+            return_value=_batch_result({"paper1": "folder1"}),
+        )
+        mocker.patch.object(
+            uploads, "upload_file_to_folder", side_effect=_fake_upload_ok
         )
 
         result = app.upload_papers(creds=MagicMock(), uploaded_files=files)
@@ -897,6 +1127,54 @@ class TestMainLibrarySelection:
         mock_init.assert_not_called()
         fake_st.subheader.assert_called_once_with("Select or Create a Library")
 
+    def test_shows_hf_token_warning_when_missing(
+        self,
+        fake_st: MagicMock,
+        mocker: MockerFixture,
+    ) -> None:
+        """Test the selection screen shows an info box when HF_TOKEN is unset."""
+        fake_st.session_state.root_id = "root_123"
+        fake_st.button.return_value = False
+        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
+        mocker.patch.object(
+            app,
+            "list_libraries",
+            return_value=[
+                {"id": "lib1", "name": "Lib One"},
+                {"id": "lib2", "name": "Lib Two"},
+            ],
+        )
+        mocker.patch.dict("os.environ", {}, clear=True)
+
+        app.main()
+
+        fake_st.info.assert_any_call(HF_TOKEN_MISSING_HELP)
+
+    def test_no_hf_token_warning_when_configured(
+        self,
+        fake_st: MagicMock,
+        mocker: MockerFixture,
+    ) -> None:
+        """Test the selection screen shows no info box when HF_TOKEN is set."""
+        fake_st.session_state.root_id = "root_123"
+        fake_st.button.return_value = False
+        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
+        mocker.patch.object(
+            app,
+            "list_libraries",
+            return_value=[
+                {"id": "lib1", "name": "Lib One"},
+                {"id": "lib2", "name": "Lib Two"},
+            ],
+        )
+        mocker.patch.dict("os.environ", {"HF_TOKEN": "token"}, clear=True)
+
+        app.main()
+
+        assert HF_TOKEN_MISSING_HELP not in [
+            call.args[0] for call in fake_st.info.call_args_list
+        ]
+
     def test_creates_new_library(
         self,
         fake_st: MagicMock,
@@ -956,14 +1234,16 @@ class TestMainLibrarySelection:
         assert fake_st.session_state.confirm_delete_lib_id == "lib1"
         mock_delete.assert_not_called()
 
-    def test_confirm_delete_library_deletes_and_reruns(
+    def test_confirm_delete_library_stages_deleting_state_and_reruns(
         self,
         fake_st: MagicMock,
         mocker: MockerFixture,
         stop_rerun: type[BaseException],
     ) -> None:
-        """Test confirming the staged library deletion calls delete_library
-        and reruns."""
+        """Test clicking Confirm stages a `deleting_lib_id` flag and reruns
+        immediately, without calling delete_library yet - so the next run
+        can render the disabled buttons and spinner before the request goes
+        out."""
         fake_st.session_state.root_id = "root_123"
         fake_st.session_state.manual_library_selection = True
         fake_st.session_state.confirm_delete_lib_id = "lib1"
@@ -982,8 +1262,39 @@ class TestMainLibrarySelection:
         with pytest.raises(stop_rerun):
             app.main()
 
+        mock_delete.assert_not_called()
+        assert fake_st.session_state.deleting_lib_id == "lib1"
+        assert fake_st.session_state.confirm_delete_lib_id == "lib1"
+
+    def test_confirm_delete_library_deletes_and_reruns(
+        self,
+        fake_st: MagicMock,
+        mocker: MockerFixture,
+        stop_rerun: type[BaseException],
+    ) -> None:
+        """Test an in-flight deletion (deleting_lib_id already staged from
+        the prior rerun) calls delete_library, clears both staged ids, and
+        reruns."""
+        fake_st.session_state.root_id = "root_123"
+        fake_st.session_state.manual_library_selection = True
+        fake_st.session_state.confirm_delete_lib_id = "lib1"
+        fake_st.session_state.deleting_lib_id = "lib1"
+        fake_st.button.return_value = False
+        fake_st.selectbox.return_value = "lib1"
+        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
+        mocker.patch.object(
+            app,
+            "list_libraries",
+            return_value=[{"id": "lib1", "name": "Lib One"}],
+        )
+        mock_delete = mocker.patch.object(app, "delete_library")
+
+        with pytest.raises(stop_rerun):
+            app.main()
+
         mock_delete.assert_called_once_with(mocker.ANY, "lib1")
         assert fake_st.session_state.confirm_delete_lib_id is None
+        assert fake_st.session_state.deleting_lib_id is None
 
     def test_cancel_delete_library_clears_state_without_deleting(
         self,
@@ -1043,17 +1354,20 @@ class TestMainLibrarySelection:
         mock_delete.assert_not_called()
 
     def test_confirm_delete_library_failure_shows_error_and_stays_staged(
-        self, fake_st: MagicMock, mocker: MockerFixture
+        self,
+        fake_st: MagicMock,
+        mocker: MockerFixture,
+        stop_rerun: type[BaseException],
     ) -> None:
         """Test a failed Drive deletion surfaces a user-facing error instead
-        of leaking the raw exception, and keeps the confirmation staged
-        rather than silently discarding it."""
+        of leaking the raw exception, keeps the confirmation staged rather
+        than silently discarding it, and clears the in-flight deleting flag
+        (via rerun) so the buttons re-enable for a retry."""
         fake_st.session_state.root_id = "root_123"
         fake_st.session_state.manual_library_selection = True
         fake_st.session_state.confirm_delete_lib_id = "lib1"
-        fake_st.button.side_effect = lambda label, **kw: (
-            kw.get("key") == "confirm_delete_lib_btn"
-        )
+        fake_st.session_state.deleting_lib_id = "lib1"
+        fake_st.button.return_value = False
         fake_st.selectbox.return_value = "lib1"
         mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
         mocker.patch.object(
@@ -1063,12 +1377,76 @@ class TestMainLibrarySelection:
         )
         mocker.patch.object(app, "delete_library", side_effect=RuntimeError("boom"))
 
+        with pytest.raises(stop_rerun):
+            app.main()
+
+        assert "boom" not in fake_st.session_state.delete_lib_error
+        assert fake_st.session_state.confirm_delete_lib_id == "lib1"
+        assert fake_st.session_state.deleting_lib_id is None
+
+    def test_confirm_delete_library_transient_failure_shows_friendly_error(
+        self,
+        fake_st: MagicMock,
+        mocker: MockerFixture,
+        stop_rerun: type[BaseException],
+    ) -> None:
+        """Test a DriveTransientError (retries exhausted on a Drive 5xx)
+        surfaces a friendly "try again" message rather than the generic
+        delete-failure error."""
+        fake_st.session_state.root_id = "root_123"
+        fake_st.session_state.manual_library_selection = True
+        fake_st.session_state.confirm_delete_lib_id = "lib1"
+        fake_st.session_state.deleting_lib_id = "lib1"
+        fake_st.button.return_value = False
+        fake_st.selectbox.return_value = "lib1"
+        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
+        mocker.patch.object(
+            app,
+            "list_libraries",
+            return_value=[{"id": "lib1", "name": "Lib One"}],
+        )
+        mocker.patch.object(
+            app,
+            "delete_library",
+            side_effect=DriveTransientError("boom"),
+        )
+
+        with pytest.raises(stop_rerun):
+            app.main()
+
+        assert "temporarily unavailable" in fake_st.session_state.delete_lib_error
+        assert fake_st.session_state.confirm_delete_lib_id == "lib1"
+        assert fake_st.session_state.deleting_lib_id is None
+
+    def test_stashed_delete_error_renders_on_next_run_then_clears(
+        self,
+        fake_st: MagicMock,
+        mocker: MockerFixture,
+    ) -> None:
+        """Test a delete error stashed in session_state (from the previous
+        run's rerun) is rendered via st.error() on the following run and
+        popped so it doesn't reappear on subsequent reruns."""
+        fake_st.session_state.root_id = "root_123"
+        fake_st.session_state.manual_library_selection = True
+        fake_st.session_state.confirm_delete_lib_id = "lib1"
+        fake_st.session_state.delete_lib_error = (
+            "Failed to delete library. Please try again."
+        )
+        fake_st.button.return_value = False
+        fake_st.selectbox.return_value = "lib1"
+        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
+        mocker.patch.object(
+            app,
+            "list_libraries",
+            return_value=[{"id": "lib1", "name": "Lib One"}],
+        )
+
         app.main()
 
-        fake_st.error.assert_called_once()
-        assert "boom" not in fake_st.error.call_args[0][0]
-        assert fake_st.session_state.confirm_delete_lib_id == "lib1"
-        fake_st.rerun.assert_not_called()
+        fake_st.error.assert_called_once_with(
+            "Failed to delete library. Please try again."
+        )
+        assert "delete_lib_error" not in fake_st.session_state
 
     def test_returns_early_when_not_authenticated(
         self, fake_st: MagicMock, mocker: MockerFixture
@@ -1233,6 +1611,285 @@ class TestDeleteSelectedPapers:
 
         assert fake_st.session_state.selected_paper is None
         assert not local_paper_dir.exists()
+
+
+class TestAddTagsToSelected:
+    """Test suite for add_tags_to_selected."""
+
+    def test_adds_new_tags_to_each_selected_paper(
+        self, fake_st: MagicMock, mocker: MockerFixture, tmp_path: Path
+    ) -> None:
+        """Test a tag is appended to every selected paper's tags and the
+        index is uploaded once for the whole batch."""
+        pid1, pid2 = "a" * 32, "b" * 32
+        index = LibraryIndex(
+            papers={
+                pid1: PaperIndexEntry(
+                    title="One",
+                    pdf_file_id="p1",
+                    meta_file_id="m1",
+                    folder_id="f1",
+                    tags=["existing"],
+                ),
+                pid2: PaperIndexEntry(
+                    title="Two", pdf_file_id="p2", meta_file_id="m2", folder_id="f2"
+                ),
+            }
+        )
+        for pid, entry in index.papers.items():
+            paper_dir = tmp_path / pid
+            paper_dir.mkdir(parents=True)
+            meta = PaperMetadata(title=entry.title, tags=list(entry.tags))
+            (paper_dir / "meta.json").write_text(meta.model_dump_json())
+        mock_upload_file = mocker.patch.object(library, "upload_file_to_folder")
+        mock_upload_index = mocker.patch.object(library, "upload_library_index")
+
+        result = app.add_tags_to_selected(
+            creds=MagicMock(),
+            pids=[pid1, pid2],
+            index=index,
+            papers_id="papers_123",
+            local_lib_dir=tmp_path,
+            tags=["new-tag"],
+        )
+
+        assert result is True
+        assert index.papers[pid1].tags == ["existing", "new-tag"]
+        assert index.papers[pid2].tags == ["new-tag"]
+        assert mock_upload_file.call_count == 2
+        mock_upload_index.assert_called_once_with(mocker.ANY, "papers_123", index)
+
+    def test_skips_tag_already_present(
+        self, fake_st: MagicMock, mocker: MockerFixture, tmp_path: Path
+    ) -> None:
+        """Test adding a tag a paper already has doesn't duplicate it."""
+        pid = "a" * 32
+        index = LibraryIndex(
+            papers={
+                pid: PaperIndexEntry(
+                    title="One",
+                    pdf_file_id="p1",
+                    meta_file_id="m1",
+                    folder_id="f1",
+                    tags=["dup"],
+                )
+            }
+        )
+        paper_dir = tmp_path / pid
+        paper_dir.mkdir(parents=True)
+        meta = PaperMetadata(title="One", tags=["dup"])
+        (paper_dir / "meta.json").write_text(meta.model_dump_json())
+        mocker.patch.object(library, "upload_file_to_folder")
+        mocker.patch.object(library, "upload_library_index")
+
+        app.add_tags_to_selected(
+            creds=MagicMock(),
+            pids=[pid],
+            index=index,
+            papers_id="papers_123",
+            local_lib_dir=tmp_path,
+            tags=["dup"],
+        )
+
+        assert index.papers[pid].tags == ["dup"]
+
+    def test_downloads_metadata_when_not_cached_locally(
+        self, fake_st: MagicMock, mocker: MockerFixture, tmp_path: Path
+    ) -> None:
+        """Test a paper never opened before has its meta.json downloaded
+        first so its existing notes/citation/status survive the update."""
+        pid = "a" * 32
+        index = LibraryIndex(
+            papers={
+                pid: PaperIndexEntry(
+                    title="One", pdf_file_id="p1", meta_file_id="m1", folder_id="f1"
+                )
+            }
+        )
+
+        def fake_download(_creds: object, _file_id: str, dest: Path) -> None:
+            meta = PaperMetadata(title="One", notes="kept notes")
+            dest.write_text(meta.model_dump_json())
+
+        mocker.patch.object(library, "download_file", side_effect=fake_download)
+        mocker.patch.object(library, "upload_file_to_folder")
+        mocker.patch.object(library, "upload_library_index")
+
+        app.add_tags_to_selected(
+            creds=MagicMock(),
+            pids=[pid],
+            index=index,
+            papers_id="papers_123",
+            local_lib_dir=tmp_path,
+            tags=["new-tag"],
+        )
+
+        saved = json.loads((tmp_path / pid / "meta.json").read_text())
+        assert saved["notes"] == "kept notes"
+        assert saved["tags"] == ["new-tag"]
+
+    def test_drive_failure_on_one_paper_keeps_it_and_continues(
+        self, fake_st: MagicMock, mocker: MockerFixture, tmp_path: Path
+    ) -> None:
+        """Test an upload failure for one paper doesn't stop the batch or
+        update that paper's index entry."""
+        pid1, pid2 = "a" * 32, "b" * 32
+        index = LibraryIndex(
+            papers={
+                pid1: PaperIndexEntry(
+                    title="One", pdf_file_id="p1", meta_file_id="m1", folder_id="f1"
+                ),
+                pid2: PaperIndexEntry(
+                    title="Two", pdf_file_id="p2", meta_file_id="m2", folder_id="f2"
+                ),
+            }
+        )
+        for pid, entry in index.papers.items():
+            paper_dir = tmp_path / pid
+            paper_dir.mkdir(parents=True)
+            (paper_dir / "meta.json").write_text(
+                PaperMetadata(title=entry.title).model_dump_json()
+            )
+        mocker.patch.object(
+            library,
+            "upload_file_to_folder",
+            side_effect=[RuntimeError("boom"), None],
+        )
+        mock_upload_index = mocker.patch.object(library, "upload_library_index")
+
+        result = app.add_tags_to_selected(
+            creds=MagicMock(),
+            pids=[pid1, pid2],
+            index=index,
+            papers_id="papers_123",
+            local_lib_dir=tmp_path,
+            tags=["new-tag"],
+        )
+
+        assert result is False
+        assert index.papers[pid1].tags == []
+        assert index.papers[pid2].tags == ["new-tag"]
+        fake_st.error.assert_called_once()
+        mock_upload_index.assert_called_once_with(mocker.ANY, "papers_123", index)
+
+    def test_index_upload_failure_reports_error(
+        self, fake_st: MagicMock, mocker: MockerFixture, tmp_path: Path
+    ) -> None:
+        """Test a failed index upload is surfaced even though the per-paper
+        meta.json writes already succeeded."""
+        pid = "a" * 32
+        index = LibraryIndex(
+            papers={
+                pid: PaperIndexEntry(
+                    title="One", pdf_file_id="p1", meta_file_id="m1", folder_id="f1"
+                )
+            }
+        )
+        paper_dir = tmp_path / pid
+        paper_dir.mkdir(parents=True)
+        (paper_dir / "meta.json").write_text(
+            PaperMetadata(title="One").model_dump_json()
+        )
+        mocker.patch.object(library, "upload_file_to_folder")
+        mocker.patch.object(
+            library, "upload_library_index", side_effect=RuntimeError("network blip")
+        )
+
+        result = app.add_tags_to_selected(
+            creds=MagicMock(),
+            pids=[pid],
+            index=index,
+            papers_id="papers_123",
+            local_lib_dir=tmp_path,
+            tags=["new-tag"],
+        )
+
+        assert result is False
+        fake_st.error.assert_called_once()
+
+
+class TestRemoveTagsFromSelected:
+    """Test suite for remove_tags_from_selected."""
+
+    def test_removes_tags_from_each_selected_paper(
+        self, fake_st: MagicMock, mocker: MockerFixture, tmp_path: Path
+    ) -> None:
+        """Test the given tags are removed from every selected paper that
+        has them, leaving other tags untouched."""
+        pid1, pid2 = "a" * 32, "b" * 32
+        index = LibraryIndex(
+            papers={
+                pid1: PaperIndexEntry(
+                    title="One",
+                    pdf_file_id="p1",
+                    meta_file_id="m1",
+                    folder_id="f1",
+                    tags=["keep", "drop"],
+                ),
+                pid2: PaperIndexEntry(
+                    title="Two",
+                    pdf_file_id="p2",
+                    meta_file_id="m2",
+                    folder_id="f2",
+                    tags=["drop"],
+                ),
+            }
+        )
+        for pid, entry in index.papers.items():
+            paper_dir = tmp_path / pid
+            paper_dir.mkdir(parents=True)
+            meta = PaperMetadata(title=entry.title, tags=list(entry.tags))
+            (paper_dir / "meta.json").write_text(meta.model_dump_json())
+        mocker.patch.object(library, "upload_file_to_folder")
+        mock_upload_index = mocker.patch.object(library, "upload_library_index")
+
+        result = app.remove_tags_from_selected(
+            creds=MagicMock(),
+            pids=[pid1, pid2],
+            index=index,
+            papers_id="papers_123",
+            local_lib_dir=tmp_path,
+            tags=["drop"],
+        )
+
+        assert result is True
+        assert index.papers[pid1].tags == ["keep"]
+        assert index.papers[pid2].tags == []
+        mock_upload_index.assert_called_once_with(mocker.ANY, "papers_123", index)
+
+    def test_removing_absent_tag_is_a_noop_for_that_paper(
+        self, fake_st: MagicMock, mocker: MockerFixture, tmp_path: Path
+    ) -> None:
+        """Test a paper without the tag being removed is left unchanged."""
+        pid = "a" * 32
+        index = LibraryIndex(
+            papers={
+                pid: PaperIndexEntry(
+                    title="One",
+                    pdf_file_id="p1",
+                    meta_file_id="m1",
+                    folder_id="f1",
+                    tags=["unrelated"],
+                )
+            }
+        )
+        paper_dir = tmp_path / pid
+        paper_dir.mkdir(parents=True)
+        meta = PaperMetadata(title="One", tags=["unrelated"])
+        (paper_dir / "meta.json").write_text(meta.model_dump_json())
+        mocker.patch.object(library, "upload_file_to_folder")
+        mocker.patch.object(library, "upload_library_index")
+
+        app.remove_tags_from_selected(
+            creds=MagicMock(),
+            pids=[pid],
+            index=index,
+            papers_id="papers_123",
+            local_lib_dir=tmp_path,
+            tags=["drop"],
+        )
+
+        assert index.papers[pid].tags == ["unrelated"]
 
 
 class TestGetAllTags:
@@ -1922,7 +2579,7 @@ class TestMainLibraryView:
             }
         )
         fake_st.session_state.selected_paper = None
-        fake_st.session_state.tags_filter = ["urgent", "obsolete-tag"]
+        fake_st.session_state.tags_filter_0 = ["urgent", "obsolete-tag"]
         fake_st.file_uploader.return_value = None
         fake_st.multiselect.side_effect = lambda label, **kw: (
             fake_st.session_state.get(kw.get("key"), list[str]())
@@ -1934,8 +2591,97 @@ class TestMainLibraryView:
 
         app.main()
 
-        assert fake_st.session_state.tags_filter == ["urgent"]
+        assert fake_st.session_state.tags_filter_0 == ["urgent"]
         fake_st.error.assert_not_called()
+
+    def test_clear_filters_icon_resets_search_status_tags(
+        self,
+        fake_st: MagicMock,
+        mocker: MockerFixture,
+        stop_rerun: type[BaseException],
+    ) -> None:
+        """Test clicking the "Clear filters" toolbar icon resets Search,
+        Status, and Tags in one click, and bumps the filter nonce so the
+        search box's st_keyup iframe and the two native multiselects all
+        remount empty instead of keeping their last-picked value (see
+        clear_filters()'s docstring)."""
+        fake_st.session_state.current_lib_id = "lib_123"
+        fake_st.session_state.current_papers_id = "papers_123"
+        fake_st.session_state.root_id = "root_123"
+        fake_st.session_state.index = LibraryIndex()
+        fake_st.session_state.selected_paper = None
+        fake_st.session_state.search_box_0 = "attention"
+        fake_st.session_state.status_filter_0 = ["✅ Read"]
+        fake_st.session_state.tags_filter_0 = ["nlp"]
+        fake_st.file_uploader.return_value = None
+
+        def button_side_effect(label: str, *args: Any, **kwargs: Any) -> bool:
+            if kwargs.get("key") == "clear_filters_icon":
+                kwargs["on_click"]()
+                raise stop_rerun
+            return False
+
+        fake_st.button.side_effect = button_side_effect
+        mocker.patch.object(app, "st_keyup", return_value="")
+        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
+
+        with pytest.raises(stop_rerun):
+            app.main()
+
+        assert "search_box_0" not in fake_st.session_state
+        assert "status_filter_0" not in fake_st.session_state
+        assert "tags_filter_0" not in fake_st.session_state
+        assert fake_st.session_state.filter_nonce == 1
+
+    def test_clear_filters_icon_enabled_when_a_filter_is_active(
+        self, fake_st: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """Test the "Clear filters" icon stays the secondary button style
+        (no more red "primary" glow) but is enabled once any filter has an
+        active value."""
+        fake_st.session_state.current_lib_id = "lib_123"
+        fake_st.session_state.current_papers_id = "papers_123"
+        fake_st.session_state.root_id = "root_123"
+        fake_st.session_state.index = LibraryIndex()
+        fake_st.session_state.selected_paper = None
+        fake_st.session_state.search_box_0 = "attention"
+        fake_st.file_uploader.return_value = None
+        mocker.patch.object(app, "st_keyup", return_value="")
+        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
+
+        app.main()
+
+        clear_call = next(
+            c
+            for c in fake_st.button.call_args_list
+            if c.kwargs.get("key") == "clear_filters_icon"
+        )
+        assert clear_call.kwargs["type"] == "secondary"
+        assert clear_call.kwargs.get("disabled") is False
+
+    def test_clear_filters_icon_disabled_when_no_filter_is_active(
+        self, fake_st: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """Test the "Clear filters" icon is disabled (grayed out) when no
+        filter currently has a value."""
+        fake_st.session_state.current_lib_id = "lib_123"
+        fake_st.session_state.current_papers_id = "papers_123"
+        fake_st.session_state.root_id = "root_123"
+        fake_st.session_state.index = LibraryIndex()
+        fake_st.session_state.selected_paper = None
+        fake_st.file_uploader.return_value = None
+        mocker.patch.object(app, "st_keyup", return_value="")
+        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
+
+        app.main()
+
+        clear_call = next(
+            c
+            for c in fake_st.button.call_args_list
+            if c.kwargs.get("key") == "clear_filters_icon"
+        )
+        assert clear_call.kwargs["type"] == "secondary"
+        assert clear_call.kwargs.get("disabled") is True
 
     def test_paper_row_icon_reflects_status(
         self, fake_st: MagicMock, mocker: MockerFixture
@@ -2079,7 +2825,19 @@ class TestMainUploadFlow:
 
         mock_upload_papers.assert_called_once()
         mock_upload_index.assert_called_once()
-        fake_st.success.assert_called_once()
+        # The success message is stashed in session_state rather than shown
+        # immediately, since st.rerun() halts the script right after this
+        # and would wipe out anything rendered in the same run.
+        fake_st.success.assert_not_called()
+        assert fake_st.session_state.upload_flash["message"] == (
+            "Uploaded successfully!"
+        )
+
+        fake_st.button.side_effect = lambda label, **kw: False
+        app.main()
+
+        fake_st.success.assert_called_once_with("Uploaded successfully!")
+        assert "upload_flash" not in fake_st.session_state
 
     def test_upload_button_reports_partial_failure_without_rerun(
         self, fake_st: MagicMock, mocker: MockerFixture
@@ -2104,12 +2862,49 @@ class TestMainUploadFlow:
         fake_st.success.assert_not_called()
         fake_st.rerun.assert_not_called()
 
-    def test_upload_button_skips_rerun_when_duplicates_were_skipped(
+    def test_partial_failure_still_shows_duplicate_notice(
         self, fake_st: MagicMock, mocker: MockerFixture
     ) -> None:
+        """Regression test: when a batch has both a failure and skipped
+        duplicates, the duplicate filenames must warn immediately (since
+        the failure path never reruns) instead of being stashed in
+        `upload_flash`, which would leave the user with no feedback until
+        their next unrelated interaction (Jules review finding on PR #94)."""
+        fake_st.session_state.current_lib_id = "lib_123"
+        fake_st.session_state.current_papers_id = "papers_123"
+        fake_st.session_state.root_id = "root_123"
+        fake_st.session_state.index = LibraryIndex()
+        fake_st.session_state.selected_paper = None
+        fake_st.session_state.duplicate_uploads_skipped = ["dup.pdf"]
+        fake_st.file_uploader.return_value = [make_uploaded_file("a.pdf")]
+        fake_st.button.side_effect = lambda label, **kw: label == "Upload"
+        mocker.patch.object(app, "st_keyup", return_value="")
+        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
+        mocker.patch.object(app, "upload_papers", return_value=False)
+        mocker.patch.object(app, "upload_library_index")
+
+        app.main()
+
+        assert fake_st.warning.call_count == 2
+        fake_st.warning.assert_any_call(
+            "Skipped dup.pdf: a paper with that title already exists in this library."
+        )
+        fake_st.rerun.assert_not_called()
+        assert "upload_flash" not in fake_st.session_state
+
+    def test_upload_button_reruns_and_persists_duplicate_notice(
+        self,
+        fake_st: MagicMock,
+        mocker: MockerFixture,
+        stop_rerun: type[BaseException],
+    ) -> None:
         """Regression test: when upload_papers reports skipped duplicates,
-        the app must not rerun, since a rerun would wipe the st.warning
-        upload_papers already rendered for the skipped file(s)."""
+        the app must still rerun after upload so the file uploader's key
+        bump takes effect and it clears its selection, matching the
+        plain-success branch. The success/warning messages are stashed in
+        session_state and rendered on the next run, since st.rerun() would
+        otherwise wipe them out before the user could see which files were
+        skipped (Jules review finding on PR #93)."""
         fake_st.session_state.current_lib_id = "lib_123"
         fake_st.session_state.current_papers_id = "papers_123"
         fake_st.session_state.root_id = "root_123"
@@ -2123,10 +2918,50 @@ class TestMainUploadFlow:
         mocker.patch.object(app, "upload_papers", return_value=True)
         mocker.patch.object(app, "upload_library_index")
 
+        with pytest.raises(stop_rerun):
+            app.main()
+
+        fake_st.rerun.assert_called_once()
+        fake_st.success.assert_not_called()
+        flash = fake_st.session_state.upload_flash
+        assert flash["duplicates_skipped"] == ["a.pdf"]
+        assert flash["all_succeeded"] is True
+
+        fake_st.button.side_effect = lambda label, **kw: False
         app.main()
 
-        fake_st.rerun.assert_not_called()
-        fake_st.success.assert_called_once()
+        fake_st.warning.assert_called_once_with(
+            "Skipped a.pdf: a paper with that title already exists in this library."
+        )
+        fake_st.success.assert_called_once_with(flash["message"])
+        assert "upload_flash" not in fake_st.session_state
+
+    def test_upload_flash_summarizes_count_above_threshold(
+        self, fake_st: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """Test that more than MAX_DUPLICATE_NAMES_TO_LIST skipped duplicates
+        are summarized as a count instead of listing every filename, so a
+        large batch can't produce an unreadably long notice."""
+        fake_st.session_state.current_lib_id = "lib_123"
+        fake_st.session_state.current_papers_id = "papers_123"
+        fake_st.session_state.root_id = "root_123"
+        fake_st.session_state.index = LibraryIndex()
+        fake_st.session_state.selected_paper = None
+        fake_st.session_state.upload_flash = {
+            "duplicates_skipped": [f"paper{i}.pdf" for i in range(6)],
+            "all_succeeded": True,
+            "message": "Uploaded successfully! (Duplicate files were "
+            "skipped — see warnings above.)",
+        }
+        fake_st.file_uploader.return_value = None
+        mocker.patch.object(app, "st_keyup", return_value="")
+        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
+
+        app.main()
+
+        warning_messages = [c.args[0] for c in fake_st.warning.call_args_list]
+        assert any("6" in msg and "paper0.pdf" not in msg for msg in warning_messages)
+        assert "upload_flash" not in fake_st.session_state
 
     def test_upload_shows_determinate_progress_bar_not_spinner(
         self,
@@ -2251,10 +3086,10 @@ class TestMainUploadFlow:
 class TestMainDeleteFlow:
     """Test suite for main()'s sidebar icon-bar delete flow."""
 
-    def test_trash_with_no_checked_papers_warns(
+    def test_trash_disabled_with_no_checked_papers(
         self, fake_st: MagicMock, mocker: MockerFixture
     ) -> None:
-        """Test clicking trash with nothing checked just warns."""
+        """Test the bin icon is disabled when nothing is checked."""
         pid = "a" * 32
         entry = PaperIndexEntry(
             title="Some Paper", pdf_file_id="pdf1", meta_file_id="meta1", folder_id="f1"
@@ -2266,13 +3101,12 @@ class TestMainDeleteFlow:
         fake_st.session_state.selected_paper = None
         fake_st.file_uploader.return_value = None
         fake_st.checkbox.return_value = False
-        fake_st.button.side_effect = lambda label, **kw: kw.get("key") == "trash_icon"
+        fake_st.button.return_value = False
         mocker.patch.object(app, "st_keyup", return_value="")
         mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
 
         app.main()
 
-        fake_st.warning.assert_any_call("No papers selected.")
         assert "confirm_delete_pids" not in fake_st.session_state
 
         trash_call = next(
@@ -2281,6 +3115,7 @@ class TestMainDeleteFlow:
             if c.kwargs.get("key") == "trash_icon"
         )
         assert trash_call.kwargs.get("type") == "secondary"
+        assert trash_call.kwargs.get("disabled") is True
 
     def test_trash_icon_stays_secondary_when_a_paper_is_checked(
         self, fake_st: MagicMock, mocker: MockerFixture
@@ -2311,6 +3146,7 @@ class TestMainDeleteFlow:
             if c.kwargs.get("key") == "trash_icon"
         )
         assert trash_call.kwargs.get("type") == "secondary"
+        assert trash_call.kwargs.get("disabled") is False
 
     def test_trash_with_checked_paper_shows_confirmation(
         self, fake_st: MagicMock, mocker: MockerFixture
@@ -2507,6 +3343,545 @@ class TestMainDeleteFlow:
         rendered_keys = {c.kwargs.get("key") for c in fake_st.button.call_args_list}
         assert f"btn_{deleted_pid}" not in rendered_keys
         assert f"btn_{kept_pid}" in rendered_keys
+
+
+class TestMainAddRemoveTagFlow:
+    """Test suite for main()'s sidebar icon-bar bulk add/remove tag flow."""
+
+    def test_add_tag_icon_disabled_with_no_checked_papers(
+        self, fake_st: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """Test the add-tag icon is disabled when nothing is checked."""
+        pid = "a" * 32
+        entry = PaperIndexEntry(
+            title="Some Paper", pdf_file_id="pdf1", meta_file_id="meta1", folder_id="f1"
+        )
+        fake_st.session_state.current_lib_id = "lib_123"
+        fake_st.session_state.current_papers_id = "papers_123"
+        fake_st.session_state.root_id = "root_123"
+        fake_st.session_state.index = LibraryIndex(papers={pid: entry})
+        fake_st.session_state.selected_paper = None
+        fake_st.file_uploader.return_value = None
+        fake_st.checkbox.return_value = False
+        fake_st.button.return_value = False
+        mocker.patch.object(app, "st_keyup", return_value="")
+        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
+
+        app.main()
+
+        assert "show_add_tag_pids" not in fake_st.session_state
+        add_tag_call = next(
+            c
+            for c in fake_st.button.call_args_list
+            if c.kwargs.get("key") == "add_tag_icon"
+        )
+        assert add_tag_call.kwargs.get("disabled") is True
+
+    def test_add_tag_icon_with_checked_paper_stages_form(
+        self, fake_st: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """Test clicking the add-tag icon with a checked paper stages the
+        add-tag form instead of adding immediately."""
+        pid = "a" * 32
+        entry = PaperIndexEntry(
+            title="Some Paper", pdf_file_id="pdf1", meta_file_id="meta1", folder_id="f1"
+        )
+        fake_st.session_state.current_lib_id = "lib_123"
+        fake_st.session_state.current_papers_id = "papers_123"
+        fake_st.session_state.root_id = "root_123"
+        fake_st.session_state.index = LibraryIndex(papers={pid: entry})
+        fake_st.session_state.selected_paper = None
+        fake_st.file_uploader.return_value = None
+        fake_st.session_state[f"chk_{pid}"] = True
+        fake_st.button.side_effect = lambda label, **kw: kw.get("key") == "add_tag_icon"
+        mock_add = mocker.patch.object(app, "add_tags_to_selected")
+        mocker.patch.object(app, "st_keyup", return_value="")
+        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
+
+        app.main()
+
+        assert fake_st.session_state.show_add_tag_pids == [pid]
+        mock_add.assert_not_called()
+
+    def test_add_tag_icon_enabled_when_a_paper_is_checked(
+        self, fake_st: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """Test the add-tag icon is enabled once a paper is checked."""
+        pid = "a" * 32
+        entry = PaperIndexEntry(
+            title="Some Paper", pdf_file_id="pdf1", meta_file_id="meta1", folder_id="f1"
+        )
+        fake_st.session_state.current_lib_id = "lib_123"
+        fake_st.session_state.current_papers_id = "papers_123"
+        fake_st.session_state.root_id = "root_123"
+        fake_st.session_state.index = LibraryIndex(papers={pid: entry})
+        fake_st.session_state.selected_paper = None
+        fake_st.file_uploader.return_value = None
+        fake_st.session_state[f"chk_{pid}"] = True
+        fake_st.button.return_value = False
+        mocker.patch.object(app, "st_keyup", return_value="")
+        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
+
+        app.main()
+
+        add_tag_call = next(
+            c
+            for c in fake_st.button.call_args_list
+            if c.kwargs.get("key") == "add_tag_icon"
+        )
+        assert add_tag_call.kwargs.get("disabled") is False
+
+    def test_confirming_add_tag_calls_add_tags_to_selected_and_reruns(
+        self,
+        fake_st: MagicMock,
+        mocker: MockerFixture,
+        tmp_path: Path,
+        stop_rerun: type[BaseException],
+    ) -> None:
+        """Test clicking Add on a staged add-tag form parses the comma-
+        separated input and persists it via add_tags_to_selected."""
+        pid = "a" * 32
+        entry = PaperIndexEntry(
+            title="Some Paper", pdf_file_id="pdf1", meta_file_id="meta1", folder_id="f1"
+        )
+        fake_st.session_state.current_lib_id = "lib_123"
+        fake_st.session_state.current_papers_id = "papers_123"
+        fake_st.session_state.root_id = "root_123"
+        fake_st.session_state.index = LibraryIndex(papers={pid: entry})
+        fake_st.session_state.selected_paper = None
+        fake_st.session_state.local_lib_dir = tmp_path
+        fake_st.session_state.show_add_tag_pids = [pid]
+        fake_st.file_uploader.return_value = None
+        fake_st.text_input.return_value = "alpha, beta"
+        fake_st.button.side_effect = lambda label, **kw: (
+            kw.get("key") == "confirm_add_tag_btn"
+        )
+        mock_add = mocker.patch.object(app, "add_tags_to_selected")
+        mocker.patch.object(app, "st_keyup", return_value="")
+        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
+
+        with pytest.raises(stop_rerun):
+            app.main()
+
+        mock_add.assert_called_once_with(
+            mocker.ANY,
+            [pid],
+            fake_st.session_state.index,
+            "papers_123",
+            tmp_path,
+            ["alpha", "beta"],
+        )
+        assert fake_st.session_state.show_add_tag_pids is None
+
+    def test_confirming_add_tag_with_blank_input_skips_the_call(
+        self,
+        fake_st: MagicMock,
+        mocker: MockerFixture,
+        tmp_path: Path,
+        stop_rerun: type[BaseException],
+    ) -> None:
+        """Test clicking Add with an empty/whitespace-only tag input clears
+        the staged form without calling add_tags_to_selected."""
+        pid = "a" * 32
+        entry = PaperIndexEntry(
+            title="Some Paper", pdf_file_id="pdf1", meta_file_id="meta1", folder_id="f1"
+        )
+        fake_st.session_state.current_lib_id = "lib_123"
+        fake_st.session_state.current_papers_id = "papers_123"
+        fake_st.session_state.root_id = "root_123"
+        fake_st.session_state.index = LibraryIndex(papers={pid: entry})
+        fake_st.session_state.selected_paper = None
+        fake_st.session_state.local_lib_dir = tmp_path
+        fake_st.session_state.show_add_tag_pids = [pid]
+        fake_st.file_uploader.return_value = None
+        fake_st.text_input.return_value = "   "
+        fake_st.button.side_effect = lambda label, **kw: (
+            kw.get("key") == "confirm_add_tag_btn"
+        )
+        mock_add = mocker.patch.object(app, "add_tags_to_selected")
+        mocker.patch.object(app, "st_keyup", return_value="")
+        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
+
+        with pytest.raises(stop_rerun):
+            app.main()
+
+        mock_add.assert_not_called()
+        assert fake_st.session_state.show_add_tag_pids is None
+
+    def test_confirming_failed_add_tag_skips_rerun_but_clears_staged_form(
+        self,
+        fake_st: MagicMock,
+        mocker: MockerFixture,
+        tmp_path: Path,
+    ) -> None:
+        """Regression test: if add_tags_to_selected reports a failure (e.g.
+        a Drive upload or the index sync failed and already showed an
+        st.error), Add must not rerun - rerunning would restart the script
+        and wipe out that error before the user ever sees it - but the
+        stale staged form must still be cleared."""
+        pid = "a" * 32
+        entry = PaperIndexEntry(
+            title="Some Paper", pdf_file_id="pdf1", meta_file_id="meta1", folder_id="f1"
+        )
+        fake_st.session_state.current_lib_id = "lib_123"
+        fake_st.session_state.current_papers_id = "papers_123"
+        fake_st.session_state.root_id = "root_123"
+        fake_st.session_state.index = LibraryIndex(papers={pid: entry})
+        fake_st.session_state.selected_paper = None
+        fake_st.session_state.local_lib_dir = tmp_path
+        fake_st.session_state.show_add_tag_pids = [pid]
+        fake_st.file_uploader.return_value = None
+        fake_st.text_input.return_value = "alpha"
+        fake_st.button.side_effect = lambda label, **kw: (
+            kw.get("key") == "confirm_add_tag_btn"
+        )
+        mock_add = mocker.patch.object(app, "add_tags_to_selected", return_value=False)
+        mocker.patch.object(app, "st_keyup", return_value="")
+        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
+
+        app.main()  # must not raise (no rerun on failure)
+
+        mock_add.assert_called_once_with(
+            mocker.ANY,
+            [pid],
+            fake_st.session_state.index,
+            "papers_123",
+            tmp_path,
+            ["alpha"],
+        )
+        fake_st.rerun.assert_not_called()
+        assert fake_st.session_state.show_add_tag_pids is None
+
+    def test_cancelling_add_tag_clears_staged_form(
+        self,
+        fake_st: MagicMock,
+        mocker: MockerFixture,
+        stop_rerun: type[BaseException],
+    ) -> None:
+        """Test clicking Cancel on a staged add-tag form clears it without
+        touching Drive or the index."""
+        pid = "a" * 32
+        entry = PaperIndexEntry(
+            title="Some Paper", pdf_file_id="pdf1", meta_file_id="meta1", folder_id="f1"
+        )
+        fake_st.session_state.current_lib_id = "lib_123"
+        fake_st.session_state.current_papers_id = "papers_123"
+        fake_st.session_state.root_id = "root_123"
+        fake_st.session_state.index = LibraryIndex(papers={pid: entry})
+        fake_st.session_state.selected_paper = None
+        fake_st.session_state.show_add_tag_pids = [pid]
+        fake_st.file_uploader.return_value = None
+        fake_st.button.side_effect = lambda label, **kw: (
+            kw.get("key") == "cancel_add_tag_btn"
+        )
+        mock_add = mocker.patch.object(app, "add_tags_to_selected")
+        mocker.patch.object(app, "st_keyup", return_value="")
+        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
+
+        with pytest.raises(stop_rerun):
+            app.main()
+
+        mock_add.assert_not_called()
+        assert fake_st.session_state.show_add_tag_pids is None
+
+    def test_remove_tag_icon_disabled_with_no_checked_papers(
+        self, fake_st: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """Test the remove-tag icon is disabled when nothing is checked."""
+        pid = "a" * 32
+        entry = PaperIndexEntry(
+            title="Some Paper", pdf_file_id="pdf1", meta_file_id="meta1", folder_id="f1"
+        )
+        fake_st.session_state.current_lib_id = "lib_123"
+        fake_st.session_state.current_papers_id = "papers_123"
+        fake_st.session_state.root_id = "root_123"
+        fake_st.session_state.index = LibraryIndex(papers={pid: entry})
+        fake_st.session_state.selected_paper = None
+        fake_st.file_uploader.return_value = None
+        fake_st.checkbox.return_value = False
+        fake_st.button.return_value = False
+        mocker.patch.object(app, "st_keyup", return_value="")
+        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
+
+        app.main()
+
+        assert "show_remove_tag_pids" not in fake_st.session_state
+        remove_tag_call = next(
+            c
+            for c in fake_st.button.call_args_list
+            if c.kwargs.get("key") == "remove_tag_icon"
+        )
+        assert remove_tag_call.kwargs.get("disabled") is True
+
+    def test_remove_tag_icon_enabled_when_a_paper_is_checked(
+        self, fake_st: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """Test the remove-tag icon is enabled once a paper is checked."""
+        pid = "a" * 32
+        entry = PaperIndexEntry(
+            title="Some Paper", pdf_file_id="pdf1", meta_file_id="meta1", folder_id="f1"
+        )
+        fake_st.session_state.current_lib_id = "lib_123"
+        fake_st.session_state.current_papers_id = "papers_123"
+        fake_st.session_state.root_id = "root_123"
+        fake_st.session_state.index = LibraryIndex(papers={pid: entry})
+        fake_st.session_state.selected_paper = None
+        fake_st.file_uploader.return_value = None
+        fake_st.session_state[f"chk_{pid}"] = True
+        fake_st.button.return_value = False
+        mocker.patch.object(app, "st_keyup", return_value="")
+        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
+
+        app.main()
+
+        remove_tag_call = next(
+            c
+            for c in fake_st.button.call_args_list
+            if c.kwargs.get("key") == "remove_tag_icon"
+        )
+        assert remove_tag_call.kwargs.get("disabled") is False
+
+    def test_remove_tag_with_no_tags_among_selection_shows_info(
+        self, fake_st: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """Test staging remove-tag for papers with no tags at all shows an
+        info message and clears the staged state without a multiselect."""
+        pid = "a" * 32
+        entry = PaperIndexEntry(
+            title="Some Paper", pdf_file_id="pdf1", meta_file_id="meta1", folder_id="f1"
+        )
+        fake_st.session_state.current_lib_id = "lib_123"
+        fake_st.session_state.current_papers_id = "papers_123"
+        fake_st.session_state.root_id = "root_123"
+        fake_st.session_state.index = LibraryIndex(papers={pid: entry})
+        fake_st.session_state.selected_paper = None
+        fake_st.session_state.show_remove_tag_pids = [pid]
+        fake_st.file_uploader.return_value = None
+        fake_st.button.return_value = False
+        mocker.patch.object(app, "st_keyup", return_value="")
+        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
+
+        app.main()
+
+        fake_st.info.assert_any_call("None of the selected papers have any tags.")
+        assert fake_st.session_state.show_remove_tag_pids is None
+
+    def test_confirming_remove_tag_calls_remove_tags_from_selected_and_reruns(
+        self,
+        fake_st: MagicMock,
+        mocker: MockerFixture,
+        tmp_path: Path,
+        stop_rerun: type[BaseException],
+    ) -> None:
+        """Test clicking Remove on a staged remove-tag form persists the
+        multiselected tags via remove_tags_from_selected."""
+        pid = "a" * 32
+        entry = PaperIndexEntry(
+            title="Some Paper",
+            pdf_file_id="pdf1",
+            meta_file_id="meta1",
+            folder_id="f1",
+            tags=["alpha", "beta"],
+        )
+        fake_st.session_state.current_lib_id = "lib_123"
+        fake_st.session_state.current_papers_id = "papers_123"
+        fake_st.session_state.root_id = "root_123"
+        fake_st.session_state.index = LibraryIndex(papers={pid: entry})
+        fake_st.session_state.selected_paper = None
+        fake_st.session_state.local_lib_dir = tmp_path
+        fake_st.session_state.show_remove_tag_pids = [pid]
+        fake_st.file_uploader.return_value = None
+        fake_st.multiselect.return_value = ["alpha"]
+        fake_st.button.side_effect = lambda label, **kw: (
+            kw.get("key") == "confirm_remove_tag_btn"
+        )
+        mock_remove = mocker.patch.object(app, "remove_tags_from_selected")
+        mocker.patch.object(app, "st_keyup", return_value="")
+        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
+
+        with pytest.raises(stop_rerun):
+            app.main()
+
+        mock_remove.assert_called_once_with(
+            mocker.ANY,
+            [pid],
+            fake_st.session_state.index,
+            "papers_123",
+            tmp_path,
+            ["alpha"],
+        )
+        assert fake_st.session_state.show_remove_tag_pids is None
+
+    def test_confirming_failed_remove_tag_skips_rerun_but_clears_staged_form(
+        self,
+        fake_st: MagicMock,
+        mocker: MockerFixture,
+        tmp_path: Path,
+    ) -> None:
+        """Regression test: if remove_tags_from_selected reports a failure
+        (e.g. a Drive upload or the index sync failed and already showed an
+        st.error), Remove must not rerun - rerunning would restart the
+        script and wipe out that error before the user ever sees it - but
+        the stale staged form must still be cleared."""
+        pid = "a" * 32
+        entry = PaperIndexEntry(
+            title="Some Paper",
+            pdf_file_id="pdf1",
+            meta_file_id="meta1",
+            folder_id="f1",
+            tags=["alpha"],
+        )
+        fake_st.session_state.current_lib_id = "lib_123"
+        fake_st.session_state.current_papers_id = "papers_123"
+        fake_st.session_state.root_id = "root_123"
+        fake_st.session_state.index = LibraryIndex(papers={pid: entry})
+        fake_st.session_state.selected_paper = None
+        fake_st.session_state.local_lib_dir = tmp_path
+        fake_st.session_state.show_remove_tag_pids = [pid]
+        fake_st.file_uploader.return_value = None
+        fake_st.multiselect.return_value = ["alpha"]
+        fake_st.button.side_effect = lambda label, **kw: (
+            kw.get("key") == "confirm_remove_tag_btn"
+        )
+        mock_remove = mocker.patch.object(
+            app, "remove_tags_from_selected", return_value=False
+        )
+        mocker.patch.object(app, "st_keyup", return_value="")
+        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
+
+        app.main()  # must not raise (no rerun on failure)
+
+        mock_remove.assert_called_once_with(
+            mocker.ANY,
+            [pid],
+            fake_st.session_state.index,
+            "papers_123",
+            tmp_path,
+            ["alpha"],
+        )
+        fake_st.rerun.assert_not_called()
+        assert fake_st.session_state.show_remove_tag_pids is None
+
+    def test_cancelling_remove_tag_clears_staged_form(
+        self,
+        fake_st: MagicMock,
+        mocker: MockerFixture,
+        stop_rerun: type[BaseException],
+    ) -> None:
+        """Test clicking Cancel on a staged remove-tag form clears it
+        without touching Drive or the index."""
+        pid = "a" * 32
+        entry = PaperIndexEntry(
+            title="Some Paper",
+            pdf_file_id="pdf1",
+            meta_file_id="meta1",
+            folder_id="f1",
+            tags=["alpha"],
+        )
+        fake_st.session_state.current_lib_id = "lib_123"
+        fake_st.session_state.current_papers_id = "papers_123"
+        fake_st.session_state.root_id = "root_123"
+        fake_st.session_state.index = LibraryIndex(papers={pid: entry})
+        fake_st.session_state.selected_paper = None
+        fake_st.session_state.show_remove_tag_pids = [pid]
+        fake_st.file_uploader.return_value = None
+        fake_st.multiselect.return_value = ["alpha"]
+        fake_st.button.side_effect = lambda label, **kw: (
+            kw.get("key") == "cancel_remove_tag_btn"
+        )
+        mock_remove = mocker.patch.object(app, "remove_tags_from_selected")
+        mocker.patch.object(app, "st_keyup", return_value="")
+        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
+
+        with pytest.raises(stop_rerun):
+            app.main()
+
+        mock_remove.assert_not_called()
+        assert fake_st.session_state.show_remove_tag_pids is None
+
+    def test_staging_add_tag_clears_other_staged_bulk_actions(
+        self, fake_st: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """Regression test: staging one icon-bar action (e.g. add-tag) must
+        clear any other staged action (e.g. a lingering remove-tag form),
+        so only one bulk-action box shows at a time."""
+        pid = "a" * 32
+        entry = PaperIndexEntry(
+            title="Some Paper", pdf_file_id="pdf1", meta_file_id="meta1", folder_id="f1"
+        )
+        fake_st.session_state.current_lib_id = "lib_123"
+        fake_st.session_state.current_papers_id = "papers_123"
+        fake_st.session_state.root_id = "root_123"
+        fake_st.session_state.index = LibraryIndex(papers={pid: entry})
+        fake_st.session_state.selected_paper = None
+        fake_st.session_state.show_remove_tag_pids = [pid]
+        fake_st.session_state.confirm_delete_pids = [pid]
+        fake_st.session_state.show_download_pids = [pid]
+        fake_st.session_state[f"chk_{pid}"] = True
+        fake_st.file_uploader.return_value = None
+        fake_st.button.side_effect = lambda label, **kw: kw.get("key") == "add_tag_icon"
+        mocker.patch.object(app, "st_keyup", return_value="")
+        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
+
+        app.main()
+
+        assert fake_st.session_state.show_add_tag_pids == [pid]
+        assert "show_remove_tag_pids" not in fake_st.session_state
+        assert "confirm_delete_pids" not in fake_st.session_state
+        assert "show_download_pids" not in fake_st.session_state
+
+    def test_staging_delete_clears_a_lingering_add_tag_box(
+        self, fake_st: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """Regression test: the reverse direction — clicking trash while an
+        add-tag box is open must dismiss the add-tag box."""
+        pid = "a" * 32
+        entry = PaperIndexEntry(
+            title="Some Paper", pdf_file_id="pdf1", meta_file_id="meta1", folder_id="f1"
+        )
+        fake_st.session_state.current_lib_id = "lib_123"
+        fake_st.session_state.current_papers_id = "papers_123"
+        fake_st.session_state.root_id = "root_123"
+        fake_st.session_state.index = LibraryIndex(papers={pid: entry})
+        fake_st.session_state.selected_paper = None
+        fake_st.session_state.show_add_tag_pids = [pid]
+        fake_st.session_state[f"chk_{pid}"] = True
+        fake_st.file_uploader.return_value = None
+        fake_st.button.side_effect = lambda label, **kw: kw.get("key") == "trash_icon"
+        mocker.patch.object(app, "st_keyup", return_value="")
+        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
+
+        app.main()
+
+        assert fake_st.session_state.confirm_delete_pids == [pid]
+        assert "show_add_tag_pids" not in fake_st.session_state
+
+    def test_staging_another_icon_clears_a_lingering_generate_missing_box(
+        self, fake_st: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """Regression test: after staging the magic-wand's "generate missing"
+        confirmation, clicking another icon-bar action must still dismiss
+        that staged box instead of leaving both boxes visible."""
+        pid = "a" * 32
+        entry = PaperIndexEntry(
+            title="Some Paper", pdf_file_id="pdf1", meta_file_id="meta1", folder_id="f1"
+        )
+        fake_st.session_state.current_lib_id = "lib_123"
+        fake_st.session_state.current_papers_id = "papers_123"
+        fake_st.session_state.root_id = "root_123"
+        fake_st.session_state.index = LibraryIndex(papers={pid: entry})
+        fake_st.session_state.selected_paper = None
+        fake_st.session_state.confirm_generate_pids = [pid]
+        fake_st.session_state[f"chk_{pid}"] = True
+        fake_st.file_uploader.return_value = None
+        fake_st.button.side_effect = lambda label, **kw: kw.get("key") == "add_tag_icon"
+        mocker.patch.object(app, "st_keyup", return_value="")
+        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
+
+        app.main()
+
+        assert "confirm_generate_pids" not in fake_st.session_state
+        assert fake_st.session_state.show_add_tag_pids == [pid]
 
 
 class TestPersistGeneratedMetadata:
@@ -3124,6 +4499,78 @@ class TestMainBulkGenerateFlow:
         )
         assert generate_call.kwargs.get("type") == "secondary"
 
+    def test_generate_icons_disabled_when_hf_token_missing(
+        self, fake_st: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """Test the bulk and missing-metadata generate icons are disabled
+        with an explanatory tooltip when HF_TOKEN is not set (issue #65)."""
+        pid = "a" * 32
+        entry = PaperIndexEntry(
+            title="Some Paper", pdf_file_id="pdf1", meta_file_id="meta1", folder_id="f1"
+        )
+        fake_st.session_state.current_lib_id = "lib_123"
+        fake_st.session_state.current_papers_id = "papers_123"
+        fake_st.session_state.root_id = "root_123"
+        fake_st.session_state.index = LibraryIndex(papers={pid: entry})
+        fake_st.session_state.selected_paper = None
+        fake_st.file_uploader.return_value = None
+        fake_st.checkbox.return_value = False
+        fake_st.button.return_value = False
+        mocker.patch.object(app, "st_keyup", return_value="")
+        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
+        mocker.patch.dict("os.environ", {}, clear=True)
+
+        app.main()
+
+        for key in ("bulk_generate_icon", "generate_missing_icon"):
+            call = next(
+                c for c in fake_st.button.call_args_list if c.kwargs.get("key") == key
+            )
+            assert call.kwargs.get("disabled") is True
+            assert call.kwargs.get("help") == HF_TOKEN_MISSING_HELP
+
+    def test_generate_icons_enabled_when_hf_token_set(
+        self, fake_st: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """Test the bulk and missing-metadata generate icons stay enabled
+        with their original help text when HF_TOKEN is set."""
+        pid = "a" * 32
+        entry = PaperIndexEntry(
+            title="Some Paper", pdf_file_id="pdf1", meta_file_id="meta1", folder_id="f1"
+        )
+        fake_st.session_state.current_lib_id = "lib_123"
+        fake_st.session_state.current_papers_id = "papers_123"
+        fake_st.session_state.root_id = "root_123"
+        fake_st.session_state.index = LibraryIndex(papers={pid: entry})
+        fake_st.session_state.selected_paper = None
+        fake_st.file_uploader.return_value = None
+        fake_st.checkbox.return_value = False
+        fake_st.button.return_value = False
+        mocker.patch.object(app, "st_keyup", return_value="")
+        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
+        mocker.patch.dict("os.environ", {"HF_TOKEN": "some-token"}, clear=True)
+
+        app.main()
+
+        bulk_call = next(
+            c
+            for c in fake_st.button.call_args_list
+            if c.kwargs.get("key") == "bulk_generate_icon"
+        )
+        assert bulk_call.kwargs.get("disabled") is False
+        assert bulk_call.kwargs.get("help") == GENERATE_METADATA_HELP
+
+        missing_call = next(
+            c
+            for c in fake_st.button.call_args_list
+            if c.kwargs.get("key") == "generate_missing_icon"
+        )
+        assert missing_call.kwargs.get("disabled") is False
+        assert (
+            missing_call.kwargs.get("help")
+            == "Generate metadata for every paper that doesn't have any yet"
+        )
+
     def test_icon_bar_columns_use_no_gap(
         self, fake_st: MagicMock, mocker: MockerFixture
     ) -> None:
@@ -3150,10 +4597,120 @@ class TestMainBulkGenerateFlow:
         icon_bar_call = next(
             c
             for c in fake_st.columns.call_args_list
-            if c.args and c.args[0] == [1, 1, 1, 7]
+            if c.args and c.args[0] == [1, 1, 1, 1, 1, 1, 1, 4]
         )
         assert "gap" in icon_bar_call.kwargs
         assert icon_bar_call.kwargs["gap"] is None
+
+    def test_icon_bar_columns_have_fixed_size_css(
+        self, fake_st: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """Test a CSS rule pins the icon-bar button columns to a fixed
+        size so they stop shrinking (and overlapping/clipping their emoji)
+        as the sidebar's drag-resize slider narrows the sidebar (issue #89)."""
+        pid = "a" * 32
+        entry = PaperIndexEntry(
+            title="Some Paper", pdf_file_id="pdf1", meta_file_id="meta1", folder_id="f1"
+        )
+        fake_st.session_state.current_lib_id = "lib_123"
+        fake_st.session_state.current_papers_id = "papers_123"
+        fake_st.session_state.root_id = "root_123"
+        fake_st.session_state.index = LibraryIndex(papers={pid: entry})
+        fake_st.session_state.selected_paper = None
+        fake_st.file_uploader.return_value = None
+        fake_st.checkbox.return_value = False
+        fake_st.button.return_value = False
+        mocker.patch.object(app, "st_keyup", return_value="")
+        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
+
+        app.main()
+
+        icon_bar_css_calls = [
+            c
+            for c in fake_st.markdown.call_args_list
+            if c.args
+            and "st-key-trash_icon" in c.args[0]
+            and "st-key-bulk_generate_icon" in c.args[0]
+            and "st-key-generate_missing_icon" in c.args[0]
+        ]
+        assert icon_bar_css_calls, "expected a CSS block sizing the icon-bar buttons"
+        css = icon_bar_css_calls[0].args[0]
+        assert icon_bar_css_calls[0].kwargs.get("unsafe_allow_html") is True
+        assert "flex: 0 0 auto" in css
+        assert "overflow: hidden" in css
+        assert "margin-right" in css
+        assert "margin-bottom" in css
+
+    def test_icon_bar_wrap_gap_matches_horizontal_gap(
+        self, fake_st: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """Test the vertical gap between wrapped icon rows matches the
+        horizontal gap between icons, so a narrowed sidebar produces evenly
+        spaced icons instead of a large gap above every icon (issue #13)."""
+        pid = "a" * 32
+        entry = PaperIndexEntry(
+            title="Some Paper", pdf_file_id="pdf1", meta_file_id="meta1", folder_id="f1"
+        )
+        fake_st.session_state.current_lib_id = "lib_123"
+        fake_st.session_state.current_papers_id = "papers_123"
+        fake_st.session_state.root_id = "root_123"
+        fake_st.session_state.index = LibraryIndex(papers={pid: entry})
+        fake_st.session_state.selected_paper = None
+        fake_st.file_uploader.return_value = None
+        fake_st.checkbox.return_value = False
+        fake_st.button.return_value = False
+        mocker.patch.object(app, "st_keyup", return_value="")
+        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
+
+        app.main()
+
+        icon_bar_css_calls = [
+            c
+            for c in fake_st.markdown.call_args_list
+            if c.args
+            and "st-key-trash_icon" in c.args[0]
+            and "st-key-bulk_generate_icon" in c.args[0]
+            and "st-key-generate_missing_icon" in c.args[0]
+        ]
+        assert icon_bar_css_calls, "expected a CSS block sizing the icon-bar buttons"
+        css = icon_bar_css_calls[0].args[0]
+
+        horizontal_gap_match = re.search(r"margin-right:\s*([\d.]+rem)", css)
+        vertical_gap_match = re.search(r"margin-bottom:\s*([\d.]+rem)", css)
+        assert horizontal_gap_match, "expected a margin-right rule for horizontal gap"
+        assert vertical_gap_match, "expected a margin-bottom rule for wrap-row gap"
+        assert horizontal_gap_match.group(1) == vertical_gap_match.group(1), (
+            "vertical wrap gap should match the horizontal gap between icons"
+        )
+
+        column_rule_match = re.search(r"st-key-clear_filters_icon\)\s*\{([^}]*)\}", css)
+        assert column_rule_match, "expected a column-sizing CSS rule"
+        assert "margin-top" not in column_rule_match.group(1), (
+            "per-column margin-top duplicates onto every wrapped row; "
+            "tooltip space should be reserved on the row container instead"
+        )
+
+        details_padding_match = re.search(
+            r"stExpanderDetails'\]:has\(\.st-key-trash_icon\)\s*\{([^}]*)\}", css
+        )
+        assert details_padding_match, (
+            "expected the expander's native top padding to be zeroed out for "
+            "this row so it doesn't stack with the row's own spacing"
+        )
+        assert "padding-top: 0" in details_padding_match.group(1), (
+            "expander details padding-top should be zeroed to shrink the gap "
+            "between the 'Library Papers' header and the icon bar"
+        )
+
+        row_margin_match = re.search(r"margin-top:\s*(-?[\d.]+)rem", css)
+        assert row_margin_match, (
+            "expected a negative margin-top rule pulling the icon row up "
+            "against Streamlit's default inter-element gap"
+        )
+        assert float(row_margin_match.group(1)) < 0, (
+            "margin-top above the icon row should be negative to close the "
+            "gap between the 'Library Papers' header and the icon bar"
+        )
 
     def test_bulk_generate_with_checked_paper_shows_confirmation(
         self, fake_st: MagicMock, mocker: MockerFixture
@@ -3280,6 +4837,55 @@ class TestMainBulkGenerateFlow:
         )
         assert generate_missing_call.kwargs.get("type") == "secondary"
 
+    def test_generate_missing_info_shares_position_with_other_icon_messages(
+        self, fake_st: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """Test the wand icon's "already has metadata" info box renders at
+        the same call position (immediately after all six icon buttons)
+        as the trash icon's "No papers selected." warning, instead of being
+        nested inside its own icon column - a stray per-column message
+        would stretch just that column's auto width and shove the icons
+        after it out of place (issue #99)."""
+        pid = "a" * 32
+        entry = PaperIndexEntry(
+            title="Has Tags",
+            pdf_file_id="pdf1",
+            meta_file_id="meta1",
+            folder_id="f1",
+            tags=["nlp"],
+        )
+        fake_st.session_state.current_lib_id = "lib_123"
+        fake_st.session_state.current_papers_id = "papers_123"
+        fake_st.session_state.root_id = "root_123"
+        fake_st.session_state.index = LibraryIndex(papers={pid: entry})
+        fake_st.session_state.selected_paper = None
+        fake_st.file_uploader.return_value = None
+        fake_st.button.side_effect = lambda label, **kw: (
+            kw.get("key") == "generate_missing_icon"
+        )
+        mocker.patch.object(app, "st_keyup", return_value="")
+        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
+
+        app.main()
+
+        button_names = [
+            c[0] for c in fake_st.mock_calls if c[0] in ("button", "info", "warning")
+        ]
+        clear_filters_index = next(
+            i
+            for i, c in enumerate(fake_st.mock_calls)
+            if c[0] == "button" and c.kwargs.get("key") == "clear_filters_icon"
+        )
+        info_index = next(
+            i
+            for i, c in enumerate(fake_st.mock_calls)
+            if c[0] == "info" and "already has metadata" in str(c.args)
+        )
+        assert info_index == clear_filters_index + 1, (
+            f"expected the info box to render immediately after the last "
+            f"icon button, got call order {button_names}"
+        )
+
     def test_confirming_bulk_generate_calls_generate_and_reruns(
         self,
         fake_st: MagicMock,
@@ -3349,6 +4955,479 @@ class TestMainBulkGenerateFlow:
         assert fake_st.session_state.confirm_generate_pids is None
 
 
+class TestMainBulkDownloadFlow:
+    """Test suite for main()'s sidebar icon-bar bulk download flow."""
+
+    def test_download_icon_disabled_with_no_checked_papers(
+        self, fake_st: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """Test the download icon is disabled when nothing is checked."""
+        pid = "a" * 32
+        entry = PaperIndexEntry(
+            title="Some Paper", pdf_file_id="pdf1", meta_file_id="meta1", folder_id="f1"
+        )
+        fake_st.session_state.current_lib_id = "lib_123"
+        fake_st.session_state.current_papers_id = "papers_123"
+        fake_st.session_state.root_id = "root_123"
+        fake_st.session_state.index = LibraryIndex(papers={pid: entry})
+        fake_st.session_state.selected_paper = None
+        fake_st.file_uploader.return_value = None
+        fake_st.checkbox.return_value = False
+        fake_st.button.return_value = False
+        mocker.patch.object(app, "st_keyup", return_value="")
+        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
+
+        app.main()
+
+        assert "show_download_pids" not in fake_st.session_state
+        download_call = next(
+            c
+            for c in fake_st.button.call_args_list
+            if c.kwargs.get("key") == "download_icon"
+        )
+        assert download_call.kwargs.get("disabled") is True
+
+    def test_download_icon_enabled_when_a_paper_is_checked(
+        self, fake_st: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """Test the download icon keeps its fixed "secondary" type
+        regardless of checkbox state, matching the other icon-bar buttons,
+        and is enabled once a paper is checked."""
+        pid = "a" * 32
+        entry = PaperIndexEntry(
+            title="Some Paper", pdf_file_id="pdf1", meta_file_id="meta1", folder_id="f1"
+        )
+        fake_st.session_state.current_lib_id = "lib_123"
+        fake_st.session_state.current_papers_id = "papers_123"
+        fake_st.session_state.root_id = "root_123"
+        fake_st.session_state.index = LibraryIndex(papers={pid: entry})
+        fake_st.session_state.selected_paper = None
+        fake_st.file_uploader.return_value = None
+        fake_st.session_state[f"chk_{pid}"] = True
+        fake_st.button.return_value = False
+        mocker.patch.object(app, "st_keyup", return_value="")
+        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
+
+        app.main()
+
+        download_call = next(
+            c
+            for c in fake_st.button.call_args_list
+            if c.kwargs.get("key") == "download_icon"
+        )
+        assert download_call.kwargs.get("type") == "secondary"
+        assert download_call.kwargs.get("disabled") is False
+
+    def test_download_with_checked_paper_shows_zip_panel(
+        self, fake_st: MagicMock, mocker: MockerFixture, tmp_path: Path
+    ) -> None:
+        """Test clicking the download icon with a checked paper builds and
+        offers the zip immediately, with no separate confirm step."""
+        pid = "a" * 32
+        entry = PaperIndexEntry(
+            title="Some Paper", pdf_file_id="pdf1", meta_file_id="meta1", folder_id="f1"
+        )
+        fake_st.session_state.current_lib_id = "lib_123"
+        fake_st.session_state.current_lib_name = "My Library"
+        fake_st.session_state.current_papers_id = "papers_123"
+        fake_st.session_state.root_id = "root_123"
+        fake_st.session_state.index = LibraryIndex(papers={pid: entry})
+        fake_st.session_state.selected_paper = None
+        fake_st.session_state.local_lib_dir = tmp_path
+        fake_st.session_state[f"chk_{pid}"] = True
+        fake_st.file_uploader.return_value = None
+        fake_st.button.side_effect = lambda label, **kw: (
+            kw.get("key") == "download_icon"
+        )
+        fake_st.download_button.return_value = False
+        zip_result = downloads.ZipBuildResult(
+            data=b"zip-bytes", included=["Some Paper"], skipped=[]
+        )
+        mock_zip = mocker.patch.object(app, "zip_marked_pdfs", return_value=zip_result)
+        mocker.patch.object(app, "st_keyup", return_value="")
+        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
+
+        app.main()
+
+        assert fake_st.session_state.show_download_pids == [pid]
+        mock_zip.assert_called_once_with(
+            mocker.ANY, [pid], fake_st.session_state.index, tmp_path
+        )
+        fake_st.spinner.assert_any_call("Preparing zip...")
+        fake_st.download_button.assert_any_call(
+            "Download zip",
+            data=b"zip-bytes",
+            file_name=downloads.zip_download_filename("My Library"),
+            mime="application/zip",
+            key="confirm_download_btn",
+        )
+
+    def test_download_zip_result_is_cached_across_reruns(
+        self, fake_st: MagicMock, mocker: MockerFixture, tmp_path: Path
+    ) -> None:
+        """Test a previously built zip isn't rebuilt on a later rerun."""
+        pid = "a" * 32
+        entry = PaperIndexEntry(
+            title="Some Paper", pdf_file_id="pdf1", meta_file_id="meta1", folder_id="f1"
+        )
+        fake_st.session_state.current_lib_id = "lib_123"
+        fake_st.session_state.current_lib_name = "My Library"
+        fake_st.session_state.current_papers_id = "papers_123"
+        fake_st.session_state.root_id = "root_123"
+        fake_st.session_state.index = LibraryIndex(papers={pid: entry})
+        fake_st.session_state.selected_paper = None
+        fake_st.session_state.local_lib_dir = tmp_path
+        fake_st.session_state.show_download_pids = [pid]
+        cached_result = downloads.ZipBuildResult(
+            data=b"cached-bytes", included=["Some Paper"], skipped=[]
+        )
+        fake_st.session_state.download_zip_result = cached_result
+        fake_st.file_uploader.return_value = None
+        fake_st.button.return_value = False
+        fake_st.download_button.return_value = False
+        mock_zip = mocker.patch.object(app, "zip_marked_pdfs")
+        mocker.patch.object(app, "st_keyup", return_value="")
+        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
+
+        app.main()
+
+        mock_zip.assert_not_called()
+        fake_st.download_button.assert_any_call(
+            "Download zip",
+            data=b"cached-bytes",
+            file_name=downloads.zip_download_filename("My Library"),
+            mime="application/zip",
+            key="confirm_download_btn",
+        )
+
+    def test_clicking_download_button_keeps_panel_open(
+        self,
+        fake_st: MagicMock,
+        mocker: MockerFixture,
+        tmp_path: Path,
+    ) -> None:
+        """Test that clicking Download doesn't rerun immediately, since an
+        st.rerun() right after a download_button click would interrupt the
+        browser's in-flight download before the payload is delivered. The
+        panel (and its Cancel button) must stay open until the user
+        explicitly dismisses it."""
+        pid = "a" * 32
+        entry = PaperIndexEntry(
+            title="Some Paper", pdf_file_id="pdf1", meta_file_id="meta1", folder_id="f1"
+        )
+        fake_st.session_state.current_lib_id = "lib_123"
+        fake_st.session_state.current_lib_name = "My Library"
+        fake_st.session_state.current_papers_id = "papers_123"
+        fake_st.session_state.root_id = "root_123"
+        fake_st.session_state.index = LibraryIndex(papers={pid: entry})
+        fake_st.session_state.selected_paper = None
+        fake_st.session_state.local_lib_dir = tmp_path
+        fake_st.session_state.show_download_pids = [pid]
+        fake_st.session_state.download_zip_result = downloads.ZipBuildResult(
+            data=b"zip-bytes", included=["Some Paper"], skipped=[]
+        )
+        fake_st.file_uploader.return_value = None
+        fake_st.button.return_value = False
+        fake_st.download_button.return_value = True
+        mocker.patch.object(app, "zip_marked_pdfs")
+        mocker.patch.object(app, "st_keyup", return_value="")
+        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
+
+        app.main()
+
+        assert fake_st.session_state.show_download_pids == [pid]
+        assert fake_st.session_state.download_zip_result is not None
+        assert any(
+            c.kwargs.get("key") == "cancel_download_btn"
+            for c in fake_st.button.call_args_list
+        )
+
+    def test_download_panel_warns_on_skipped_papers(
+        self, fake_st: MagicMock, mocker: MockerFixture, tmp_path: Path
+    ) -> None:
+        """Test papers that couldn't be zipped are surfaced as a warning."""
+        pid = "a" * 32
+        entry = PaperIndexEntry(
+            title="Some Paper", pdf_file_id="pdf1", meta_file_id="meta1", folder_id="f1"
+        )
+        fake_st.session_state.current_lib_id = "lib_123"
+        fake_st.session_state.current_papers_id = "papers_123"
+        fake_st.session_state.root_id = "root_123"
+        fake_st.session_state.index = LibraryIndex(papers={pid: entry})
+        fake_st.session_state.selected_paper = None
+        fake_st.session_state.local_lib_dir = tmp_path
+        fake_st.session_state.show_download_pids = [pid]
+        fake_st.file_uploader.return_value = None
+        fake_st.button.return_value = False
+        zip_result = downloads.ZipBuildResult(
+            data=b"", included=[], skipped=["Some Paper"]
+        )
+        mocker.patch.object(app, "zip_marked_pdfs", return_value=zip_result)
+        mocker.patch.object(app, "st_keyup", return_value="")
+        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
+
+        app.main()
+
+        fake_st.warning.assert_any_call("Couldn't include: Some Paper")
+        fake_st.error.assert_any_call("No PDFs could be included in the download.")
+        fake_st.download_button.assert_not_called()
+
+    def test_download_panel_truncates_many_skipped_papers(
+        self, fake_st: MagicMock, mocker: MockerFixture, tmp_path: Path
+    ) -> None:
+        """Test that when more than MAX_DUPLICATE_NAMES_TO_LIST papers are
+        skipped, the warning shows a count instead of every title."""
+        pid = "a" * 32
+        entry = PaperIndexEntry(
+            title="Some Paper", pdf_file_id="pdf1", meta_file_id="meta1", folder_id="f1"
+        )
+        fake_st.session_state.current_lib_id = "lib_123"
+        fake_st.session_state.current_papers_id = "papers_123"
+        fake_st.session_state.root_id = "root_123"
+        fake_st.session_state.index = LibraryIndex(papers={pid: entry})
+        fake_st.session_state.selected_paper = None
+        fake_st.session_state.local_lib_dir = tmp_path
+        fake_st.session_state.show_download_pids = [pid]
+        fake_st.file_uploader.return_value = None
+        fake_st.button.return_value = False
+        skipped_titles = [f"Paper {i}" for i in range(MAX_DUPLICATE_NAMES_TO_LIST + 1)]
+        zip_result = downloads.ZipBuildResult(
+            data=b"", included=[], skipped=skipped_titles
+        )
+        mocker.patch.object(app, "zip_marked_pdfs", return_value=zip_result)
+        mocker.patch.object(app, "st_keyup", return_value="")
+        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
+
+        app.main()
+
+        fake_st.warning.assert_any_call(f"Couldn't include {len(skipped_titles)} PDFs.")
+
+    def test_cancelling_download_clears_staged_state_and_cached_zip(
+        self,
+        fake_st: MagicMock,
+        mocker: MockerFixture,
+        tmp_path: Path,
+        stop_rerun: type[BaseException],
+    ) -> None:
+        """Test clicking Cancel on the download panel clears both the
+        staged pids and the cached zip bytes."""
+        pid = "a" * 32
+        entry = PaperIndexEntry(
+            title="Some Paper", pdf_file_id="pdf1", meta_file_id="meta1", folder_id="f1"
+        )
+        fake_st.session_state.current_lib_id = "lib_123"
+        fake_st.session_state.current_papers_id = "papers_123"
+        fake_st.session_state.root_id = "root_123"
+        fake_st.session_state.index = LibraryIndex(papers={pid: entry})
+        fake_st.session_state.selected_paper = None
+        fake_st.session_state.local_lib_dir = tmp_path
+        fake_st.session_state.show_download_pids = [pid]
+        fake_st.session_state.download_zip_result = downloads.ZipBuildResult(
+            data=b"zip-bytes", included=["Some Paper"], skipped=[]
+        )
+        fake_st.file_uploader.return_value = None
+        fake_st.button.side_effect = lambda label, **kw: (
+            kw.get("key") == "cancel_download_btn"
+        )
+        mock_zip = mocker.patch.object(app, "zip_marked_pdfs")
+        mocker.patch.object(app, "st_keyup", return_value="")
+        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
+
+        with pytest.raises(stop_rerun):
+            app.main()
+
+        mock_zip.assert_not_called()
+        assert fake_st.session_state.show_download_pids is None
+        assert "download_zip_result" not in fake_st.session_state
+
+
+class TestToggleSelectAll:
+    """Test suite for `_toggle_select_all`, the "Mark all" callback."""
+
+    def test_marks_only_the_given_filtered_pids(self, fake_st: MagicMock) -> None:
+        """Test switching the toggle on marks exactly the filtered papers,
+        not every paper in the library."""
+        pid_in_filter = "a" * 32
+        pid_outside_filter = "b" * 32
+        fake_st.session_state.index = LibraryIndex(
+            papers={
+                pid_in_filter: PaperIndexEntry(
+                    title="In", pdf_file_id="p1", meta_file_id="m1", folder_id="f1"
+                ),
+                pid_outside_filter: PaperIndexEntry(
+                    title="Out", pdf_file_id="p2", meta_file_id="m2", folder_id="f2"
+                ),
+            }
+        )
+        fake_st.session_state.select_all_toggle = True
+
+        app._toggle_select_all([pid_in_filter])
+
+        assert fake_st.session_state[f"chk_{pid_in_filter}"] is True
+        assert fake_st.session_state[f"chk_{pid_outside_filter}"] is False
+
+    def test_toggling_off_clears_every_mark_in_the_library(
+        self, fake_st: MagicMock
+    ) -> None:
+        """Test switching the toggle off clears marks for every paper, not
+        just the ones currently in the filtered view."""
+        pid_in_filter = "a" * 32
+        pid_outside_filter = "b" * 32
+        fake_st.session_state.index = LibraryIndex(
+            papers={
+                pid_in_filter: PaperIndexEntry(
+                    title="In", pdf_file_id="p1", meta_file_id="m1", folder_id="f1"
+                ),
+                pid_outside_filter: PaperIndexEntry(
+                    title="Out", pdf_file_id="p2", meta_file_id="m2", folder_id="f2"
+                ),
+            }
+        )
+        fake_st.session_state[f"chk_{pid_in_filter}"] = True
+        fake_st.session_state[f"chk_{pid_outside_filter}"] = True
+        fake_st.session_state.select_all_toggle = False
+
+        app._toggle_select_all([pid_in_filter])
+
+        assert fake_st.session_state[f"chk_{pid_in_filter}"] is False
+        assert fake_st.session_state[f"chk_{pid_outside_filter}"] is False
+
+    def test_reapplying_with_a_narrower_filter_drops_stale_marks(
+        self, fake_st: MagicMock
+    ) -> None:
+        """Test toggling on again with a narrower filter leaves no stale
+        marks from a paper that's no longer in view (issue #99)."""
+        pid_still_in_filter = "a" * 32
+        pid_no_longer_in_filter = "b" * 32
+        fake_st.session_state.index = LibraryIndex(
+            papers={
+                pid_still_in_filter: PaperIndexEntry(
+                    title="Still", pdf_file_id="p1", meta_file_id="m1", folder_id="f1"
+                ),
+                pid_no_longer_in_filter: PaperIndexEntry(
+                    title="Gone", pdf_file_id="p2", meta_file_id="m2", folder_id="f2"
+                ),
+            }
+        )
+        fake_st.session_state[f"chk_{pid_still_in_filter}"] = True
+        fake_st.session_state[f"chk_{pid_no_longer_in_filter}"] = True
+        fake_st.session_state.select_all_toggle = True
+
+        app._toggle_select_all([pid_still_in_filter])
+
+        assert fake_st.session_state[f"chk_{pid_still_in_filter}"] is True
+        assert fake_st.session_state[f"chk_{pid_no_longer_in_filter}"] is False
+
+
+class TestMainSelectAllToggle:
+    """Test suite for main()'s "Mark all" checkbox rendering."""
+
+    def test_renders_mark_all_checkbox_scoped_to_filtered_papers(
+        self, fake_st: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """Test the "Mark all" checkbox is rendered with the currently
+        filtered paper IDs bound as its on_change callback args."""
+        matching_pid = "a" * 32
+        non_matching_pid = "b" * 32
+        fake_st.session_state.current_lib_id = "lib_123"
+        fake_st.session_state.current_papers_id = "papers_123"
+        fake_st.session_state.root_id = "root_123"
+        fake_st.session_state.index = LibraryIndex(
+            papers={
+                matching_pid: PaperIndexEntry(
+                    title="Neural Networks",
+                    pdf_file_id="p1",
+                    meta_file_id="m1",
+                    folder_id="f1",
+                ),
+                non_matching_pid: PaperIndexEntry(
+                    title="Something Else",
+                    pdf_file_id="p2",
+                    meta_file_id="m2",
+                    folder_id="f2",
+                ),
+            }
+        )
+        fake_st.session_state.selected_paper = None
+        fake_st.file_uploader.return_value = None
+        fake_st.button.return_value = False
+        mocker.patch.object(app, "st_keyup", return_value="neural")
+        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
+
+        app.main()
+
+        select_all_call = next(
+            c
+            for c in fake_st.checkbox.call_args_list
+            if c.kwargs.get("key") == "select_all_toggle"
+        )
+        assert select_all_call.kwargs.get("on_change") is app._toggle_select_all
+        assert select_all_call.kwargs.get("args") == ([matching_pid],)
+
+    def test_renders_paper_checkbox_with_uncheck_all_callback(
+        self, fake_st: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """Test each paper row's checkbox is wired to clear the "Mark all"
+        toggle when that paper is individually unchecked, so the toggle
+        can't stay marked once the set of checked papers no longer covers
+        every filtered paper."""
+        matching_pid = "a" * 32
+        fake_st.session_state.current_lib_id = "lib_123"
+        fake_st.session_state.current_papers_id = "papers_123"
+        fake_st.session_state.root_id = "root_123"
+        fake_st.session_state.index = LibraryIndex(
+            papers={
+                matching_pid: PaperIndexEntry(
+                    title="Neural Networks",
+                    pdf_file_id="p1",
+                    meta_file_id="m1",
+                    folder_id="f1",
+                ),
+            }
+        )
+        fake_st.session_state.selected_paper = None
+        fake_st.file_uploader.return_value = None
+        fake_st.button.return_value = False
+        mocker.patch.object(app, "st_keyup", return_value="")
+        mocker.patch.object(app, "authenticate_user", return_value=MagicMock())
+
+        app.main()
+
+        row_call = next(
+            c
+            for c in fake_st.checkbox.call_args_list
+            if c.kwargs.get("key") == f"chk_{matching_pid}"
+        )
+        assert row_call.kwargs.get("on_change") is app._uncheck_mark_all_if_unmarked
+        assert row_call.kwargs.get("args") == (matching_pid,)
+
+    def test_unchecking_a_paper_clears_the_mark_all_toggle(
+        self, fake_st: MagicMock
+    ) -> None:
+        """Test that unmarking a single paper's checkbox clears "Mark all"
+        rather than leaving it checked while coverage is incomplete."""
+        pid = "a" * 32
+        fake_st.session_state[f"chk_{pid}"] = False
+        fake_st.session_state.select_all_toggle = True
+
+        app._uncheck_mark_all_if_unmarked(pid)
+
+        assert fake_st.session_state.select_all_toggle is False
+
+    def test_checking_a_paper_leaves_the_mark_all_toggle_untouched(
+        self, fake_st: MagicMock
+    ) -> None:
+        """Test that marking a single paper's checkbox doesn't itself flip
+        "Mark all" on - it only ever forces it off, never on."""
+        pid = "a" * 32
+        fake_st.session_state[f"chk_{pid}"] = True
+        fake_st.session_state.select_all_toggle = False
+
+        app._uncheck_mark_all_if_unmarked(pid)
+
+        assert fake_st.session_state.select_all_toggle is False
+
+
 def _select_paper(
     fake_st: MagicMock, mocker: MockerFixture, tmp_path: Path, pid: str
 ) -> PaperIndexEntry:
@@ -3407,6 +5486,48 @@ class TestMainMetadataView:
             "PDF could not be loaded" in str(call.args)
             for call in fake_st.warning.call_args_list
         )
+
+    def test_generate_button_disabled_when_hf_token_missing(
+        self, fake_st: MagicMock, mocker: MockerFixture, tmp_path: Path
+    ) -> None:
+        """Test the per-paper generate button is disabled with an
+        explanatory tooltip when HF_TOKEN is not set (issue #65)."""
+        pid = "a" * 32
+        _select_paper(fake_st, mocker, tmp_path, pid)
+        mocker.patch.object(app, "sync_paper_metadata", return_value=True)
+        mocker.patch.dict("os.environ", {}, clear=True)
+        fake_st.form_submit_button.return_value = False
+
+        app.main()
+
+        generate_call = next(
+            c
+            for c in fake_st.button.call_args_list
+            if c.kwargs.get("key") == f"generate_btn_{pid}"
+        )
+        assert generate_call.kwargs.get("disabled") is True
+        assert generate_call.kwargs.get("help") == HF_TOKEN_MISSING_HELP
+
+    def test_generate_button_enabled_when_hf_token_set(
+        self, fake_st: MagicMock, mocker: MockerFixture, tmp_path: Path
+    ) -> None:
+        """Test the per-paper generate button keeps its original help text
+        and pdf-availability behavior when HF_TOKEN is set."""
+        pid = "a" * 32
+        _select_paper(fake_st, mocker, tmp_path, pid)
+        mocker.patch.object(app, "sync_paper_metadata", return_value=True)
+        mocker.patch.dict("os.environ", {"HF_TOKEN": "some-token"}, clear=True)
+        fake_st.form_submit_button.return_value = False
+
+        app.main()
+
+        generate_call = next(
+            c
+            for c in fake_st.button.call_args_list
+            if c.kwargs.get("key") == f"generate_btn_{pid}"
+        )
+        assert generate_call.kwargs.get("disabled") is False
+        assert generate_call.kwargs.get("help") == GENERATE_METADATA_HELP
 
     def test_recovers_valid_fields_after_validation_error(
         self, fake_st: MagicMock, mocker: MockerFixture, tmp_path: Path
@@ -3633,6 +5754,7 @@ class TestMainMetadataView:
     ) -> None:
         """Test the Generate metadata button explains what it does and
         which Hugging Face models it calls."""
+        mocker.patch.dict("os.environ", {"HF_TOKEN": "test_token"}, clear=True)
         pid = "9" * 32
         _select_paper(fake_st, mocker, tmp_path, pid)
         mocker.patch.object(app, "sync_paper_metadata", return_value=True)
@@ -4453,3 +6575,97 @@ class TestPdfEditedCopy:
         assert any(
             f"pid={pid}" in call and "libId=lib_123" in call for call in markdown_calls
         )
+
+
+class TestPdfExpandToggle:
+    """Test suite for the app-level expand-to-viewport toggle (issue #107).
+
+    This is deliberately independent of PDF.js's native Presentation Mode
+    (which disables the annotation editor) - it's a CSS class on the
+    wrapping div, toggled via a Streamlit button + rerun, so the PDF.js
+    toolbar (including the highlight tool) stays fully active.
+    """
+
+    def test_pdf_wrapper_uses_normal_class_by_default(
+        self, fake_st: MagicMock, mocker: MockerFixture, tmp_path: Path
+    ) -> None:
+        """Test that with no prior toggle, the viewer renders collapsed."""
+        pid = "e" * 32
+        _select_paper(fake_st, mocker, tmp_path, pid)
+        mocker.patch.object(app, "sync_paper_metadata", return_value=True)
+        fake_st.form_submit_button.return_value = False
+        fake_st.button.side_effect = lambda label, **kw: False
+
+        app.main()
+
+        markdown_calls = [str(call.args) for call in fake_st.markdown.call_args_list]
+        assert any(
+            'class="pdf-viewer-normal"' in call and "iframe" in call
+            for call in markdown_calls
+        )
+        assert not any('class="pdf-viewer-expanded"' in call for call in markdown_calls)
+
+    def test_pdf_wrapper_uses_expanded_class_when_toggled_on(
+        self, fake_st: MagicMock, mocker: MockerFixture, tmp_path: Path
+    ) -> None:
+        """Test that once pdf_expanded is set, the wrapper div picks up the
+        expanded CSS class so the viewer fills the viewport."""
+        pid = "f" * 32
+        _select_paper(fake_st, mocker, tmp_path, pid)
+        fake_st.session_state.pdf_expanded = True
+        mocker.patch.object(app, "sync_paper_metadata", return_value=True)
+        fake_st.form_submit_button.return_value = False
+        fake_st.button.side_effect = lambda label, **kw: False
+
+        app.main()
+
+        markdown_calls = [str(call.args) for call in fake_st.markdown.call_args_list]
+        assert any(
+            'class="pdf-viewer-expanded"' in call and "iframe" in call
+            for call in markdown_calls
+        )
+
+    def test_clicking_expand_button_flips_state_and_reruns(
+        self,
+        fake_st: MagicMock,
+        mocker: MockerFixture,
+        tmp_path: Path,
+        stop_rerun: type[BaseException],
+    ) -> None:
+        """Test that clicking the toggle button while collapsed flips
+        pdf_expanded to True and triggers a rerun to re-render expanded."""
+        pid = "g" * 32
+        _select_paper(fake_st, mocker, tmp_path, pid)
+        mocker.patch.object(app, "sync_paper_metadata", return_value=True)
+        fake_st.form_submit_button.return_value = False
+        fake_st.button.side_effect = lambda label, **kw: (
+            kw.get("key") == "pdf_expand_toggle"
+        )
+
+        with pytest.raises(stop_rerun):
+            app.main()
+
+        assert fake_st.session_state.pdf_expanded is True
+
+    def test_clicking_collapse_button_flips_state_back(
+        self,
+        fake_st: MagicMock,
+        mocker: MockerFixture,
+        tmp_path: Path,
+        stop_rerun: type[BaseException],
+    ) -> None:
+        """Test that clicking the toggle button while expanded flips
+        pdf_expanded back to False."""
+        pid = "h" * 32
+        _select_paper(fake_st, mocker, tmp_path, pid)
+        fake_st.session_state.pdf_expanded = True
+        mocker.patch.object(app, "sync_paper_metadata", return_value=True)
+        fake_st.form_submit_button.return_value = False
+        fake_st.button.side_effect = lambda label, **kw: (
+            kw.get("key") == "pdf_expand_toggle"
+        )
+
+        with pytest.raises(stop_rerun):
+            app.main()
+
+        assert fake_st.session_state.pdf_expanded is False

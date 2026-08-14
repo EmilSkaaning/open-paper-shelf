@@ -1,4 +1,4 @@
-from typing import Optional, List, Dict, Any
+from typing import Callable, NamedTuple, Optional, List, Dict, Any
 from pathlib import Path
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import Flow
@@ -10,6 +10,7 @@ from pydantic import ValidationError
 import json
 import logging
 import tempfile
+import time
 import uuid
 
 from backend.models import LibraryIndex
@@ -26,7 +27,11 @@ DriveService = Any
 DriveMetadata = Dict[str, Any]
 
 SCOPES: List[str] = ["https://www.googleapis.com/auth/drive.file"]
-FOLDER_NAME: str = "open-paper-shelf-lib"
+FOLDER_NAME: str = "paper-butler-lib"
+# Pre-rename root folder name; existing/dogfood libraries created before the
+# app was renamed still use this, so it's checked as a fallback rather than
+# creating a second, orphaned root folder for those users.
+LEGACY_FOLDER_NAME: str = "open-paper-shelf-lib"
 FOLDER_MIME_TYPE: str = "application/vnd.google-apps.folder"
 REDIRECT_URI: str = "http://localhost:8501/"
 
@@ -119,6 +124,32 @@ def _escape_drive_query_value(value: str) -> str:
     return value.replace("\\", "\\\\").replace("'", "\\'")
 
 
+def _find_folder(
+    service: DriveService, name: str, parent_id: Optional[str] = None
+) -> Optional[str]:
+    """Finds an existing Google Drive folder ID by name, without creating one.
+
+    Args:
+        service (DriveService): The Google Drive API v3 resource service.
+        name (str): The name of the folder to find.
+        parent_id (Optional[str], optional): The ID of the parent folder. Defaults to None.
+
+    Returns:
+        Optional[str]: The Google Drive file ID of the folder, or None if not found.
+    """
+    escaped_name = _escape_drive_query_value(name)
+    query = f"name = '{escaped_name}' and mimeType = '{FOLDER_MIME_TYPE}' and trashed = false"
+    if parent_id:
+        query += f" and '{parent_id}' in parents"
+    results = (
+        service.files().list(q=query, spaces="drive", fields="files(id)").execute()
+    )
+    items = results.get("files", [])
+    if not items:
+        return None
+    return str(items[0].get("id"))
+
+
 def _get_or_create_folder(
     service: DriveService, name: str, parent_id: Optional[str] = None
 ) -> str:
@@ -132,25 +163,39 @@ def _get_or_create_folder(
     Returns:
         str: The Google Drive file ID of the folder.
     """
-    escaped_name = _escape_drive_query_value(name)
-    query = f"name = '{escaped_name}' and mimeType = '{FOLDER_MIME_TYPE}' and trashed = false"
+    existing_id = _find_folder(service, name, parent_id)
+    if existing_id is not None:
+        return existing_id
+    return _create_folder(service, name, parent_id)
+
+
+def _create_folder(
+    service: DriveService, name: str, parent_id: Optional[str] = None
+) -> str:
+    """Creates a new Google Drive folder, without checking if one exists.
+
+    Args:
+        service (DriveService): The Google Drive API v3 resource service.
+        name (str): The name of the folder to create.
+        parent_id (Optional[str], optional): The ID of the parent folder. Defaults to None.
+
+    Returns:
+        str: The Google Drive file ID of the newly created folder.
+    """
+    folder_metadata: DriveMetadata = {"name": name, "mimeType": FOLDER_MIME_TYPE}
     if parent_id:
-        query += f" and '{parent_id}' in parents"
-    results = (
-        service.files().list(q=query, spaces="drive", fields="files(id)").execute()
-    )
-    items = results.get("files", [])
-    if not items:
-        folder_metadata: DriveMetadata = {"name": name, "mimeType": FOLDER_MIME_TYPE}
-        if parent_id:
-            folder_metadata["parents"] = [parent_id]
-        folder = service.files().create(body=folder_metadata, fields="id").execute()
-        return str(folder.get("id"))
-    return str(items[0].get("id"))
+        folder_metadata["parents"] = [parent_id]
+    folder = service.files().create(body=folder_metadata, fields="id").execute()
+    return str(folder.get("id"))
 
 
 def get_or_create_root_folder(creds: Credentials) -> str:
     """Gets or creates this app's root library folder in the user's Google Drive.
+
+    Checks for a folder under the current app name first, then falls back to
+    the pre-rename folder name so existing/dogfood libraries aren't orphaned
+    by the "Open Paper Shelf" -> "Paper Butler" rename. Only creates a new
+    folder (under the current name) if neither is found.
 
     Args:
         creds (Credentials): The Google OAuth credentials.
@@ -159,7 +204,12 @@ def get_or_create_root_folder(creds: Credentials) -> str:
         str: The Google Drive file ID of the root folder.
     """
     service: DriveService = build("drive", "v3", credentials=creds)
-    return _get_or_create_folder(service, FOLDER_NAME)
+    existing_id = _find_folder(service, FOLDER_NAME) or _find_folder(
+        service, LEGACY_FOLDER_NAME
+    )
+    if existing_id is not None:
+        return existing_id
+    return _create_folder(service, FOLDER_NAME)
 
 
 def list_libraries(creds: Credentials, root_id: str) -> List[Dict[str, str]]:
@@ -267,44 +317,105 @@ def _collect_ids_recursive(service: DriveService, folder_id: str) -> List[str]:
 
 
 # Drive's batch endpoint accepts at most 100 sub-requests per HTTP call.
-BATCH_TRASH_CHUNK_SIZE = 100
+DRIVE_BATCH_CHUNK_SIZE = 100
+
+# Drive's API is documented to return transient 5xx errors under normal
+# operation, which should be retried rather than treated as fatal.
+_TRANSIENT_HTTP_STATUSES = frozenset({500, 502, 503, 504})
+DRIVE_BATCH_TRASH_MAX_RETRIES: int = 3
+DRIVE_BATCH_TRASH_RETRY_DELAY_SECONDS: float = 2.0
 
 
-def _batch_trash(service: DriveService, file_ids: List[str]) -> None:
+class DriveTransientError(Exception):
+    """Raised when trashing Drive files keeps failing with transient (5xx)
+    errors after all retries are exhausted, so callers can show a
+    user-friendly message instead of a raw HttpError traceback."""
+
+
+def _is_transient_http_error(exc: HttpError) -> bool:
+    """Returns whether `exc` looks like a transient Drive failure worth
+    retrying (a 5xx status), as opposed to a permanent one (e.g. a 403
+    lack of authorization) that retrying can't fix.
+
+    Args:
+        exc (HttpError): The per-item error returned by a batch request.
+
+    Returns:
+        bool: True if `exc`'s HTTP status is one of the retryable 5xx codes.
+    """
+    return exc.resp.status in _TRANSIENT_HTTP_STATUSES
+
+
+def _batch_trash(
+    service: DriveService,
+    file_ids: List[str],
+    max_retries: int = DRIVE_BATCH_TRASH_MAX_RETRIES,
+    delay_seconds: float = DRIVE_BATCH_TRASH_RETRY_DELAY_SECONDS,
+    sleep_fn: Callable[[float], None] = time.sleep,
+) -> None:
     """Trashes a list of Drive file/folder IDs via batched HTTP requests.
 
     Batching turns what would otherwise be one HTTP round-trip per file
-    into `ceil(len(file_ids) / BATCH_TRASH_CHUNK_SIZE)` round-trips, which
-    matters for libraries with many papers.
+    into `ceil(len(file_ids) / DRIVE_BATCH_CHUNK_SIZE)` round-trips, which
+    matters for libraries with many papers. Items that fail with a
+    transient (5xx) error are retried with a fixed delay between attempts;
+    items that fail with a non-transient error (e.g. a 403 lack of
+    authorization) are surfaced immediately without retrying.
 
     Args:
         service (DriveService): An authenticated Drive API client.
         file_ids (List[str]): The Google Drive file IDs to trash.
+        max_retries (int): Maximum attempts for a batch of file IDs still
+            failing with transient errors before giving up.
+        delay_seconds (float): Delay passed to `sleep_fn` between retries.
+        sleep_fn (Callable[[float], None]): Called between retries;
+            injected so tests never sleep for real.
 
     Raises:
-        HttpError: Re-raises the first per-item error encountered, if any
-            item in `file_ids` failed to trash (e.g. the app lacks
-            authorization for that specific item).
+        HttpError: Re-raises the first non-transient per-item error
+            encountered, if any item in `file_ids` failed for a reason
+            that retrying can't fix.
+        DriveTransientError: If items are still failing with transient
+            errors after `max_retries` attempts.
     """
-    errors: Dict[str, HttpError] = {}
+    pending_ids = file_ids
+    last_errors: Dict[str, HttpError] = {}
 
-    def _record_error(
-        request_id: str, _response: DriveMetadata, exception: Optional[HttpError]
-    ) -> None:
-        if exception is not None:
-            errors[request_id] = exception
+    for attempt in range(max_retries):
+        errors: Dict[str, HttpError] = {}
 
-    for start in range(0, len(file_ids), BATCH_TRASH_CHUNK_SIZE):
-        batch = service.new_batch_http_request(callback=_record_error)
-        for file_id in file_ids[start : start + BATCH_TRASH_CHUNK_SIZE]:
-            batch.add(
-                service.files().update(fileId=file_id, body={"trashed": True}),
-                request_id=file_id,
+        def _record_error(
+            request_id: str, _response: DriveMetadata, exception: Optional[HttpError]
+        ) -> None:
+            if exception is not None:
+                errors[request_id] = exception
+
+        for start in range(0, len(pending_ids), DRIVE_BATCH_CHUNK_SIZE):
+            batch = service.new_batch_http_request(callback=_record_error)
+            for file_id in pending_ids[start : start + DRIVE_BATCH_CHUNK_SIZE]:
+                batch.add(
+                    service.files().update(fileId=file_id, body={"trashed": True}),
+                    request_id=file_id,
+                )
+            batch.execute()
+
+        if not errors:
+            return
+
+        if not all(_is_transient_http_error(exc) for exc in errors.values()):
+            raise next(
+                exc for exc in errors.values() if not _is_transient_http_error(exc)
             )
-        batch.execute()
 
-    if errors:
-        raise next(iter(errors.values()))
+        last_errors = errors
+        pending_ids = list(errors.keys())
+        if attempt < max_retries - 1:
+            sleep_fn(delay_seconds)
+
+    raise DriveTransientError(
+        f"Google Drive is temporarily unavailable; failed to trash "
+        f"{len(pending_ids)} item(s) after {max_retries} attempts."
+    ) from next(iter(last_errors.values()))
 
 
 def delete_library(creds: Credentials, lib_id: str) -> None:
@@ -529,6 +640,82 @@ def create_paper_folder(
     """
     service: DriveService = build("drive", "v3", credentials=creds)
     return _get_or_create_folder(service, paper_id, papers_folder_id)
+
+
+class BatchFolderResult(NamedTuple):
+    """Per-paper outcome of a batched folder-creation call.
+
+    Attributes:
+        folder_ids: Maps each paper ID that was created successfully to its
+            new Drive folder ID.
+        errors: Maps each paper ID that failed to create to the error Drive
+            returned for it.
+    """
+
+    folder_ids: Dict[str, str]
+    errors: Dict[str, Exception]
+
+
+def create_paper_folders_batch(
+    creds: Credentials, papers_folder_id: str, paper_ids: List[str]
+) -> BatchFolderResult:
+    """Creates multiple per-paper folders via batched HTTP requests.
+
+    Unlike `create_paper_folder`, this always creates a new folder rather
+    than getting-or-creating one, since callers use it only for paper IDs
+    they just generated (freshly minted UUIDs that cannot already have a
+    folder) — skipping the existence check lets the create calls be
+    metadata-only and therefore batchable, turning what would otherwise be
+    one HTTP round-trip per paper into
+    `ceil(len(paper_ids) / DRIVE_BATCH_CHUNK_SIZE)` round-trips.
+
+    A failure creating one paper's folder does not prevent the others in
+    the same call from being created; each paper's outcome (its new folder
+    ID, or the error Drive returned for it) is reported independently via
+    the returned `BatchFolderResult`.
+
+    Args:
+        creds (Credentials): The Google OAuth credentials.
+        papers_folder_id (str): The Google Drive file ID of the papers
+            folder each new folder is created inside.
+        paper_ids (List[str]): The unique paper IDs to create folders for,
+            used as each folder's name.
+
+    Returns:
+        BatchFolderResult: The per-paper folder IDs and errors.
+    """
+    service: DriveService = build("drive", "v3", credentials=creds)
+    folder_ids: Dict[str, str] = {}
+    errors: Dict[str, Exception] = {}
+
+    def _record_result(
+        request_id: str, response: DriveMetadata, exception: Optional[HttpError]
+    ) -> None:
+        if exception is not None:
+            errors[request_id] = exception
+        else:
+            folder_ids[request_id] = str(response["id"])
+
+    for start in range(0, len(paper_ids), DRIVE_BATCH_CHUNK_SIZE):
+        chunk = paper_ids[start : start + DRIVE_BATCH_CHUNK_SIZE]
+        batch = service.new_batch_http_request(callback=_record_result)
+        for paper_id in chunk:
+            folder_metadata = {
+                "name": paper_id,
+                "mimeType": FOLDER_MIME_TYPE,
+                "parents": [papers_folder_id],
+            }
+            batch.add(
+                service.files().create(body=folder_metadata, fields="id"),
+                request_id=paper_id,
+            )
+        try:
+            batch.execute()
+        except Exception as e:
+            for paper_id in chunk:
+                errors.setdefault(paper_id, e)
+
+    return BatchFolderResult(folder_ids=folder_ids, errors=errors)
 
 
 def upload_file_to_folder(

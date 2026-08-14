@@ -1,4 +1,4 @@
-# Brand Guide — Open Paper Shelf
+# Brand Guide — Paper Butler
 
 This is the source of truth for the app's visual identity. Any agent or
 contributor touching UI copy, colors, fonts, or icons should follow this
@@ -12,7 +12,7 @@ explicit decision to support one.
 
 **Status: accent color under reconsideration.** The green accent below
 reads as "dirty" in practice and is likely to change — see
-[open-paper-shelf/docs/BRANDING_NOTES.md](../open-paper-shelf/docs/BRANDING_NOTES.md)
+[paper-butler/docs/BRANDING_NOTES.md](../paper-butler/docs/BRANDING_NOTES.md)
 for the open question and next steps. Everything else here (dark base,
 typography, layout mechanism) is settled and working well.
 
@@ -52,7 +52,7 @@ them to change before this branch is considered done.
 Once a final asset is chosen, it should ship as:
 
 - A square icon (works as favicon and Streamlit `st.logo(icon_image=...)`)
-- A wordmark lockup (icon + "Open Paper Shelf", for `st.logo(image=...)`)
+- A wordmark lockup (icon + "Paper Butler", for `st.logo(image=...)`)
 
 ## Do / Don't
 

@@ -11,11 +11,13 @@ from googleapiclient.errors import HttpError
 from pytest_mock import MockerFixture
 
 from backend.drive import (
+    _batch_trash,
     _escape_drive_query_value,
     _get_or_create_folder,
     add_oauth_flow,
     create_library,
     create_paper_folder,
+    create_paper_folders_batch,
     delete_library,
     delete_paper_folder,
     download_file,
@@ -28,6 +30,8 @@ from backend.drive import (
     save_credentials,
     upload_file_to_folder,
     upload_library_index,
+    DriveTransientError,
+    DRIVE_BATCH_TRASH_RETRY_DELAY_SECONDS,
     OAUTH_FLOWS,
     REDIRECT_URI,
     SCOPES,
@@ -271,6 +275,56 @@ class TestFolderLookups:
         assert func(mock_creds, *extra_args) == expected_id
 
 
+class TestGetOrCreateRootFolderLegacyFallback:
+    """Test suite for get_or_create_root_folder's legacy-name fallback."""
+
+    def test_uses_current_name_folder_when_it_exists(
+        self, mock_build: MagicMock, mock_creds: MagicMock
+    ) -> None:
+        """Test the current FOLDER_NAME folder is used without checking the
+        legacy name when it already exists."""
+        mock_service = MagicMock()
+        mock_build.return_value = mock_service
+        mock_service.files().list().execute.return_value = {
+            "files": [{"id": "root_current"}]
+        }
+        calls_before = mock_service.files().list.call_count
+
+        assert get_or_create_root_folder(mock_creds) == "root_current"
+        assert mock_service.files().list.call_count == calls_before + 1
+
+    def test_falls_back_to_legacy_name_folder(
+        self, mock_build: MagicMock, mock_creds: MagicMock
+    ) -> None:
+        """Regression test: a pre-rename ("open-paper-shelf-lib") root folder
+        must be reused rather than orphaned by a second, newly created
+        FOLDER_NAME folder."""
+        mock_service = MagicMock()
+        mock_build.return_value = mock_service
+        mock_service.files().list().execute.side_effect = [
+            {"files": []},
+            {"files": [{"id": "root_legacy"}]},
+        ]
+
+        assert get_or_create_root_folder(mock_creds) == "root_legacy"
+        mock_service.files().create.assert_not_called()
+
+    def test_creates_current_name_folder_when_neither_exists(
+        self, mock_build: MagicMock, mock_creds: MagicMock
+    ) -> None:
+        """Test a new FOLDER_NAME folder is created when neither it nor the
+        legacy folder exists yet."""
+        mock_service = MagicMock()
+        mock_build.return_value = mock_service
+        mock_service.files().list().execute.side_effect = [
+            {"files": []},
+            {"files": []},
+        ]
+        mock_service.files().create().execute.return_value = {"id": "root_new"}
+
+        assert get_or_create_root_folder(mock_creds) == "root_new"
+
+
 class TestListLibraries:
     """Test suite for list_libraries."""
 
@@ -461,6 +515,212 @@ class TestDeleteLibrary:
 
         with pytest.raises(HttpError):
             delete_library(mock_creds, "lib_123")
+
+
+def _install_flaky_batch(
+    execute: Callable[[str, Callable[[str, Any, Any], None]], None],
+) -> MagicMock:
+    """Rigs a MagicMock Drive service's new_batch_http_request() to run a
+    single-item batch synchronously via a caller-supplied `execute`, so
+    _batch_trash's retry logic can be exercised attempt-by-attempt.
+
+    Args:
+        execute (Callable[[str, Callable], None]): Called with the added
+            request_id and the batch callback once `batch.execute()` runs.
+
+    Returns:
+        MagicMock: The rigged Drive service.
+    """
+    mock_service = MagicMock()
+    added_ids: List[str] = []
+
+    def new_batch_http_request(callback: Any) -> MagicMock:
+        batch = MagicMock()
+
+        def add(_request: Any, request_id: str) -> None:
+            added_ids.append(request_id)
+
+        def do_execute() -> None:
+            execute(added_ids[-1], callback)
+
+        batch.add.side_effect = add
+        batch.execute.side_effect = do_execute
+        return batch
+
+    mock_service.new_batch_http_request.side_effect = new_batch_http_request
+    return mock_service
+
+
+class TestBatchTrashRetriesTransientErrors:
+    """Test suite for _batch_trash's retry-on-transient-error behavior."""
+
+    def test_retries_a_transient_error_and_then_succeeds(self) -> None:
+        """Test a 503 transient failure is retried (after sleeping) and the
+        call succeeds once the retried attempt goes through cleanly."""
+        attempts = {"count": 0}
+
+        def execute(request_id: str, callback: Callable[[str, Any, Any], None]) -> None:
+            attempts["count"] += 1
+            if attempts["count"] == 1:
+                resp = MagicMock(status=503)
+                callback(request_id, None, HttpError(resp, b"transient"))
+            else:
+                callback(request_id, {"id": request_id}, None)
+
+        mock_service = _install_flaky_batch(execute)
+        sleeps: List[float] = []
+
+        _batch_trash(mock_service, ["file_1"], sleep_fn=sleeps.append)
+
+        assert attempts["count"] == 2
+        assert sleeps == [DRIVE_BATCH_TRASH_RETRY_DELAY_SECONDS]
+
+    def test_raises_drive_transient_error_after_exhausting_retries(self) -> None:
+        """Test repeated 503s exhaust the retry budget and surface a
+        DriveTransientError (a user-friendly error) instead of the raw
+        HttpError once retries run out."""
+
+        def execute(request_id: str, callback: Callable[[str, Any, Any], None]) -> None:
+            resp = MagicMock(status=503)
+            callback(request_id, None, HttpError(resp, b"transient"))
+
+        mock_service = _install_flaky_batch(execute)
+
+        with pytest.raises(DriveTransientError):
+            _batch_trash(
+                mock_service, ["file_1"], max_retries=2, sleep_fn=lambda _: None
+            )
+
+    def test_does_not_retry_a_non_transient_error(self) -> None:
+        """Test a non-transient failure (e.g. 403 lack of authorization)
+        surfaces immediately as the underlying HttpError, without wasting
+        retries on a failure that retrying can't fix."""
+        attempts = {"count": 0}
+
+        def execute(request_id: str, callback: Callable[[str, Any, Any], None]) -> None:
+            attempts["count"] += 1
+            resp = MagicMock(status=403)
+            callback(request_id, None, HttpError(resp, b"forbidden"))
+
+        mock_service = _install_flaky_batch(execute)
+
+        with pytest.raises(HttpError):
+            _batch_trash(mock_service, ["file_1"], sleep_fn=lambda _: None)
+
+        assert attempts["count"] == 1
+
+
+class TestCreatePaperFoldersBatch:
+    """Test suite for create_paper_folders_batch."""
+
+    def test_creates_every_folder_in_a_single_batch(
+        self, mock_build: MagicMock, mock_creds: MagicMock
+    ) -> None:
+        """Test every paper's folder is created via one batched request,
+        instead of one `files().create()` round-trip per paper."""
+        mock_service = MagicMock()
+        mock_build.return_value = mock_service
+        get_added_ids = _install_fake_batch(mock_service)
+
+        result = create_paper_folders_batch(
+            mock_creds, "papers_123", ["paper_1", "paper_2", "paper_3"]
+        )
+
+        assert get_added_ids() == ["paper_1", "paper_2", "paper_3"]
+        mock_service.new_batch_http_request.assert_called_once()
+        assert result.folder_ids == {
+            "paper_1": "paper_1",
+            "paper_2": "paper_2",
+            "paper_3": "paper_3",
+        }
+        assert result.errors == {}
+
+    def test_chunks_requests_when_over_the_batch_size_limit(
+        self, mock_build: MagicMock, mock_creds: MagicMock
+    ) -> None:
+        """Test more papers than Drive's per-batch request limit are split
+        across multiple batch() calls rather than failing or being dropped."""
+        mock_service = MagicMock()
+        mock_build.return_value = mock_service
+        get_added_ids = _install_fake_batch(mock_service)
+        paper_ids = [f"paper_{i}" for i in range(150)]
+
+        result = create_paper_folders_batch(mock_creds, "papers_123", paper_ids)
+
+        assert get_added_ids() == paper_ids
+        assert mock_service.new_batch_http_request.call_count == 2
+        assert len(result.folder_ids) == 150
+
+    def test_one_papers_failure_does_not_prevent_others_from_creating(
+        self, mock_build: MagicMock, mock_creds: MagicMock
+    ) -> None:
+        """Test a per-paper Drive failure is reported for just that paper,
+        instead of failing (or silently dropping) the rest of the batch."""
+        mock_service = MagicMock()
+        mock_build.return_value = mock_service
+        _install_fake_batch(mock_service, failing_ids=frozenset({"paper_2"}))
+
+        result = create_paper_folders_batch(
+            mock_creds, "papers_123", ["paper_1", "paper_2", "paper_3"]
+        )
+
+        assert result.folder_ids == {"paper_1": "paper_1", "paper_3": "paper_3"}
+        assert set(result.errors) == {"paper_2"}
+        assert isinstance(result.errors["paper_2"], HttpError)
+
+    def test_empty_paper_ids_creates_no_batch(
+        self, mock_build: MagicMock, mock_creds: MagicMock
+    ) -> None:
+        """Test an empty paper_ids list skips creating a batch entirely."""
+        mock_service = MagicMock()
+        mock_build.return_value = mock_service
+
+        result = create_paper_folders_batch(mock_creds, "papers_123", [])
+
+        mock_service.new_batch_http_request.assert_not_called()
+        assert result.folder_ids == {}
+        assert result.errors == {}
+
+    def test_a_chunks_execute_failure_does_not_leak_prior_chunks_folders(
+        self, mock_build: MagicMock, mock_creds: MagicMock
+    ) -> None:
+        """Test a whole-batch failure (e.g. a network error) on a later
+        chunk's execute() call is recorded as a per-paper error for that
+        chunk, instead of propagating out and losing the folder IDs already
+        collected from earlier, successfully executed chunks."""
+        mock_service = MagicMock()
+        mock_build.return_value = mock_service
+        resp = MagicMock(status=500)
+        network_error = HttpError(resp, b"internal error")
+        batches: List[MagicMock] = []
+
+        def new_batch_http_request(callback: Any) -> MagicMock:
+            batch = MagicMock()
+            added_ids: List[str] = []
+            batch.add.side_effect = lambda _request, request_id: added_ids.append(
+                request_id
+            )
+            is_second_chunk = len(batches) == 1
+
+            def execute() -> None:
+                if is_second_chunk:
+                    raise network_error
+                for request_id in added_ids:
+                    callback(request_id, {"id": request_id}, None)
+
+            batch.execute.side_effect = execute
+            batches.append(batch)
+            return batch
+
+        mock_service.new_batch_http_request.side_effect = new_batch_http_request
+        paper_ids = [f"paper_{i}" for i in range(150)]
+
+        result = create_paper_folders_batch(mock_creds, "papers_123", paper_ids)
+
+        assert len(result.folder_ids) == 100
+        assert set(result.folder_ids) == set(paper_ids[:100])
+        assert set(result.errors) == set(paper_ids[100:])
+        assert all(error is network_error for error in result.errors.values())
 
 
 class TestGetLibraryIndexFile:

@@ -23,6 +23,7 @@ from backend.huggingface_client import (
     find_similar_papers,
     generate_paper_metadata,
     get_inference_client,
+    is_hf_token_configured,
 )
 from backend.models import LibraryIndex, PaperIndexEntry
 
@@ -213,6 +214,25 @@ class TestGetInferenceClient:
         mock_client_cls = mocker.patch("backend.huggingface_client.InferenceClient")
         get_inference_client()
         mock_client_cls.assert_called_once_with(token="env-token")
+
+
+class TestIsHfTokenConfigured:
+    """Test suite for is_hf_token_configured."""
+
+    def test_returns_true_when_env_var_set(self, mocker: MockerFixture) -> None:
+        """Test True is returned when HF_TOKEN is set in the environment."""
+        mocker.patch.dict("os.environ", {"HF_TOKEN": "some-token"}, clear=True)
+        assert is_hf_token_configured() is True
+
+    def test_returns_false_when_env_var_unset(self, mocker: MockerFixture) -> None:
+        """Test False is returned when HF_TOKEN is absent from the environment."""
+        mocker.patch.dict("os.environ", {}, clear=True)
+        assert is_hf_token_configured() is False
+
+    def test_returns_false_when_env_var_empty(self, mocker: MockerFixture) -> None:
+        """Test False is returned when HF_TOKEN is set to an empty string."""
+        mocker.patch.dict("os.environ", {"HF_TOKEN": ""}, clear=True)
+        assert is_hf_token_configured() is False
 
 
 class TestCallWithRetry:
@@ -489,6 +509,18 @@ class TestCosineSimilarity:
         with pytest.raises(ValueError, match="same length"):
             cosine_similarity([1.0, 2.0], [1.0, 2.0, 3.0])
 
+    def test_precomputed_norm_a_matches_computed_norm_a(self) -> None:
+        """Test passing a pre-computed norm_a gives the same score as
+        letting cosine_similarity compute it itself."""
+        a, b = [1.0, 2.0, 3.0], [3.0, 2.0, 1.0]
+        norm_a = sum(x * x for x in a) ** 0.5
+        assert cosine_similarity(a, b, norm_a=norm_a) == cosine_similarity(a, b)
+
+    def test_precomputed_zero_norm_a_returns_zero(self) -> None:
+        """Test a pre-computed zero norm_a is honored rather than
+        recomputed from `a`."""
+        assert cosine_similarity([1.0, 2.0], [1.0, 2.0], norm_a=0.0) == 0.0
+
 
 def _index_with(entries: dict[str, PaperIndexEntry]) -> LibraryIndex:
     """Builds a LibraryIndex with the given {pid: PaperIndexEntry} entries."""
@@ -552,3 +584,35 @@ class TestFindSimilarPapers:
         )
         matches = find_similar_papers([1.0, 0.0, 0.0], index, threshold=0.9)
         assert [m[0] for m in matches] == ["a"]
+
+    def test_skips_entry_with_zero_norm_embedding(self) -> None:
+        """Test an entry whose embedding is non-empty but all-zero is
+        skipped rather than raising, while other valid entries still
+        match."""
+        index = _index_with(
+            {
+                "a": _entry("A", [0.0, 0.0]),
+                "b": _entry("B", [1.0, 0.0]),
+            }
+        )
+        matches = find_similar_papers([1.0, 0.0], index, threshold=0.9)
+        assert [m[0] for m in matches] == ["b"]
+
+    def test_empty_query_embedding_returns_empty_list(self) -> None:
+        """Test an empty query embedding returns [] without raising."""
+        index = _index_with({"a": _entry("A", [1.0, 0.0])})
+        assert find_similar_papers([], index, threshold=0.9) == []
+
+    def test_zero_norm_query_returns_empty_list_above_zero_threshold(self) -> None:
+        """Test an all-zero query embedding returns [] when threshold > 0,
+        since no entry could ever score above 0.0 against it."""
+        index = _index_with({"a": _entry("A", [1.0, 0.0])})
+        assert find_similar_papers([0.0, 0.0], index, threshold=0.9) == []
+
+    def test_zero_norm_query_matches_at_zero_threshold(self) -> None:
+        """Test an all-zero (or empty) query embedding still yields score-0.0
+        matches when threshold <= 0.0, matching cosine_similarity's own
+        zero-norm contract instead of always short-circuiting to []."""
+        index = _index_with({"a": _entry("A", [1.0, 0.0])})
+        matches = find_similar_papers([0.0, 0.0], index, threshold=0.0)
+        assert matches == [("a", "A", 0.0)]
