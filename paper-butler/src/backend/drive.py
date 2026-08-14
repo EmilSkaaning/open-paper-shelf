@@ -2,6 +2,7 @@ from typing import Callable, NamedTuple, Optional, List, Dict, Any
 from pathlib import Path
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import Flow
+from google.auth.exceptions import RefreshError
 from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
@@ -78,6 +79,24 @@ def get_oauth_flow() -> Flow:
     )
 
 
+# Set by load_credentials_from_file() when a refresh fails because the
+# stored token was revoked/expired, so callers (the Streamlit UI) can show a
+# specific "please reconnect" message instead of the generic
+# not-authenticated state. Reset at the start of every call.
+_last_refresh_revoked: bool = False
+
+
+def token_was_revoked() -> bool:
+    """Reports whether the most recent load_credentials_from_file() call
+    found a token that failed to refresh because it was revoked or expired.
+
+    Returns:
+        bool: True if the last call deleted a stale token after a
+        RefreshError; False otherwise.
+    """
+    return _last_refresh_revoked
+
+
 def load_credentials_from_file() -> Optional[Credentials]:
     """Loads and, if needed, refreshes cached OAuth credentials from disk.
 
@@ -85,12 +104,23 @@ def load_credentials_from_file() -> Optional[Credentials]:
         Optional[Credentials]: Valid credentials loaded from TOKEN_PATH, or None
         if no token file exists or the token is invalid and cannot be refreshed.
     """
+    global _last_refresh_revoked
+    _last_refresh_revoked = False
     creds: Optional[Credentials] = None
     if TOKEN_PATH.exists():
         creds = Credentials.from_authorized_user_file(str(TOKEN_PATH), SCOPES)
     if creds and not creds.valid:
         if creds.expired and creds.refresh_token:
-            creds.refresh(Request())
+            try:
+                creds.refresh(Request())
+            except RefreshError:
+                logger.warning(
+                    "Stored Google OAuth token has been expired or revoked; "
+                    "deleting it so the user can re-authenticate."
+                )
+                TOKEN_PATH.unlink(missing_ok=True)
+                _last_refresh_revoked = True
+                return None
             with open(TOKEN_PATH, "w") as token:
                 token.write(creds.to_json())
         else:

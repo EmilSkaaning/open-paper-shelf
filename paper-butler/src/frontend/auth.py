@@ -8,10 +8,12 @@ from pydantic import BaseModel, Field, ValidationError
 
 from backend.drive import (
     OAUTH_FLOWS,
+    TOKEN_PATH,
     add_oauth_flow,
     get_oauth_flow,
     load_credentials_from_file,
     save_credentials,
+    token_was_revoked,
 )
 
 
@@ -42,6 +44,12 @@ def authenticate_user() -> Optional[Credentials]:
     creds = load_credentials_from_file()
     if creds:
         return creds
+
+    if token_was_revoked():
+        st.error(
+            "Your Google session has expired or been revoked — "
+            "please reconnect your account."
+        )
 
     query_params = st.query_params
     if "code" in query_params:
@@ -87,4 +95,10 @@ def authenticate_user() -> Optional[Credentials]:
 
     st.warning("Please authenticate to access your Google Drive.")
     st.link_button("Login with Google", st.session_state.auth_url)
+    if st.button("Reconnect Google account"):
+        TOKEN_PATH.unlink(missing_ok=True)
+        st.session_state.pop("auth_flow", None)
+        st.session_state.pop("oauth_state", None)
+        st.session_state.pop("auth_url", None)
+        st.rerun()
     return None

@@ -221,6 +221,38 @@ class TestLoadCredentialsFromFile:
         else:
             assert result is mock_creds
 
+    def test_refresh_error_deletes_stale_token_and_returns_none(
+        self, mocker: MockerFixture
+    ) -> None:
+        """Test a revoked/expired token's RefreshError is caught, not raised.
+
+        On RefreshError from creds.refresh(), the stale token.json must be
+        deleted and None returned, instead of the exception propagating up
+        into the Streamlit UI as a raw traceback.
+        """
+        from google.auth.exceptions import RefreshError
+
+        mocker.patch("backend.drive.Path.exists", return_value=True)
+
+        mock_creds = mocker.MagicMock(spec=Credentials)
+        mock_creds.valid = False
+        mock_creds.expired = True
+        mock_creds.refresh_token = "dummy_token"
+        mock_creds.refresh.side_effect = RefreshError(
+            "invalid_grant: Token has been expired or revoked."
+        )
+
+        mocker.patch(
+            "backend.drive.Credentials.from_authorized_user_file",
+            return_value=mock_creds,
+        )
+        mock_unlink = mocker.patch("backend.drive.Path.unlink")
+
+        result = load_credentials_from_file()
+
+        assert result is None
+        mock_unlink.assert_called_once_with(missing_ok=True)
+
 
 class TestSaveCredentials:
     """Test suite for save_credentials."""
