@@ -90,7 +90,7 @@ async def save_edited_pdf_route(
             the streamed body exceeds MAX_EDITED_PDF_BYTES, 422 if the body
             is not a valid PDF, 502 on a Google Drive failure.
     """
-    creds = await run_in_threadpool(load_credentials_from_file)
+    creds = (await run_in_threadpool(load_credentials_from_file)).credentials
     if creds is None:
         raise HTTPException(
             status_code=401, detail="Not authenticated with Google Drive."

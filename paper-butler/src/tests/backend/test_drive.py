@@ -168,7 +168,9 @@ class TestLoadCredentialsFromFile:
         """Test returns None when token.json does not exist."""
         mocker.patch("backend.drive.Path.exists", return_value=False)
 
-        assert load_credentials_from_file() is None
+        result = load_credentials_from_file()
+        assert result.credentials is None
+        assert result.revoked is False
 
     @pytest.mark.parametrize(
         "is_valid, is_expired, has_refresh, expected_refresh_called",
@@ -215,11 +217,45 @@ class TestLoadCredentialsFromFile:
         if expected_refresh_called:
             mock_creds.refresh.assert_called_once()
             mock_open.assert_called_once_with(TOKEN_PATH, "w")
-            assert result is mock_creds
+            assert result.credentials is mock_creds
         elif not is_valid:
-            assert result is None
+            assert result.credentials is None
         else:
-            assert result is mock_creds
+            assert result.credentials is mock_creds
+        assert result.revoked is False
+
+    def test_refresh_error_deletes_stale_token_and_returns_none(
+        self, mocker: MockerFixture
+    ) -> None:
+        """Test a revoked/expired token's RefreshError is caught, not raised.
+
+        On RefreshError from creds.refresh(), the stale token.json must be
+        deleted and None returned, instead of the exception propagating up
+        into the Streamlit UI as a raw traceback.
+        """
+        from google.auth.exceptions import RefreshError
+
+        mocker.patch("backend.drive.Path.exists", return_value=True)
+
+        mock_creds = mocker.MagicMock(spec=Credentials)
+        mock_creds.valid = False
+        mock_creds.expired = True
+        mock_creds.refresh_token = "dummy_token"
+        mock_creds.refresh.side_effect = RefreshError(
+            "invalid_grant: Token has been expired or revoked."
+        )
+
+        mocker.patch(
+            "backend.drive.Credentials.from_authorized_user_file",
+            return_value=mock_creds,
+        )
+        mock_unlink = mocker.patch("backend.drive.Path.unlink")
+
+        result = load_credentials_from_file()
+
+        assert result.credentials is None
+        assert result.revoked is True
+        mock_unlink.assert_called_once_with(missing_ok=True)
 
 
 class TestSaveCredentials:

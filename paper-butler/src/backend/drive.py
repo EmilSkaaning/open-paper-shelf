@@ -2,6 +2,7 @@ from typing import Callable, NamedTuple, Optional, List, Dict, Any
 from pathlib import Path
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import Flow
+from google.auth.exceptions import RefreshError
 from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
@@ -78,24 +79,46 @@ def get_oauth_flow() -> Flow:
     )
 
 
-def load_credentials_from_file() -> Optional[Credentials]:
+class CredentialsLoadResult(NamedTuple):
+    """Result of loading cached OAuth credentials from disk.
+
+    Attributes:
+        credentials: Valid credentials loaded from TOKEN_PATH, or None if no
+            token file exists or the token is invalid and cannot be refreshed.
+        revoked: True if a stored token failed to refresh because it was
+            revoked or expired (and was deleted as a result); False otherwise.
+    """
+
+    credentials: Optional[Credentials]
+    revoked: bool
+
+
+def load_credentials_from_file() -> CredentialsLoadResult:
     """Loads and, if needed, refreshes cached OAuth credentials from disk.
 
     Returns:
-        Optional[Credentials]: Valid credentials loaded from TOKEN_PATH, or None
-        if no token file exists or the token is invalid and cannot be refreshed.
+        CredentialsLoadResult: The loaded credentials (or None) plus whether
+        a stored token was found to be revoked/expired.
     """
     creds: Optional[Credentials] = None
     if TOKEN_PATH.exists():
         creds = Credentials.from_authorized_user_file(str(TOKEN_PATH), SCOPES)
     if creds and not creds.valid:
         if creds.expired and creds.refresh_token:
-            creds.refresh(Request())
+            try:
+                creds.refresh(Request())
+            except RefreshError:
+                logger.warning(
+                    "Stored Google OAuth token has been expired or revoked; "
+                    "deleting it so the user can re-authenticate."
+                )
+                TOKEN_PATH.unlink(missing_ok=True)
+                return CredentialsLoadResult(credentials=None, revoked=True)
             with open(TOKEN_PATH, "w") as token:
                 token.write(creds.to_json())
         else:
             creds = None
-    return creds
+    return CredentialsLoadResult(credentials=creds, revoked=False)
 
 
 def save_credentials(creds: Credentials) -> None:

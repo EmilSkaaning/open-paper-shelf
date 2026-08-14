@@ -21,7 +21,7 @@ import frontend.downloads as downloads
 import frontend.library as library
 import frontend.metadata_generation as metadata_generation
 import frontend.uploads as uploads
-from backend.drive import BatchFolderResult, DriveTransientError
+from backend.drive import BatchFolderResult, CredentialsLoadResult, DriveTransientError
 from backend.huggingface_client import GeneratedMetadata
 from backend.models import LibraryIndex, PaperIndexEntry, PaperMetadata
 from frontend.constants import (
@@ -912,7 +912,9 @@ class TestAuthenticateUser:
         """Test valid cached credentials short-circuit the OAuth flow entirely."""
         cached_creds = MagicMock()
         mocker.patch.object(
-            auth, "load_credentials_from_file", return_value=cached_creds
+            auth,
+            "load_credentials_from_file",
+            return_value=CredentialsLoadResult(credentials=cached_creds, revoked=False),
         )
 
         result = app.authenticate_user()
@@ -934,7 +936,11 @@ class TestAuthenticateUser:
         mock_flow.credentials = mock_creds
         app.OAUTH_FLOWS["state1"] = mock_flow
         fake_st.query_params = {"code": "abc123", "state": "state1"}
-        mocker.patch.object(auth, "load_credentials_from_file", return_value=None)
+        mocker.patch.object(
+            auth,
+            "load_credentials_from_file",
+            return_value=CredentialsLoadResult(credentials=None, revoked=False),
+        )
         mock_save_creds = mocker.patch.object(auth, "save_credentials")
 
         with pytest.raises(stop_rerun):
@@ -951,7 +957,11 @@ class TestAuthenticateUser:
         """An unknown/forged state (not in OAUTH_FLOWS) must be rejected as a
         possible CSRF attempt, never call fetch_token."""
         fake_st.query_params = {"code": "abc123", "state": "forged-state"}
-        mocker.patch.object(auth, "load_credentials_from_file", return_value=None)
+        mocker.patch.object(
+            auth,
+            "load_credentials_from_file",
+            return_value=CredentialsLoadResult(credentials=None, revoked=False),
+        )
 
         result = app.authenticate_user()
 
@@ -965,7 +975,11 @@ class TestAuthenticateUser:
         """Regression test: a callback with a code but no state param must
         be rejected as a CSRF mismatch rather than raising."""
         fake_st.query_params = {"code": "abc123"}
-        mocker.patch.object(auth, "load_credentials_from_file", return_value=None)
+        mocker.patch.object(
+            auth,
+            "load_credentials_from_file",
+            return_value=CredentialsLoadResult(credentials=None, revoked=False),
+        )
 
         result = app.authenticate_user()
 
@@ -981,7 +995,11 @@ class TestAuthenticateUser:
         mock_flow.fetch_token.side_effect = RuntimeError("token exchange failed")
         app.OAUTH_FLOWS["state1"] = mock_flow
         fake_st.query_params = {"code": "abc123", "state": "state1"}
-        mocker.patch.object(auth, "load_credentials_from_file", return_value=None)
+        mocker.patch.object(
+            auth,
+            "load_credentials_from_file",
+            return_value=CredentialsLoadResult(credentials=None, revoked=False),
+        )
 
         result = app.authenticate_user()
 
@@ -999,7 +1017,11 @@ class TestAuthenticateUser:
             "https://accounts.google.com/auth",
             "new-state",
         )
-        mocker.patch.object(auth, "load_credentials_from_file", return_value=None)
+        mocker.patch.object(
+            auth,
+            "load_credentials_from_file",
+            return_value=CredentialsLoadResult(credentials=None, revoked=False),
+        )
         mocker.patch.object(auth, "get_oauth_flow", return_value=mock_flow)
         mock_add_flow = mocker.patch.object(auth, "add_oauth_flow")
 
@@ -1018,7 +1040,11 @@ class TestAuthenticateUser:
         self, fake_st: MagicMock, mocker: MockerFixture
     ) -> None:
         """Test a failure to build the OAuth flow surfaces a clear error instead of crashing."""
-        mocker.patch.object(auth, "load_credentials_from_file", return_value=None)
+        mocker.patch.object(
+            auth,
+            "load_credentials_from_file",
+            return_value=CredentialsLoadResult(credentials=None, revoked=False),
+        )
         mocker.patch.object(auth, "get_oauth_flow", side_effect=RuntimeError("boom"))
 
         result = app.authenticate_user()
@@ -1026,6 +1052,86 @@ class TestAuthenticateUser:
         assert result is None
         fake_st.error.assert_called_once()
         assert "Could not start Google sign-in" in fake_st.error.call_args[0][0]
+
+    def test_revoked_token_shows_descriptive_message(
+        self, fake_st: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """Test a revoked/expired token surfaces a clear reconnect message
+        instead of the generic not-authenticated warning alone."""
+        mocker.patch.object(
+            auth,
+            "load_credentials_from_file",
+            return_value=CredentialsLoadResult(credentials=None, revoked=True),
+        )
+        mock_flow = MagicMock()
+        mock_flow.authorization_url.return_value = (
+            "https://accounts.google.com/auth",
+            "new-state",
+        )
+        mocker.patch.object(auth, "get_oauth_flow", return_value=mock_flow)
+
+        result = app.authenticate_user()
+
+        assert result is None
+        fake_st.error.assert_called_once()
+        assert "expired or been revoked" in fake_st.error.call_args[0][0]
+
+    def test_revoked_message_persists_across_rerun(
+        self, fake_st: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """Regression test: the revoked-token message must still show on the
+        next Streamlit rerun, even though the stale token was already
+        deleted so load_credentials_from_file() no longer reports revoked=True."""
+        mocker.patch.object(
+            auth,
+            "load_credentials_from_file",
+            return_value=CredentialsLoadResult(credentials=None, revoked=True),
+        )
+        mock_flow = MagicMock()
+        mock_flow.authorization_url.return_value = (
+            "https://accounts.google.com/auth",
+            "new-state",
+        )
+        mocker.patch.object(auth, "get_oauth_flow", return_value=mock_flow)
+        app.authenticate_user()
+        fake_st.error.reset_mock()
+
+        mocker.patch.object(
+            auth,
+            "load_credentials_from_file",
+            return_value=CredentialsLoadResult(credentials=None, revoked=False),
+        )
+        result = app.authenticate_user()
+
+        assert result is None
+        fake_st.error.assert_called_once()
+        assert "expired or been revoked" in fake_st.error.call_args[0][0]
+
+    def test_revoked_message_clears_after_successful_reconnect(
+        self,
+        fake_st: MagicMock,
+        mocker: MockerFixture,
+        stop_rerun: type[BaseException],
+    ) -> None:
+        """Test the revoked-token flag is cleared once the user re-authenticates,
+        so a later unrelated rerun doesn't keep showing the stale message."""
+        fake_st.session_state[auth.TOKEN_REVOKED_STATE_KEY] = True
+        mock_flow = MagicMock()
+        mock_creds = MagicMock()
+        mock_flow.credentials = mock_creds
+        app.OAUTH_FLOWS["state1"] = mock_flow
+        fake_st.query_params = {"code": "abc123", "state": "state1"}
+        mocker.patch.object(
+            auth,
+            "load_credentials_from_file",
+            return_value=CredentialsLoadResult(credentials=None, revoked=False),
+        )
+        mocker.patch.object(auth, "save_credentials")
+
+        with pytest.raises(stop_rerun):
+            app.authenticate_user()
+
+        assert auth.TOKEN_REVOKED_STATE_KEY not in fake_st.session_state
 
 
 class TestInitLibraryState:
