@@ -114,8 +114,7 @@ this is on top of the mandatory `ruff`/`pyrefly` gates, not a substitute for the
 ## 6. Security Guidelines
 
 * **No hardcoded secrets**: Google OAuth client secrets, API keys, and tokens must never be
-  committed. `token.json` and `credentials.json` stay gitignored; only `credentials.example.json`
-  is tracked.
+  committed. `token.json` and `credentials.json` stay gitignored.
 * **Boundary validation**: All external input is validated via Pydantic models at API boundaries
   (see Section 3's "Input Verification").
 * **No sensitive data in errors**: Error messages returned to the FastAPI or Streamlit UI must not
