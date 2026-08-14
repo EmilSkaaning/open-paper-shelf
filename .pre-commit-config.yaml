@@ -1,4 +1,4 @@
-exclude: ^open-paper-shelf/src/backend/static/pdfjs/
+exclude: ^paper-butler/src/backend/static/pdfjs/
 repos:
   - repo: local
     hooks:

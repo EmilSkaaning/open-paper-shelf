@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
-app = FastAPI(title="Open Paper Shelf API")
+app = FastAPI(title="Paper Butler API")
 
 # Ensure the local papers directory exists before mounting
 PAPERS_DIR.mkdir(exist_ok=True)
@@ -40,7 +40,7 @@ def read_root() -> WelcomeResponse:
     Returns:
         WelcomeResponse: A welcome message wrapped in a Pydantic model.
     """
-    return WelcomeResponse(message="Welcome to Open Paper Shelf API")
+    return WelcomeResponse(message="Welcome to Paper Butler API")
 
 
 class EditedPdfSavedResponse(BaseModel):

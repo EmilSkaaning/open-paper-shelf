@@ -1,13 +1,13 @@
-# Open Paper Shelf
+# Paper Butler
 
 **Your research paper library, backed by your own Google Drive.**
 
-Open Paper Shelf is a self-hosted app for organizing PDF research papers — no
+Paper Butler is a self-hosted app for organizing PDF research papers — no
 separate database, no vendor lock-in. Your papers live in a Google Drive folder
 you already own; this app just gives you a fast, searchable, AI-assisted shelf
 on top of them.
 
-## Why Open Paper Shelf
+## Why Paper Butler
 
 - **Your papers stay yours.** Everything is stored in your own Google Drive —
   no third-party database, no proprietary export format.

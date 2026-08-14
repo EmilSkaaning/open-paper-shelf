@@ -27,7 +27,7 @@ class TestMainEndpoints:
         """
         response = client.get("/")
         assert response.status_code == 200
-        assert response.json() == {"message": "Welcome to Open Paper Shelf API"}
+        assert response.json() == {"message": "Welcome to Paper Butler API"}
 
 
 def _real_pdf_bytes() -> bytes:

@@ -1,4 +1,4 @@
-// Auto-saves this viewer's highlight annotations to the Open Paper Shelf
+// Auto-saves this viewer's highlight annotations to the Paper Butler
 // backend as they're made, so the user never has to manually download and
 // re-upload the annotated PDF. Loaded by viewer.html alongside viewer.mjs.
 //
@@ -13,7 +13,7 @@ const libId = params.get("libId");
 const pid = params.get("pid");
 
 if (!libId || !pid) {
-  console.warn("open-paper-shelf autosave: missing libId/pid, autosave disabled.");
+  console.warn("paper-butler autosave: missing libId/pid, autosave disabled.");
 } else {
   const saveUrl = `/papers/${encodeURIComponent(libId)}/${encodeURIComponent(pid)}/edited`;
   let debounceTimer = null;
@@ -40,7 +40,7 @@ if (!libId || !pid) {
       });
       if (!response.ok) {
         console.error(
-          `open-paper-shelf autosave: save failed (${response.status})`,
+          `paper-butler autosave: save failed (${response.status})`,
           await response.text().catch(() => "")
         );
         // 4xx means the request itself is invalid (e.g. oversized/corrupt
@@ -57,7 +57,7 @@ if (!libId || !pid) {
         app.pdfDocument.annotationStorage.resetModified();
       }
     } catch (err) {
-      console.error("open-paper-shelf autosave: save failed", err);
+      console.error("paper-butler autosave: save failed", err);
       scheduleRetry();
     } finally {
       saveInFlight = false;

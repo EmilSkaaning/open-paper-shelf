@@ -27,7 +27,11 @@ DriveService = Any
 DriveMetadata = Dict[str, Any]
 
 SCOPES: List[str] = ["https://www.googleapis.com/auth/drive.file"]
-FOLDER_NAME: str = "open-paper-shelf-lib"
+FOLDER_NAME: str = "paper-butler-lib"
+# Pre-rename root folder name; existing/dogfood libraries created before the
+# app was renamed still use this, so it's checked as a fallback rather than
+# creating a second, orphaned root folder for those users.
+LEGACY_FOLDER_NAME: str = "open-paper-shelf-lib"
 FOLDER_MIME_TYPE: str = "application/vnd.google-apps.folder"
 REDIRECT_URI: str = "http://localhost:8501/"
 
@@ -120,6 +124,32 @@ def _escape_drive_query_value(value: str) -> str:
     return value.replace("\\", "\\\\").replace("'", "\\'")
 
 
+def _find_folder(
+    service: DriveService, name: str, parent_id: Optional[str] = None
+) -> Optional[str]:
+    """Finds an existing Google Drive folder ID by name, without creating one.
+
+    Args:
+        service (DriveService): The Google Drive API v3 resource service.
+        name (str): The name of the folder to find.
+        parent_id (Optional[str], optional): The ID of the parent folder. Defaults to None.
+
+    Returns:
+        Optional[str]: The Google Drive file ID of the folder, or None if not found.
+    """
+    escaped_name = _escape_drive_query_value(name)
+    query = f"name = '{escaped_name}' and mimeType = '{FOLDER_MIME_TYPE}' and trashed = false"
+    if parent_id:
+        query += f" and '{parent_id}' in parents"
+    results = (
+        service.files().list(q=query, spaces="drive", fields="files(id)").execute()
+    )
+    items = results.get("files", [])
+    if not items:
+        return None
+    return str(items[0].get("id"))
+
+
 def _get_or_create_folder(
     service: DriveService, name: str, parent_id: Optional[str] = None
 ) -> str:
@@ -133,25 +163,39 @@ def _get_or_create_folder(
     Returns:
         str: The Google Drive file ID of the folder.
     """
-    escaped_name = _escape_drive_query_value(name)
-    query = f"name = '{escaped_name}' and mimeType = '{FOLDER_MIME_TYPE}' and trashed = false"
+    existing_id = _find_folder(service, name, parent_id)
+    if existing_id is not None:
+        return existing_id
+    return _create_folder(service, name, parent_id)
+
+
+def _create_folder(
+    service: DriveService, name: str, parent_id: Optional[str] = None
+) -> str:
+    """Creates a new Google Drive folder, without checking if one exists.
+
+    Args:
+        service (DriveService): The Google Drive API v3 resource service.
+        name (str): The name of the folder to create.
+        parent_id (Optional[str], optional): The ID of the parent folder. Defaults to None.
+
+    Returns:
+        str: The Google Drive file ID of the newly created folder.
+    """
+    folder_metadata: DriveMetadata = {"name": name, "mimeType": FOLDER_MIME_TYPE}
     if parent_id:
-        query += f" and '{parent_id}' in parents"
-    results = (
-        service.files().list(q=query, spaces="drive", fields="files(id)").execute()
-    )
-    items = results.get("files", [])
-    if not items:
-        folder_metadata: DriveMetadata = {"name": name, "mimeType": FOLDER_MIME_TYPE}
-        if parent_id:
-            folder_metadata["parents"] = [parent_id]
-        folder = service.files().create(body=folder_metadata, fields="id").execute()
-        return str(folder.get("id"))
-    return str(items[0].get("id"))
+        folder_metadata["parents"] = [parent_id]
+    folder = service.files().create(body=folder_metadata, fields="id").execute()
+    return str(folder.get("id"))
 
 
 def get_or_create_root_folder(creds: Credentials) -> str:
     """Gets or creates this app's root library folder in the user's Google Drive.
+
+    Checks for a folder under the current app name first, then falls back to
+    the pre-rename folder name so existing/dogfood libraries aren't orphaned
+    by the "Open Paper Shelf" -> "Paper Butler" rename. Only creates a new
+    folder (under the current name) if neither is found.
 
     Args:
         creds (Credentials): The Google OAuth credentials.
@@ -160,7 +204,12 @@ def get_or_create_root_folder(creds: Credentials) -> str:
         str: The Google Drive file ID of the root folder.
     """
     service: DriveService = build("drive", "v3", credentials=creds)
-    return _get_or_create_folder(service, FOLDER_NAME)
+    existing_id = _find_folder(service, FOLDER_NAME) or _find_folder(
+        service, LEGACY_FOLDER_NAME
+    )
+    if existing_id is not None:
+        return existing_id
+    return _create_folder(service, FOLDER_NAME)
 
 
 def list_libraries(creds: Credentials, root_id: str) -> List[Dict[str, str]]:

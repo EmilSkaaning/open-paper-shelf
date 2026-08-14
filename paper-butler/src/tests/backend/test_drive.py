@@ -275,6 +275,56 @@ class TestFolderLookups:
         assert func(mock_creds, *extra_args) == expected_id
 
 
+class TestGetOrCreateRootFolderLegacyFallback:
+    """Test suite for get_or_create_root_folder's legacy-name fallback."""
+
+    def test_uses_current_name_folder_when_it_exists(
+        self, mock_build: MagicMock, mock_creds: MagicMock
+    ) -> None:
+        """Test the current FOLDER_NAME folder is used without checking the
+        legacy name when it already exists."""
+        mock_service = MagicMock()
+        mock_build.return_value = mock_service
+        mock_service.files().list().execute.return_value = {
+            "files": [{"id": "root_current"}]
+        }
+        calls_before = mock_service.files().list.call_count
+
+        assert get_or_create_root_folder(mock_creds) == "root_current"
+        assert mock_service.files().list.call_count == calls_before + 1
+
+    def test_falls_back_to_legacy_name_folder(
+        self, mock_build: MagicMock, mock_creds: MagicMock
+    ) -> None:
+        """Regression test: a pre-rename ("open-paper-shelf-lib") root folder
+        must be reused rather than orphaned by a second, newly created
+        FOLDER_NAME folder."""
+        mock_service = MagicMock()
+        mock_build.return_value = mock_service
+        mock_service.files().list().execute.side_effect = [
+            {"files": []},
+            {"files": [{"id": "root_legacy"}]},
+        ]
+
+        assert get_or_create_root_folder(mock_creds) == "root_legacy"
+        mock_service.files().create.assert_not_called()
+
+    def test_creates_current_name_folder_when_neither_exists(
+        self, mock_build: MagicMock, mock_creds: MagicMock
+    ) -> None:
+        """Test a new FOLDER_NAME folder is created when neither it nor the
+        legacy folder exists yet."""
+        mock_service = MagicMock()
+        mock_build.return_value = mock_service
+        mock_service.files().list().execute.side_effect = [
+            {"files": []},
+            {"files": []},
+        ]
+        mock_service.files().create().execute.return_value = {"id": "root_new"}
+
+        assert get_or_create_root_folder(mock_creds) == "root_new"
+
+
 class TestListLibraries:
     """Test suite for list_libraries."""
 
