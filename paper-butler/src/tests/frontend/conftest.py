@@ -7,7 +7,6 @@ import pytest
 from pytest_mock import MockerFixture
 from pytest_socket import disable_socket, enable_socket
 
-import backend.drive as drive
 import frontend.app as app
 import frontend.auth as auth
 import frontend.library as library
@@ -96,14 +95,6 @@ def clear_oauth_flows() -> Generator[None, None, None]:
     app.OAUTH_FLOWS.clear()
     yield
     app.OAUTH_FLOWS.clear()
-
-
-@pytest.fixture(autouse=True)
-def reset_token_revoked_flag() -> Generator[None, None, None]:
-    """Resets the module-level revoked-token flag before and after each test."""
-    drive._last_refresh_revoked = False
-    yield
-    drive._last_refresh_revoked = False
 
 
 @pytest.fixture(autouse=True)

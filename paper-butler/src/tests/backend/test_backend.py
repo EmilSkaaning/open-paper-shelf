@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 from pypdf import PdfWriter
 from pytest_mock import MockerFixture
 
+from backend.drive import CredentialsLoadResult
 from backend.main import save_edited_pdf_route
 from backend.models import LibraryIndex, PaperIndexEntry
 
@@ -71,7 +72,10 @@ class TestSaveEditedPdfRoute:
         self, client: TestClient, mocker: MockerFixture
     ) -> None:
         """Test an unauthenticated request is rejected before touching disk."""
-        mocker.patch("backend.main.load_credentials_from_file", return_value=None)
+        mocker.patch(
+            "backend.main.load_credentials_from_file",
+            return_value=CredentialsLoadResult(credentials=None, revoked=False),
+        )
 
         response = client.post(
             "/papers/" + "a" * 20 + "/" + "b" * 32 + "/edited",
@@ -88,7 +92,8 @@ class TestSaveEditedPdfRoute:
         Drive-ID charset) is rejected with 400, not a 500 from an unguarded
         filesystem access."""
         mocker.patch(
-            "backend.main.load_credentials_from_file", return_value=MagicMock()
+            "backend.main.load_credentials_from_file",
+            return_value=CredentialsLoadResult(credentials=MagicMock(), revoked=False),
         )
 
         response = client.post(
@@ -104,7 +109,8 @@ class TestSaveEditedPdfRoute:
     ) -> None:
         """Test non-PDF bytes are rejected with 422."""
         mocker.patch(
-            "backend.main.load_credentials_from_file", return_value=MagicMock()
+            "backend.main.load_credentials_from_file",
+            return_value=CredentialsLoadResult(credentials=MagicMock(), revoked=False),
         )
 
         response = client.post(
@@ -131,7 +137,8 @@ class TestSaveEditedPdfRoute:
         client-side request buffering.
         """
         mocker.patch(
-            "backend.main.load_credentials_from_file", return_value=MagicMock()
+            "backend.main.load_credentials_from_file",
+            return_value=CredentialsLoadResult(credentials=MagicMock(), revoked=False),
         )
         mocker.patch("backend.main.MAX_EDITED_PDF_BYTES", 20 * 1024 * 1024)
 
@@ -158,7 +165,8 @@ class TestSaveEditedPdfRoute:
     ) -> None:
         """Test a valid save returns 200 with the new Drive file id."""
         mocker.patch(
-            "backend.main.load_credentials_from_file", return_value=MagicMock()
+            "backend.main.load_credentials_from_file",
+            return_value=CredentialsLoadResult(credentials=MagicMock(), revoked=False),
         )
         mocker.patch("backend.pdf_upload.PAPERS_DIR", tmp_path)
         lib_id = "a" * 20

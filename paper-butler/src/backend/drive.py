@@ -79,33 +79,27 @@ def get_oauth_flow() -> Flow:
     )
 
 
-# Set by load_credentials_from_file() when a refresh fails because the
-# stored token was revoked/expired, so callers (the Streamlit UI) can show a
-# specific "please reconnect" message instead of the generic
-# not-authenticated state. Reset at the start of every call.
-_last_refresh_revoked: bool = False
+class CredentialsLoadResult(NamedTuple):
+    """Result of loading cached OAuth credentials from disk.
 
-
-def token_was_revoked() -> bool:
-    """Reports whether the most recent load_credentials_from_file() call
-    found a token that failed to refresh because it was revoked or expired.
-
-    Returns:
-        bool: True if the last call deleted a stale token after a
-        RefreshError; False otherwise.
+    Attributes:
+        credentials: Valid credentials loaded from TOKEN_PATH, or None if no
+            token file exists or the token is invalid and cannot be refreshed.
+        revoked: True if a stored token failed to refresh because it was
+            revoked or expired (and was deleted as a result); False otherwise.
     """
-    return _last_refresh_revoked
+
+    credentials: Optional[Credentials]
+    revoked: bool
 
 
-def load_credentials_from_file() -> Optional[Credentials]:
+def load_credentials_from_file() -> CredentialsLoadResult:
     """Loads and, if needed, refreshes cached OAuth credentials from disk.
 
     Returns:
-        Optional[Credentials]: Valid credentials loaded from TOKEN_PATH, or None
-        if no token file exists or the token is invalid and cannot be refreshed.
+        CredentialsLoadResult: The loaded credentials (or None) plus whether
+        a stored token was found to be revoked/expired.
     """
-    global _last_refresh_revoked
-    _last_refresh_revoked = False
     creds: Optional[Credentials] = None
     if TOKEN_PATH.exists():
         creds = Credentials.from_authorized_user_file(str(TOKEN_PATH), SCOPES)
@@ -119,13 +113,12 @@ def load_credentials_from_file() -> Optional[Credentials]:
                     "deleting it so the user can re-authenticate."
                 )
                 TOKEN_PATH.unlink(missing_ok=True)
-                _last_refresh_revoked = True
-                return None
+                return CredentialsLoadResult(credentials=None, revoked=True)
             with open(TOKEN_PATH, "w") as token:
                 token.write(creds.to_json())
         else:
             creds = None
-    return creds
+    return CredentialsLoadResult(credentials=creds, revoked=False)
 
 
 def save_credentials(creds: Credentials) -> None:

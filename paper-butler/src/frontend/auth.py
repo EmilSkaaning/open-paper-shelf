@@ -12,8 +12,9 @@ from backend.drive import (
     get_oauth_flow,
     load_credentials_from_file,
     save_credentials,
-    token_was_revoked,
 )
+
+TOKEN_REVOKED_STATE_KEY = "token_revoked"
 
 
 class OAuthCallbackParams(BaseModel):
@@ -40,11 +41,15 @@ def authenticate_user() -> Optional[Credentials]:
         Optional[Credentials]: The user's Google OAuth credentials, or None
         if the user is not yet authenticated.
     """
-    creds = load_credentials_from_file()
-    if creds:
-        return creds
+    result = load_credentials_from_file()
+    if result.credentials:
+        st.session_state.pop(TOKEN_REVOKED_STATE_KEY, None)
+        return result.credentials
 
-    if token_was_revoked():
+    if result.revoked:
+        st.session_state[TOKEN_REVOKED_STATE_KEY] = True
+
+    if st.session_state.get(TOKEN_REVOKED_STATE_KEY):
         st.error(
             "Your Google session has expired or been revoked — "
             "please reconnect your account."
@@ -72,6 +77,7 @@ def authenticate_user() -> Optional[Credentials]:
             st.query_params.clear()
             st.session_state.pop("auth_flow", None)
             st.session_state.pop("oauth_state", None)
+            st.session_state.pop(TOKEN_REVOKED_STATE_KEY, None)
             st.success("Successfully authenticated!")
             st.rerun()
         except Exception as e:
