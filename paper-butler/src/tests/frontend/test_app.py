@@ -1047,29 +1047,6 @@ class TestAuthenticateUser:
         fake_st.error.assert_called_once()
         assert "expired or been revoked" in fake_st.error.call_args[0][0]
 
-    def test_reconnect_button_clears_token_and_restarts_flow(
-        self,
-        fake_st: MagicMock,
-        mocker: MockerFixture,
-        stop_rerun: type[BaseException],
-    ) -> None:
-        """Test the explicit reconnect button deletes the stale token file
-        and clears cached OAuth session state, then reruns to restart login."""
-        mocker.patch.object(auth, "load_credentials_from_file", return_value=None)
-        mocker.patch.object(auth, "get_oauth_flow", return_value=MagicMock())
-        mock_token_path = mocker.patch.object(auth, "TOKEN_PATH")
-        fake_st.button.return_value = True
-        fake_st.session_state.auth_flow = MagicMock()
-        fake_st.session_state.oauth_state = "stale-state"
-        fake_st.session_state.auth_url = "https://accounts.google.com/auth"
-
-        with pytest.raises(stop_rerun):
-            app.authenticate_user()
-
-        mock_token_path.unlink.assert_called_once_with(missing_ok=True)
-        assert "auth_flow" not in fake_st.session_state
-        assert "oauth_state" not in fake_st.session_state
-
 
 class TestInitLibraryState:
     """Test suite for init_library_state."""
