@@ -1,7 +1,7 @@
 [project]
-name = "open-paper-shelf"
+name = "paper-butler"
 version = "0.1.0"
-description = "A front-end for papers backed by Google Drive"
+description = "Paper Butler: a front-end for papers backed by Google Drive"
 license = "AGPL-3.0-or-later"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -29,10 +29,10 @@ build-backend = "hatchling.build"
 
 [tool.poe.tasks]
 test = "pytest"
-test-backend = "pytest open-paper-shelf/src/tests/backend --testmon --cov=backend --cov-report=term-missing"
-test-frontend = "pytest open-paper-shelf/src/tests/frontend --testmon --cov=frontend --cov-report=term-missing"
-fastapi = "fastapi dev open-paper-shelf/src/backend/main.py --port 8000"
-streamlit = "streamlit run open-paper-shelf/src/frontend/app.py"
+test-backend = "pytest paper-butler/src/tests/backend --testmon --cov=backend --cov-report=term-missing"
+test-frontend = "pytest paper-butler/src/tests/frontend --testmon --cov=frontend --cov-report=term-missing"
+fastapi = "fastapi dev paper-butler/src/backend/main.py --port 8000"
+streamlit = "streamlit run paper-butler/src/frontend/app.py"
 ruff-format = "ruff format"
 ruff-format-check = "ruff format --check ."
 ruff-check = "ruff check ."
@@ -44,7 +44,7 @@ skylos-check-branch = { shell = "skylos . -a --confidence 80 --diff-base main ||
 check = ["ruff-format-check", "ruff-check", "pyrefly-check", "vulture-check", "skylos-check"]
 
 [tool.pytest.ini_options]
-pythonpath = ["open-paper-shelf/src"]
+pythonpath = ["paper-butler/src"]
 
 
 [tool.hatch.build.targets.wheel]
@@ -77,4 +77,4 @@ project-includes = [
     "**/*.py*",
     "**/*.ipynb",
 ]
-search_path = ["open-paper-shelf/src"]
+search_path = ["paper-butler/src"]

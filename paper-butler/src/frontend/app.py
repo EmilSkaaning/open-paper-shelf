@@ -106,7 +106,7 @@ logger = logging.getLogger(__name__)
 
 st.set_page_config(
     layout="wide",
-    page_title="Open Paper Shelf",
+    page_title="Paper Butler",
     initial_sidebar_state="expanded",
 )
 
@@ -202,7 +202,7 @@ def main() -> None:
     if not creds:
         return
 
-    st.title("📚 Open Paper Shelf")
+    st.title("📚 Paper Butler")
 
     host_warning = get_non_loopback_host_warning()
     if host_warning is not None:
