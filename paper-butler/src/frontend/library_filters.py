@@ -49,12 +49,10 @@ def get_duplicate_pids(index: LibraryIndex) -> set[str]:
         elsewhere in the index, per `find_similar_papers`'s default
         threshold.
     """
-    signature = tuple(
-        sorted(
-            (pid, tuple(entry.embedding))
-            for pid, entry in index.papers.items()
-            if entry.embedding
-        )
+    signature = frozenset(
+        (pid, tuple(entry.embedding))
+        for pid, entry in index.papers.items()
+        if entry.embedding
     )
     cached = st.session_state.get("_duplicate_pids_cache")
     if cached is not None and cached[0] == signature:
