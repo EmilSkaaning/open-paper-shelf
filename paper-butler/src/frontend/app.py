@@ -209,16 +209,17 @@ def main() -> None:
     if not creds:
         return
 
-    _, header_col, _ = st.columns([1, 2, 1])
-    with header_col:
-        if _LOGO_PATH.exists():
-            logo_col, _, _ = st.columns(3)
-            with logo_col:
-                st.image(str(_LOGO_PATH), width="stretch")
-        st.markdown(
-            "<h1 style='text-align: center;'>Paper Butler</h1>",
-            unsafe_allow_html=True,
-        )
+    if not st.session_state.get("selected_paper"):
+        _, header_col, _ = st.columns([1, 2, 1])
+        with header_col:
+            if _LOGO_PATH.exists():
+                logo_col, _, _ = st.columns(3)
+                with logo_col:
+                    st.image(str(_LOGO_PATH), width="stretch")
+            st.markdown(
+                "<h1 style='text-align: center;'>Paper Butler</h1>",
+                unsafe_allow_html=True,
+            )
 
     host_warning = get_non_loopback_host_warning()
     if host_warning is not None:
