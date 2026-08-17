@@ -244,7 +244,7 @@ def main() -> None:
         _, header_col, _ = st.columns([1, 2, 1])
         with header_col:
             if _LOGO_PATH.exists():
-                logo_col, _, _ = st.columns(3)
+                _, logo_col, _ = st.columns(3)
                 with logo_col:
                     st.image(str(_LOGO_PATH), width="stretch")
             st.markdown(
