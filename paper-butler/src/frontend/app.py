@@ -580,7 +580,9 @@ def main() -> None:
                 if st.button(
                     "🗑️",
                     key="trash_icon",
-                    help="Delete selected papers",
+                    help="Delete selected papers"
+                    if checked_pids
+                    else "Select papers to delete",
                     type="secondary",
                     disabled=not checked_pids,
                 ):
@@ -627,7 +629,9 @@ def main() -> None:
                 if st.button(
                     "🏷️",
                     key="add_tag_icon",
-                    help="Add a tag to selected papers",
+                    help="Add a tag to selected papers"
+                    if checked_pids
+                    else "Select papers to tag",
                     type="secondary",
                     disabled=not checked_pids,
                 ):
@@ -636,7 +640,9 @@ def main() -> None:
                 if st.button(
                     "🚫",
                     key="remove_tag_icon",
-                    help="Remove a tag from selected papers",
+                    help="Remove a tag from selected papers"
+                    if checked_pids
+                    else "Select papers to untag",
                     type="secondary",
                     disabled=not checked_pids,
                 ):
@@ -645,7 +651,9 @@ def main() -> None:
                 if st.button(
                     "📥",
                     key="download_icon",
-                    help="Download PDFs for selected papers as a zip",
+                    help="Download PDFs for selected papers as a zip"
+                    if checked_pids
+                    else "Select papers to download",
                     type="secondary",
                     disabled=not checked_pids,
                 ):
@@ -655,7 +663,9 @@ def main() -> None:
                 st.button(
                     "🧹",
                     key="clear_filters_icon",
-                    help="Clear filters",
+                    help="Clear filters"
+                    if filters_active
+                    else "No active filters to clear",
                     type="secondary",
                     disabled=not filters_active,
                     on_click=clear_filters,
