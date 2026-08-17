@@ -244,9 +244,13 @@ def main() -> None:
         _, header_col, _ = st.columns([1, 2, 1])
         with header_col:
             if _LOGO_PATH.exists():
-                _, logo_col, _ = st.columns(3)
-                with logo_col:
-                    st.image(str(_LOGO_PATH), width="stretch")
+                st.markdown(
+                    "<style>.st-key-header_logo { display: flex; "
+                    "justify-content: center; }</style>",
+                    unsafe_allow_html=True,
+                )
+                with st.container(key="header_logo"):
+                    st.image(str(_LOGO_PATH), width=200)
             st.markdown(
                 "<h1 style='text-align: center;'>Paper Butler</h1>",
                 unsafe_allow_html=True,
