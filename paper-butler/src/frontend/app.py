@@ -246,7 +246,7 @@ def main() -> None:
             if _LOGO_PATH.exists():
                 st.markdown(
                     "<style>.st-key-header_logo { display: flex; "
-                    "justify-content: center; }</style>",
+                    "width: 100%; justify-content: center; }</style>",
                     unsafe_allow_html=True,
                 )
                 with st.container(key="header_logo"):
