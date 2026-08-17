@@ -178,6 +178,34 @@ def _toggle_select_all(filtered_pids: list[str]) -> None:
             st.session_state[f"chk_{pid}"] = True
 
 
+def _reset_selected_paper() -> None:
+    """Clears the selected paper, returning the app to the library view."""
+    st.session_state.selected_paper = None
+    _clear_bulk_actions()
+
+
+def _render_logo_reset_button() -> None:
+    """Overlays an invisible button on the top-left logo to reset paper view.
+
+    `st.logo` has no click callback, so a transparent Streamlit button is
+    positioned on top of it via CSS, letting a click on the logo reset the
+    selected paper without a full page reload (which would drop session
+    state like the active library).
+    """
+    st.markdown(
+        "<style>"
+        ".st-key-reset_logo_btn { position: fixed; top: 0; left: 0; "
+        "width: 14rem; height: 3.5rem; z-index: 999999; }"
+        ".st-key-reset_logo_btn button { width: 100%; height: 100%; "
+        "opacity: 0; cursor: pointer; }"
+        "</style>",
+        unsafe_allow_html=True,
+    )
+    if st.button("", key="reset_logo_btn"):
+        _reset_selected_paper()
+        st.rerun()
+
+
 def _uncheck_mark_all_if_unmarked(pid: str) -> None:
     """Clears the "Mark all" toggle when a paper's own checkbox is unmarked.
 
@@ -208,6 +236,9 @@ def main() -> None:
     creds = authenticate_user()
     if not creds:
         return
+
+    if st.session_state.get("selected_paper"):
+        _render_logo_reset_button()
 
     if not st.session_state.get("selected_paper"):
         _, header_col, _ = st.columns([1, 2, 1])
