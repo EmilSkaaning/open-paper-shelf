@@ -2191,6 +2191,47 @@ class TestGetDuplicatePids:
         assert second == set()
         assert cache_after_first[0] != cache_after_second[0]
 
+    def test_embedding_mutated_in_place_invalidates_cache(
+        self, fake_st: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """Test that mutating an embedding list's contents in place (same
+        object identity, different values) still invalidates the cache.
+
+        Guards against regressing to an object-identity-based cache
+        signature (e.g. keying on `id(entry.embedding)`), which would
+        wrongly treat this as unchanged since the list's identity is
+        preserved even though its content changed.
+        """
+        pid1, pid2 = "a" * 32, "b" * 32
+        index = LibraryIndex(
+            papers={
+                pid1: PaperIndexEntry(
+                    title="One",
+                    pdf_file_id="p1",
+                    meta_file_id="m1",
+                    folder_id="f1",
+                    embedding=[1.0, 0.0, 0.0],
+                ),
+                pid2: PaperIndexEntry(
+                    title="Two",
+                    pdf_file_id="p2",
+                    meta_file_id="m2",
+                    folder_id="f2",
+                    embedding=[1.0, 0.0, 0.0],
+                ),
+            }
+        )
+        first = app.get_duplicate_pids(index)
+
+        same_list = index.papers[pid2].embedding
+        same_list[0] = 0.0
+        same_list[1] = 1.0
+
+        second = app.get_duplicate_pids(index)
+
+        assert first == {pid1, pid2}
+        assert second == set()
+
 
 class TestGetMissingMetadataPids:
     """Test suite for get_missing_metadata_pids."""
