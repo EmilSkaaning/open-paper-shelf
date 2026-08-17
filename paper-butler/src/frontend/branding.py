@@ -1,6 +1,6 @@
 """Brand typography for the Streamlit frontend.
 
-Injects the "Forest Library" brand fonts (Source Serif 4 for headings,
+Injects the "Midnight Athenaeum" brand fonts (Source Serif 4 for headings,
 Inter for body/UI text) via a CSS override, since Streamlit's built-in
 `font` theme key only accepts "sans serif" / "serif" / "monospace" on the
 Streamlit version this app targets - see docs/BRANDING.md.

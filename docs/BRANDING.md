@@ -19,11 +19,11 @@ purple-leaning midnight base with a sparing gold accent.
 
 | Token | Hex | Use |
 |---|---|---|
-| Background | `#14101F` | app background |
-| Secondary background | `#1F1830` | sidebar, cards, containers |
+| Background | `#0D0B13` | app background |
+| Secondary background | `#191420` | sidebar, cards, containers |
 | Primary accent | `#8B7FD6` | buttons, links, active states |
-| Text | `#EAE3F5` | body/heading text |
-| Muted text | `#A79BC4` | captions, timestamps, secondary UI |
+| Text | `#E8E4EF` | body/heading text |
+| Muted text | `#9C97AD` | captions, timestamps, secondary UI |
 | Accent 2 (sparingly) | `#D4AF37` | rare highlight only — never a primary button color |
 
 ### Light
