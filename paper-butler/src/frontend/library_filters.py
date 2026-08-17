@@ -50,7 +50,7 @@ def get_duplicate_pids(index: LibraryIndex) -> set[str]:
         threshold.
     """
     signature = frozenset(
-        (pid, id(entry.embedding))
+        (pid, tuple(entry.embedding))
         for pid, entry in index.papers.items()
         if entry.embedding
     )
