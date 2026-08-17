@@ -105,7 +105,7 @@ from frontend.metadata_generation import (  # noqa: E402,F401
 
 logger = logging.getLogger(__name__)
 
-_LOGO_PATH = Path(__file__).resolve().parent / "assets" / "logo.png"
+_LOGO_PATH = Path(__file__).resolve().parent / "assets" / "paper-butler-logo.svg"
 
 st.set_page_config(
     layout="wide",
@@ -212,7 +212,9 @@ def main() -> None:
     _, header_col, _ = st.columns([1, 2, 1])
     with header_col:
         if _LOGO_PATH.exists():
-            st.image(str(_LOGO_PATH), width="stretch")
+            logo_col, _, _ = st.columns(3)
+            with logo_col:
+                st.image(str(_LOGO_PATH), width="stretch")
         st.markdown(
             "<h1 style='text-align: center;'>Paper Butler</h1>",
             unsafe_allow_html=True,
