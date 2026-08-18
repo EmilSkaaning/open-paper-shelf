@@ -1,4 +1,8 @@
-# Paper Butler
+<p align="center">
+  <img src="paper-butler/src/frontend/assets/paper-butler-logo.svg" alt="Paper Butler logo" width="120">
+</p>
+
+<h1 align="center">Paper Butler</h1>
 
 **Your research paper library, backed by your own Google Drive.**
 
