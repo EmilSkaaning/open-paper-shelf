@@ -1,3 +1,4 @@
+import base64
 import html
 import json
 import logging
@@ -94,6 +95,7 @@ from backend.huggingface_client import (  # noqa: E402,F401
     is_hf_token_configured,
 )
 from backend.host_check import get_non_loopback_host_warning  # noqa: E402
+from frontend.branding import apply_branding  # noqa: E402
 from frontend.constants import (  # noqa: E402,F401
     BULK_GENERATE_DELAY_SECONDS as BULK_GENERATE_DELAY_SECONDS,
 )
@@ -104,11 +106,31 @@ from frontend.metadata_generation import (  # noqa: E402,F401
 
 logger = logging.getLogger(__name__)
 
+_LOGO_PATH = Path(__file__).resolve().parent / "assets" / "paper-butler-logo.svg"
+
+
+@st.cache_data
+def _load_logo_base64(path: Path) -> str:
+    """Reads and base64-encodes the logo SVG, cached across reruns.
+
+    Args:
+        path: Filesystem path to the logo SVG.
+
+    Returns:
+        The base64-encoded SVG content as an ASCII string.
+    """
+    return base64.b64encode(path.read_bytes()).decode("ascii")
+
+
 st.set_page_config(
     layout="wide",
     page_title="Paper Butler",
+    page_icon=str(_LOGO_PATH) if _LOGO_PATH.exists() else "📚",
     initial_sidebar_state="expanded",
 )
+apply_branding()
+if _LOGO_PATH.exists():
+    st.logo(str(_LOGO_PATH))
 
 # Session-state keys backing the icon bar's mutually exclusive staged
 # actions - only one of delete/generate/add-tag/remove-tag can be staged at
@@ -171,6 +193,34 @@ def _toggle_select_all(filtered_pids: list[str]) -> None:
             st.session_state[f"chk_{pid}"] = True
 
 
+def _reset_selected_paper() -> None:
+    """Clears the selected paper, returning the app to the library view."""
+    st.session_state.selected_paper = None
+    _clear_bulk_actions()
+
+
+def _render_logo_reset_button() -> None:
+    """Overlays an invisible button on the top-left logo to reset paper view.
+
+    `st.logo` has no click callback, so a transparent Streamlit button is
+    positioned on top of it via CSS, letting a click on the logo reset the
+    selected paper without a full page reload (which would drop session
+    state like the active library).
+    """
+    st.markdown(
+        "<style>"
+        ".st-key-reset_logo_btn { position: fixed; top: 0; left: 0; "
+        "width: 14rem; height: 3.5rem; z-index: 999999; }"
+        ".st-key-reset_logo_btn button { width: 100%; height: 100%; "
+        "opacity: 0; cursor: pointer; }"
+        "</style>",
+        unsafe_allow_html=True,
+    )
+    if st.button("Reset selected paper", key="reset_logo_btn"):
+        _reset_selected_paper()
+        st.rerun()
+
+
 def _uncheck_mark_all_if_unmarked(pid: str) -> None:
     """Clears the "Mark all" toggle when a paper's own checkbox is unmarked.
 
@@ -202,7 +252,27 @@ def main() -> None:
     if not creds:
         return
 
-    st.title("📚 Paper Butler")
+    if st.session_state.get("selected_paper"):
+        _render_logo_reset_button()
+
+    if not st.session_state.get("selected_paper"):
+        _, header_col, _ = st.columns([1, 2, 1])
+        with header_col:
+            logo_html = ""
+            if _LOGO_PATH.exists():
+                logo_b64 = _load_logo_base64(_LOGO_PATH)
+                logo_html = (
+                    f"<img src='data:image/svg+xml;base64,{logo_b64}' "
+                    "width='200' style='display: block;' />"
+                )
+            st.markdown(
+                "<div style='display: flex; justify-content: center; "
+                "align-items: center; gap: 0.5rem; margin-bottom: 1rem;'>"
+                f"{logo_html}"
+                "<h1 style='margin: 0;'>Paper Butler</h1>"
+                "</div>",
+                unsafe_allow_html=True,
+            )
 
     host_warning = get_non_loopback_host_warning()
     if host_warning is not None:
