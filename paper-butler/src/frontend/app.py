@@ -1,3 +1,4 @@
+import base64
 import html
 import json
 import logging
@@ -243,16 +244,19 @@ def main() -> None:
     if not st.session_state.get("selected_paper"):
         _, header_col, _ = st.columns([1, 2, 1])
         with header_col:
+            logo_html = ""
             if _LOGO_PATH.exists():
-                st.markdown(
-                    "<style>.st-key-header_logo { display: flex; "
-                    "width: 100%; justify-content: center; }</style>",
-                    unsafe_allow_html=True,
+                logo_b64 = base64.b64encode(_LOGO_PATH.read_bytes()).decode("ascii")
+                logo_html = (
+                    f"<img src='data:image/svg+xml;base64,{logo_b64}' "
+                    "width='200' style='display: block;' />"
                 )
-                with st.container(key="header_logo"):
-                    st.image(str(_LOGO_PATH), width=200)
             st.markdown(
-                "<h1 style='text-align: center;'>Paper Butler</h1>",
+                "<div style='display: flex; justify-content: center; "
+                "align-items: center; gap: 0.5rem; margin-bottom: 1rem;'>"
+                f"{logo_html}"
+                "<h1 style='margin: 0;'>Paper Butler</h1>"
+                "</div>",
                 unsafe_allow_html=True,
             )
 

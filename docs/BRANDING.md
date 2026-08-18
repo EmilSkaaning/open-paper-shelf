@@ -59,70 +59,76 @@ Loaded via the Google Fonts CSS injection in `frontend/branding.py`'s
 
 ## Logo / Icon
 
-**Status: WIP, not final.** The original open-book mark at
-`frontend/assets/logo.png` (wired into `st.set_page_config(page_icon=...)`
-and `st.logo(...)` in `app.py` as a placeholder) is being replaced now
-that the palette moved to Midnight Athenaeum. Two candidate concepts are
-shortlisted, both drawn as a flat single-color silhouette on a transparent
-background so they scale from a full logo lockup down to a 16px favicon:
+**Status: Final.** The mark is the **Open Book & Butler's Bow Tie**
+concept — a large `#8B7FD6` violet bow tie with a gold `#D4AF37` knot
+floating above a `#8B7FD6` violet open-book outline, on a solid
+rounded-square `#191420` background plate (matching the dark-theme
+secondary background) so contrast stays consistent whether the
+surrounding UI is in light or dark mode. Shipped as
+`frontend/assets/paper-butler-logo.svg`, wired into
+`st.set_page_config(page_icon=...)` and `st.logo(...)` in `app.py`.
 
-- **Bow-Tie Spine** — a bow tie built from two page-corner triangles
-  around a small gold knot. Simplest shape of the shortlist; holds up
-  best at favicon size.
-- **Quill & Ink** — a feather silhouette with a gold ink drop at the nib.
+The **Bow-Tie Spine** concept below was the other shortlisted candidate
+and remains documented for reference in case the mark needs to be
+revisited.
 
 Generation prompts for [nanobanana](https://ai.google.dev) (Gemini), three
-distinct composition takes per concept — swap `#8B7FD6` for the final
-chosen accent hex if it changes:
+distinct composition takes per concept — swap `#8B7FD6` / `#D4AF37` for
+final chosen accent hexes if they change, and swap `#191420` if the
+plate color changes:
 
 ### Bow-Tie Spine prompts
 
-> **1 — flat geometric (front-on):** Flat vector icon of a minimalist bow
-> tie viewed straight-on, both wings sharp triangular page corners, small
-> rounded square knot at center, single color `#8B7FD6` violet silhouette
-> on transparent background, hard geometric edges, no gradients, app icon
-> style.
+> **1 — flat geometric (front-on):** Flat vector app icon on a solid
+> rounded-square `#191420` background plate: a minimalist bow tie viewed
+> straight-on, both wings sharp triangular page corners, small rounded
+> square knot at center, single color `#8B7FD6` violet silhouette, hard
+> geometric edges, no gradients, no transparency.
 
-> **2 — 3D-ish folded ribbon:** Vector app icon of a bow tie rendered as a
-> folded ribbon of paper, subtle darker violet shading on the inner fold
-> creases to suggest depth, gold `#D4AF37` knot wrapped around the
-> center, otherwise a single `#8B7FD6` violet form, transparent
-> background, slight dimensionality but still flat/print-style, no
-> photorealism.
+> **2 — 3D-ish folded ribbon:** Vector app icon on a solid rounded-square
+> `#191420` background plate: a bow tie rendered as a folded ribbon of
+> paper, subtle darker violet shading on the inner fold creases to
+> suggest depth, gold `#D4AF37` knot wrapped around the center, otherwise
+> a single `#8B7FD6` violet form, slight dimensionality but still
+> flat/print-style, no photorealism.
 
 > **3 — open book viewed from above, bow-tie silhouette:** Flat vector
-> icon of an open book viewed directly from above, its two page-spreads
-> fanned outward and pinched at the spine so the overall silhouette reads
-> as a bow tie, small gold `#D4AF37` rectangle marking the spine/knot,
-> single `#8B7FD6` violet silhouette, transparent background, clean
-> minimal curves, app icon style.
+> app icon on a solid rounded-square `#191420` background plate: an open
+> book viewed directly from above, its two page-spreads fanned outward
+> and pinched at the spine so the overall silhouette reads as a bow tie,
+> small gold `#D4AF37` rectangle marking the spine/knot, single `#8B7FD6`
+> violet silhouette, clean minimal curves.
 
-### Quill & Ink prompts
+### Open Book & Butler's Bow Tie prompts
 
-> **1 — classic feather, ink drop:** Flat vector icon of a single quill
-> feather, long sweeping curved silhouette from tip to nib, faint barb
-> lines along the spine, small round ink drop in `#D4AF37` gold at the
-> nib tip, rest of the icon a single `#8B7FD6` violet silhouette,
-> transparent background, clean minimal linework, app icon style.
+> **1 — book with bow tie floating above (chosen direction):** Flat
+> vector app icon on a solid rounded-square `#191420` background plate:
+> an open book viewed from the front, pages fanned in a gentle curve,
+> rendered as a clean `#8B7FD6` violet outline; above the book, not
+> touching the spine, place a large bow tie in solid `#8B7FD6` violet —
+> sized roughly as wide as the book itself, clearly the dominant shape of
+> the icon — with a small gold `#D4AF37` square knot at its center, as if
+> the book is greeting the reader wearing a butler's bow tie. No
+> gradients, hard geometric edges.
 
-> **2 — quill nib as monogram:** Flat vector icon of a calligraphy quill
-> nib split into two pointed tines forming a narrow "V", the gap between
-> the tines filled with a small gold `#D4AF37` ink droplet, feather shaft
-> rendered as a short single `#8B7FD6` violet stroke above it, transparent
-> background, bold graphic mark rather than a full feather, app icon
-> style, reads clearly at 16px.
+> **2 — bow tie as bookmark ribbon:** Flat vector app icon on a solid
+> rounded-square `#191420` background plate: a minimal open-book
+> silhouette in `#8B7FD6` violet outline, with a bow tie shape (instead
+> of a ribbon bookmark) draped over the top edge of the spine, bow tie
+> rendered solid `#8B7FD6` violet with a small gold `#D4AF37` center
+> knot, clean flat linework, reads clearly at 16px.
 
-> **3 — quill writing across an open page:** Flat vector icon of a quill
-> laid diagonally across a small open book, feather silhouette in
-> `#8B7FD6` violet, book rendered only as two thin curved page-edge lines
-> beneath it in the same violet, a single gold `#D4AF37` dot where the
-> nib meets the page, transparent background, minimal flat composition,
-> app icon style.
+> **3 — bow tie as the book's spine band:** Flat vector app icon on a
+> solid rounded-square `#191420` background plate: an open book viewed
+> from above, pages fanned outward in `#8B7FD6` violet outline, with a
+> compact bow tie sitting directly on the spine like a wrapped band,
+> solid `#8B7FD6` violet with a single gold `#D4AF37` dot at its knot,
+> minimal flat composition, app icon style.
 
-Once a final asset is chosen, it should ship as:
-
-- A square icon (works as favicon and Streamlit `st.logo(icon_image=...)`)
-- A wordmark lockup (icon + "Paper Butler", for `st.logo(image=...)`)
+Prompt 1 under **Open Book & Butler's Bow Tie** is the one that produced
+the shipped asset. A dedicated wordmark lockup (icon + "Paper Butler",
+for `st.logo(image=...)`'s separate wordmark slot) has not been generated
+yet — currently the icon alone is passed to `st.logo(...)`.
 
 ## Do / Don't
 
