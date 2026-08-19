@@ -76,6 +76,24 @@ suite. See [AGENTS.md](AGENTS.md) for this repo's full commit workflow and
 coding standards, and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for backend
 internals, AI model defaults, and dev tooling (code-review-graph, pre-commit).
 
+### Changelog generation (git-cliff)
+
+This repo uses [git-cliff](https://git-cliff.org) to generate `CHANGELOG.md`
+from conventional commits (`cliff.toml` at the repo root defines the mapping;
+see [AGENTS.md §8](AGENTS.md) for this repo's commit types). It's a standalone
+Rust binary, not a Python package, so it isn't installed via `uv`:
+
+```bash
+brew install git-cliff       # macOS
+# or: cargo install git-cliff
+```
+
+Generate the changelog locally with:
+
+```bash
+git-cliff --config cliff.toml --unreleased
+```
+
 ## License
 
 This project is licensed under the [GNU Affero General Public License v3.0](LICENSE).
