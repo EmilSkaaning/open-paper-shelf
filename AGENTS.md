@@ -286,23 +286,14 @@ label(s) before work starts on it.
 
 Releases are cut via the `Release` GitHub Actions workflow
 (`.github/workflows/release.yml`), which bumps the version in `pyproject.toml`, generates the
-changelog with `git-cliff`, commits and tags on a `release/vX.Y.Z` branch, publishes the GitHub
-Release from that tag, then opens a PR (`release/vX.Y.Z` → `main`) with auto-merge enabled so the
-version-bump commit lands on `main` once the branch's required status checks pass.
-
-`main` is protected by a ruleset requiring 8 status checks with no bypass for the workflow's
-`GITHUB_TOKEN` — a direct push from the release job is always rejected. Routing the bump commit
-through a normal PR (rather than pushing straight to `main`) is what satisfies that ruleset.
+changelog with `git-cliff`, commits, tags, and publishes a GitHub Release.
 
 * **Via the UI**: Actions tab → `Release` workflow → `Run workflow` → pick a `bump` level
   (`patch` / `minor` / `major`).
 * **Via the CLI**: `gh workflow run release.yml -f bump=<level>`.
 * Pass `dry_run: true` (UI) or `-f dry_run=true` (CLI) to generate the changelog as a
-  downloadable artifact without committing, tagging, branching, or publishing — use this to
-  preview a release before cutting it for real.
-* The release PR merges automatically once its required checks pass; if a check fails, fix it on
-  the `release/vX.Y.Z` branch (or merge manually) — the GitHub Release and tag are already
-  published at that point regardless of the PR's status.
+  downloadable artifact without committing, tagging, or publishing — use this to preview a
+  release before cutting it for real.
 
 ### Versioning policy
 
