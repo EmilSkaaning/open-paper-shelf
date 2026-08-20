@@ -66,6 +66,14 @@ def validate_subject(subject: str) -> str | None:
 
 
 def _lint_message_file(path: str) -> int:
+    """Validate the subject line of a commit-msg hook file.
+
+    Args:
+        path: Path to the commit message file passed by the commit-msg hook.
+
+    Returns:
+        Process exit code: 0 if the subject is valid or skippable, 1 otherwise.
+    """
     with open(path, encoding="utf-8") as handle:
         lines = handle.readlines()
 
@@ -90,6 +98,14 @@ def _lint_message_file(path: str) -> int:
 
 
 def _lint_range(commit_range: str) -> int:
+    """Validate every non-merge commit subject within a git commit range.
+
+    Args:
+        commit_range: A git revision range, e.g. ``origin/main..HEAD``.
+
+    Returns:
+        Process exit code: 0 if all subjects are valid or skippable, 1 otherwise.
+    """
     try:
         result = subprocess.run(
             ["git", "log", "--format=%s", "--no-merges", commit_range],
