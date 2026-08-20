@@ -90,12 +90,19 @@ def _lint_message_file(path: str) -> int:
 
 
 def _lint_range(commit_range: str) -> int:
-    result = subprocess.run(
-        ["git", "log", "--format=%s", "--no-merges", commit_range],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
+    try:
+        result = subprocess.run(
+            ["git", "log", "--format=%s", "--no-merges", commit_range],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except subprocess.CalledProcessError as exc:
+        print(
+            f"error: invalid commit range '{commit_range}': {exc.stderr.strip()}",
+            file=sys.stderr,
+        )
+        return 1
     subjects = [line for line in result.stdout.splitlines() if line]
 
     exit_code = 0
