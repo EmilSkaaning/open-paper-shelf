@@ -22,7 +22,7 @@ jobs:
       run: uv sync --frozen
 
     - name: Lint new commit messages against cliff.toml types
-      run: uv run python scripts/lint_commit_msg.py --range origin/${{ github.base_ref }}...HEAD
+      run: uv run python scripts/lint_commit_msg.py --range origin/${{ github.base_ref }}..HEAD
 
   quality:
     runs-on: ubuntu-latest

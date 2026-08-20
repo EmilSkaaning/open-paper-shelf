@@ -2,7 +2,7 @@
 
 Usage:
     uv run python scripts/lint_commit_msg.py <commit-msg-file>
-    uv run python scripts/lint_commit_msg.py --range origin/main...HEAD
+    uv run python scripts/lint_commit_msg.py --range origin/main..HEAD
 """
 
 from __future__ import annotations
@@ -121,7 +121,7 @@ def main() -> int:
         "message_file", nargs="?", help="Path to a commit-msg hook file"
     )
     parser.add_argument(
-        "--range", dest="commit_range", help="Git commit range, e.g. origin/main...HEAD"
+        "--range", dest="commit_range", help="Git commit range, e.g. origin/main..HEAD"
     )
     args = parser.parse_args()
 
