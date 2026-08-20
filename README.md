@@ -65,34 +65,10 @@ Running into a certificate error on a corporate network? See the
 
 ## Develop On It
 
-Local dev setup, coding conventions, testing, and the pull request process now live in
-[CONTRIBUTING.md](CONTRIBUTING.md). See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for
-backend internals, AI model defaults, and dev tooling (code-review-graph, pre-commit).
-
-### Cutting a release
-
-Releases are cut manually via the `Release` GitHub Actions workflow
-(`.github/workflows/release.yml`), triggered by `workflow_dispatch` — nothing
-is auto-released on merge. It bumps the `version` in `pyproject.toml`, runs
-git-cliff to update `CHANGELOG.md`, then (unless `dry_run` is set) commits,
-tags, pushes, and publishes a GitHub Release.
-
-From the GitHub UI: **Actions → Release → Run workflow**, choose a `bump`
-level (`patch`/`minor`/`major`) and whether to `dry_run`.
-
-From the CLI (requires `gh`, authenticated):
-
-```bash
-# dry run — generates CHANGELOG.md as a build artifact only
-gh workflow run release.yml -f bump=patch -f dry_run=true
-
-# real release — commits, tags, pushes, and publishes a GitHub Release
-gh workflow run release.yml -f bump=minor -f dry_run=false
-```
-
-`workflow_dispatch` workflows only become runnable once they exist on the
-default branch, so this workflow can only be triggered after it's merged to
-`main`.
+Local dev setup, coding conventions, testing, the pull request process, and how releases
+are cut now live in [CONTRIBUTING.md](CONTRIBUTING.md). See
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for backend internals, AI model defaults, and
+dev tooling (code-review-graph, pre-commit).
 
 ## License
 

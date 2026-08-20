@@ -104,3 +104,50 @@ conventions. In short:
 See [AGENTS.md §9](AGENTS.md#9-github-issue-format--labels) for this repo's issue body format
 (`## Background` / `## Proposed fix` / `## Why this matters`) and label taxonomy
 (`type:*`/`area:*`/`difficulty:*`).
+
+## Cutting a Release
+
+Releases are cut manually via the `Release` GitHub Actions workflow
+(`.github/workflows/release.yml`), triggered by `workflow_dispatch` — nothing is
+auto-released on merge. Given a `bump` level (`patch`/`minor`/`major`), it:
+
+1. Bumps the `version` field in `pyproject.toml`.
+2. Runs [git-cliff](https://git-cliff.org) (`cliff.toml`) to prepend a new section to
+   `CHANGELOG.md` from conventional commits since the last tag, and separately renders
+   just that section as GitHub release notes.
+3. Unless `dry_run` is set, commits the version bump and changelog, tags the commit
+   (`v{version}`), pushes, and publishes a GitHub Release with the generated notes.
+
+With `dry_run: true`, steps 1–2 still run so you can inspect the output, but nothing is
+committed, tagged, pushed, or published — the generated `CHANGELOG.md` is uploaded as a
+build artifact instead (download it from the run's **Artifacts** section).
+
+From the GitHub UI: **Actions → Release → Run workflow**, choose `bump` and whether to
+`dry_run`. From the CLI (requires `gh`, authenticated):
+
+```bash
+# dry run — generates CHANGELOG.md as a build artifact only
+gh workflow run release.yml -f bump=patch -f dry_run=true
+
+# real release — commits, tags, pushes, and publishes a GitHub Release
+gh workflow run release.yml -f bump=minor -f dry_run=false
+```
+
+`workflow_dispatch` workflows only become runnable once they exist on the default branch,
+so this workflow can only be triggered after it's merged to `main`.
+
+## Claude Code Skills
+
+This repo ships two [Claude Code](https://claude.com/claude-code) skills under
+`.claude/skills/` that automate parts of this contribution workflow:
+
+- **`solve-issue`** — given an issue number or URL, fetches the issue, classifies its
+  change shape from labels/body, implements it (via the matching `ecc:orch-*`
+  orchestration skill for code changes, or directly for docs/trivial chores), opens a
+  draft PR with `Closes #{n}`, and comments back on the issue linking to the PR.
+- **`jules-feedback`** — triages Jules' (the automated PR-review bot) latest review
+  comment on a PR into fixed code, technical pushback where Jules is wrong, and tracked
+  GitHub issues for anything out of scope.
+
+Both are optional tooling for contributors using Claude Code — they encode this file's
+branch-naming, commit, and PR conventions so you don't have to apply them by hand.
