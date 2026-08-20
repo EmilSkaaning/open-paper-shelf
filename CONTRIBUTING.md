@@ -5,6 +5,17 @@ conventions, and the pull request process. For the full house style (coding stan
 testing requirements, commit rules, ECC agent orchestration), see [AGENTS.md](AGENTS.md) —
 this file is a shorter, contributor-facing entry point into it.
 
+## Table of Contents
+
+- [Local Development Setup](#local-development-setup)
+- [Coding Conventions](#coding-conventions)
+- [Testing Requirements](#testing-requirements)
+- [Pull Request Process](#pull-request-process)
+- [Filing Issues](#filing-issues)
+- [Cutting a Release](#cutting-a-release)
+- [Claude Code Skills](#claude-code-skills)
+- [Recommended Claude Code Plugins](#recommended-claude-code-plugins)
+
 ## Local Development Setup
 
 1. Install dependencies:
@@ -151,3 +162,19 @@ This repo ships two [Claude Code](https://claude.com/claude-code) skills under
 
 Both are optional tooling for contributors using Claude Code — they encode this file's
 branch-naming, commit, and PR conventions so you don't have to apply them by hand.
+
+## Recommended Claude Code Plugins
+
+If you're contributing with [Claude Code](https://claude.com/claude-code), these two
+plugin marketplaces cover most of the workflow described above and are what AGENTS.md's
+agent/skill references (`ecc:*`, `superpowers:*`) resolve to:
+
+- **[ECC](https://github.com/affaan-m/ECC)** — the agent/skill/rule set AGENTS.md is built
+  on (planner, tdd-guide, python-reviewer, security-reviewer, and the `ecc:orch-*`
+  orchestration skills used by `solve-issue`).
+- **[Superpowers](https://github.com/obra/superpowers)** — general-purpose process skills
+  (brainstorming, systematic debugging, TDD, writing plans, git worktrees) that ECC's
+  `orch-*` pipelines and this repo's own skills lean on.
+
+Install either via the Claude Code plugin marketplace UI, or see each repo's README for
+manual setup.
