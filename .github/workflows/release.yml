@@ -22,6 +22,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      pull-requests: write
     steps:
       - uses: actions/checkout@v4
         with:
@@ -99,7 +100,11 @@ jobs:
       - name: Open PR to land release commit on main
         if: ${{ !inputs.dry_run }}
         env:
-          GH_TOKEN: ${{ github.token }}
+          # The default GITHUB_TOKEN doesn't trigger workflow runs on PRs it
+          # opens, so required status checks on main never fire. RELEASE_PAT
+          # (a PAT or GitHub App token with contents+pull-requests write) must
+          # be added as a repo secret for auto-merge to actually complete.
+          GH_TOKEN: ${{ secrets.RELEASE_PAT || github.token }}
         run: |
           pr_url=$(gh pr create \
             --base main \
