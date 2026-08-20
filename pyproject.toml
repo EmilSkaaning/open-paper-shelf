@@ -77,4 +77,4 @@ project-includes = [
     "**/*.py*",
     "**/*.ipynb",
 ]
-search_path = ["paper-butler/src"]
+search_path = ["paper-butler/src", "scripts"]

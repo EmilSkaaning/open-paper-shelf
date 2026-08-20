@@ -58,6 +58,10 @@ Generate the changelog locally with:
 git-cliff --config cliff.toml --unreleased
 ```
 
+Commit messages are validated against `cliff.toml`'s types (`feat`, `fix`, `refactor`,
+`chore`, `docs`, `test`, `ci`, `perf`) by a local `commit-msg` hook and, on PRs, by CI —
+see [Pre-commit hooks](#pre-commit-hooks) below to install it.
+
 ### Pre-commit hooks
 
 ```bash
@@ -65,6 +69,7 @@ uvx prek install
 uvx prek run --all-files
 
 uvx pre-commit install
+uvx pre-commit install --hook-type commit-msg
 ```
 
 ## Coding Conventions
