@@ -12,7 +12,7 @@ on:
           - minor
           - major
       dry_run:
-        description: "Generate the changelog and stop, without committing/tagging/publishing"
+        description: "Dry-run: Generate the changelog and stop, without committing/tagging/publishing"
         required: false
         type: boolean
         default: false
@@ -55,7 +55,7 @@ jobs:
         id: cliff-full
         with:
           config: cliff.toml
-          args: --tag ${{ steps.bump.outputs.tag }} --unreleased --prepend CHANGELOG.md
+          args: --tag ${{ steps.bump.outputs.tag }} --output CHANGELOG.md
 
       - name: Extract release notes for this version
         uses: orhun/git-cliff-action@v4.8.0
