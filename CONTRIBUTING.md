@@ -47,6 +47,15 @@ Generate the changelog locally with:
 git-cliff --config cliff.toml --unreleased
 ```
 
+### Pre-commit hooks
+
+```bash
+uvx prek install
+uvx prek run --all-files
+
+uvx pre-commit install
+```
+
 ## Coding Conventions
 
 All coding style, file organization, type hint/docstring, and input validation rules live in
