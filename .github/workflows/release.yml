@@ -54,8 +54,6 @@ jobs:
         with:
           config: cliff.toml
           args: --tag ${{ steps.bump.outputs.tag }} --unreleased --prepend CHANGELOG.md
-        env:
-          OUTPUT: CHANGELOG.md
 
       - name: Extract release notes for this version
         uses: orhun/git-cliff-action@v4.8.0
