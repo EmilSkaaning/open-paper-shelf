@@ -1,6 +1,6 @@
 # Agent Developer Guidelines
 
-This document governs how work is done in the `open-paper-shelf` repository — coding style,
+This document governs how work is done in the `paper-butler` repository — coding style,
 testing, and how function/class documentation and Git commits are carried out. Sections 1–4 and
 7–8 are adapted from [ECC](https://github.com/affaan-m/ECC)'s `AGENTS.md`/`CLAUDE.md`, pruned to
 this repo's actual stack (a single Python project: FastAPI backend, Streamlit frontend,
