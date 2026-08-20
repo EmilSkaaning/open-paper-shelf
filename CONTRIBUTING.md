@@ -1,0 +1,97 @@
+# Contributing to Paper Butler
+
+Thanks for your interest in contributing! This document covers local setup, coding
+conventions, and the pull request process. For the full house style (coding standards,
+testing requirements, commit rules, ECC agent orchestration), see [AGENTS.md](AGENTS.md) —
+this file is a shorter, contributor-facing entry point into it.
+
+## Local Development Setup
+
+1. Install dependencies:
+   ```bash
+   uv sync                # installs dependencies, including dev tools
+   # or: pip install -e .
+   ```
+2. Run the backend (serves PDFs to the UI):
+   ```bash
+   uv run poe fastapi
+   ```
+3. In a separate terminal, run the frontend:
+   ```bash
+   uv run poe streamlit
+   ```
+4. Open the Streamlit URL it prints (typically `http://localhost:8501`) and click
+   "Login with Google" to connect your own Google Drive.
+
+Optional: to enable AI metadata generation locally, set an `HF_TOKEN` — see the
+[README](README.md#optional-ai-metadata-generation) for how to create one.
+
+Running into a certificate error on a corporate network? See the
+[troubleshooting note in the architecture doc](docs/ARCHITECTURE.md#troubleshooting-corporate-network--vpn-tls-interception).
+
+### Changelog generation (git-cliff)
+
+This repo uses [git-cliff](https://git-cliff.org) to generate `CHANGELOG.md` from
+conventional commits (`cliff.toml` at the repo root defines the mapping; see
+[AGENTS.md §8](AGENTS.md) for this repo's commit types). It's a standalone Rust binary,
+not a Python package, so it isn't installed via `uv`:
+
+```bash
+brew install git-cliff       # macOS
+# or: cargo install git-cliff
+```
+
+Generate the changelog locally with:
+
+```bash
+git-cliff --config cliff.toml --unreleased
+```
+
+## Coding Conventions
+
+All coding style, file organization, type hint/docstring, and input validation rules live in
+[AGENTS.md §3](AGENTS.md#3-coding-style) — read it before opening a PR. Highlights:
+
+- Prefer immutable data (`frozen=True` Pydantic models/dataclasses where practical).
+- Many small, focused files (~200–400 lines typical, 800 max) over few large ones.
+- Full type hints on new/modified functions; Google-style docstrings.
+- Validate all external input at API boundaries via Pydantic models.
+
+## Testing Requirements
+
+See [AGENTS.md §4](AGENTS.md#4-testing-requirements) for the full TDD workflow and pytest
+conventions. In short:
+
+- **Minimum 80% coverage** for new and existing backend functions.
+- Write the test first (RED), implement to pass it (GREEN), then refactor.
+- Verify before committing:
+  ```bash
+  uv run poe test        # full suite
+  uv run poe check       # ruff format/lint, pyrefly, vulture, skylos
+  ```
+
+## Pull Request Process
+
+1. **Branch naming**: `{type}/{issue-number}-{short-slug}`, e.g. `fix/73-oversized-upload` or
+   `docs/137-contributing-guide`. Branch off an up-to-date `main`:
+   ```bash
+   git fetch origin main
+   git checkout -b {type}/{n}-{slug} origin/main
+   ```
+2. **Commit messages**: `<type>: <short description>`, imperative mood, lowercase, under 50
+   characters in the subject. Types: `feat`, `fix`, `refactor`, `chore`, `docs`, `test`, `ci`,
+   `perf`. See [AGENTS.md §8](AGENTS.md#8-commit-message-rules--examples) for the full rules and
+   examples of good vs. bad messages.
+3. **Quality gates**: run `uv run poe check` (ruff format/lint, pyrefly, vulture, skylos) and
+   `uv run poe test` before opening a PR. Broken checks block review.
+4. **Open the PR**: reference the issue with `Closes #{n}` in the PR body (not a plain `#{n}`
+   mention) so the issue auto-closes on merge. Include a test plan listing the checks you ran.
+5. **Review expectations**: PRs are reviewed for correctness, adherence to AGENTS.md
+   conventions, and test coverage. Address CRITICAL/HIGH review feedback before merge;
+   MEDIUM/LOW items are at the reviewer's discretion.
+
+## Filing Issues
+
+See [AGENTS.md §9](AGENTS.md#9-github-issue-format--labels) for this repo's issue body format
+(`## Background` / `## Proposed fix` / `## Why this matters`) and label taxonomy
+(`type:*`/`area:*`/`difficulty:*`).

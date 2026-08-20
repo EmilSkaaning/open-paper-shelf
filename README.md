@@ -65,34 +65,9 @@ Running into a certificate error on a corporate network? See the
 
 ## Develop On It
 
-```bash
-uv sync                # install dependencies (incl. dev tools)
-uv run poe test        # run the full test suite
-uv run poe check       # ruff format/lint, pyrefly, vulture, skylos
-```
-
-`test-backend` and `test-frontend` run scoped, coverage-tracked subsets of the
-suite. See [AGENTS.md](AGENTS.md) for this repo's full commit workflow and
-coding standards, and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for backend
-internals, AI model defaults, and dev tooling (code-review-graph, pre-commit).
-
-### Changelog generation (git-cliff)
-
-This repo uses [git-cliff](https://git-cliff.org) to generate `CHANGELOG.md`
-from conventional commits (`cliff.toml` at the repo root defines the mapping;
-see [AGENTS.md §8](AGENTS.md) for this repo's commit types). It's a standalone
-Rust binary, not a Python package, so it isn't installed via `uv`:
-
-```bash
-brew install git-cliff       # macOS
-# or: cargo install git-cliff
-```
-
-Generate the changelog locally with:
-
-```bash
-git-cliff --config cliff.toml --unreleased
-```
+Local dev setup, coding conventions, testing, and the pull request process now live in
+[CONTRIBUTING.md](CONTRIBUTING.md). See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for
+backend internals, AI model defaults, and dev tooling (code-review-graph, pre-commit).
 
 ### Cutting a release
 
