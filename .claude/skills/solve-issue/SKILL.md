@@ -56,7 +56,7 @@ the skill leaves an explicit comment on the issue itself linking to the PR.
 6. **Push and open the PR**:
    ```bash
    git push -u origin {branch}
-   gh pr create --title "{type}: {short description}" --body "$(cat <<'EOF'
+   gh pr create --draft --title "{type}: {short description}" --body "$(cat <<'EOF'
    ## Summary
    Closes #{n}.
 
@@ -67,6 +67,9 @@ the skill leaves an explicit comment on the issue itself linking to the PR.
    EOF
    )"
    ```
+   Always open as a **draft** PR (`--draft`) — this repo runs Jules' automated review on
+   ready-for-review PRs, and Jules calls are costly, so draft status prevents an unwanted review
+   run until the PR is deliberately marked ready.
    `Closes #{n}` is required (not a plain `#{n}` mention) — matches this repo's existing convention
    (e.g. PR #16, #20) and lets the issue auto-close on merge.
 
