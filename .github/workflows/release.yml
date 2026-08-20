@@ -47,6 +47,7 @@ jobs:
           sed -i "0,/^version = \".*\"/s//version = \"${new_version}\"/" pyproject.toml
           echo "version=${new_version}" >> "$GITHUB_OUTPUT"
           echo "tag=v${new_version}" >> "$GITHUB_OUTPUT"
+          echo "branch=release/v${new_version}" >> "$GITHUB_OUTPUT"
 
       - name: Generate changelog
         uses: orhun/git-cliff-action@v4.8.0
@@ -76,13 +77,15 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -b "${{ steps.bump.outputs.branch }}"
           git add pyproject.toml CHANGELOG.md
           git commit -m "chore: release ${{ steps.bump.outputs.tag }}"
           git tag "${{ steps.bump.outputs.tag }}"
 
-      - name: Push commit and tag
+      - name: Push branch and tag
         if: ${{ !inputs.dry_run }}
-        run: git push origin HEAD "${{ steps.bump.outputs.tag }}"
+        run: |
+          git push origin "${{ steps.bump.outputs.branch }}" "${{ steps.bump.outputs.tag }}"
 
       - name: Publish GitHub Release
         if: ${{ !inputs.dry_run }}
@@ -92,3 +95,15 @@ jobs:
           gh release create "${{ steps.bump.outputs.tag }}" \
             --title "${{ steps.bump.outputs.tag }}" \
             --notes-file release-notes.md
+
+      - name: Open PR to land release commit on main
+        if: ${{ !inputs.dry_run }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          pr_url=$(gh pr create \
+            --base main \
+            --head "${{ steps.bump.outputs.branch }}" \
+            --title "chore: release ${{ steps.bump.outputs.tag }}" \
+            --body "Automated version bump and changelog for ${{ steps.bump.outputs.tag }}. See the [release](https://github.com/${{ github.repository }}/releases/tag/${{ steps.bump.outputs.tag }}).")
+          gh pr merge "$pr_url" --merge --auto
