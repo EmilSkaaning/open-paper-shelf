@@ -279,3 +279,24 @@ new issue:
 
 An issue missing any of the three label categories should be edited to add the missing
 label(s) before work starts on it.
+
+## 10. Release Process
+
+### Cutting a release
+
+Releases are cut via the `Release` GitHub Actions workflow
+(`.github/workflows/release.yml`), which bumps the version in `pyproject.toml`, generates the
+changelog with `git-cliff`, commits, tags, and publishes a GitHub Release.
+
+* **Via the UI**: Actions tab → `Release` workflow → `Run workflow` → pick a `bump` level
+  (`patch` / `minor` / `major`).
+* **Via the CLI**: `gh workflow run release.yml -f bump=<level>`.
+* Pass `dry_run: true` (UI) or `-f dry_run=true` (CLI) to generate the changelog as a
+  downloadable artifact without committing, tagging, or publishing — use this to preview a
+  release before cutting it for real.
+
+### Versioning policy
+
+This project stays within the `0.x` SemVer range (`0.MINOR.PATCH`) — `minor` bumps for
+new features, `patch` bumps for fixes, until the RAG/chat epic ships. `v1.0.0` is reserved for
+that milestone and should not be cut before then.
