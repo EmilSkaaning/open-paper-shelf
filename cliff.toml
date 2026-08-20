@@ -32,7 +32,7 @@ commit_parsers = [
     { message = "^docs", group = "Documentation" },
     { message = "^test", group = "Testing" },
     { message = "^ci", group = "Continuous Integration" },
-    { message = "^perf", group = "Performance" },
+    { message = "(?i)^perf", group = "Performance" },
 ]
 protect_breaking_commits = false
 filter_commits = false
