@@ -25,13 +25,13 @@ filter_unconventional = true
 split_commits = false
 commit_preprocessors = []
 commit_parsers = [
-    { message = "^feat", group = "Features" },
-    { message = "^fix", group = "Bug Fixes" },
-    { message = "^refactor", group = "Refactoring" },
-    { message = "^chore", group = "Miscellaneous Tasks" },
-    { message = "^docs", group = "Documentation" },
-    { message = "^test", group = "Testing" },
-    { message = "^ci", group = "Continuous Integration" },
+    { message = "(?i)^feat", group = "Features" },
+    { message = "(?i)^fix", group = "Bug Fixes" },
+    { message = "(?i)^refactor", group = "Refactoring" },
+    { message = "(?i)^chore", group = "Miscellaneous Tasks" },
+    { message = "(?i)^docs", group = "Documentation" },
+    { message = "(?i)^test", group = "Testing" },
+    { message = "(?i)^ci", group = "Continuous Integration" },
     { message = "(?i)^perf", group = "Performance" },
 ]
 protect_breaking_commits = false
