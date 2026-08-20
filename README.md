@@ -65,59 +65,10 @@ Running into a certificate error on a corporate network? See the
 
 ## Develop On It
 
-```bash
-uv sync                # install dependencies (incl. dev tools)
-uv run poe test        # run the full test suite
-uv run poe check       # ruff format/lint, pyrefly, vulture, skylos
-```
-
-`test-backend` and `test-frontend` run scoped, coverage-tracked subsets of the
-suite. See [AGENTS.md](AGENTS.md) for this repo's full commit workflow and
-coding standards, and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for backend
-internals, AI model defaults, and dev tooling (code-review-graph, pre-commit).
-
-### Changelog generation (git-cliff)
-
-This repo uses [git-cliff](https://git-cliff.org) to generate `CHANGELOG.md`
-from conventional commits (`cliff.toml` at the repo root defines the mapping;
-see [AGENTS.md §8](AGENTS.md) for this repo's commit types). It's a standalone
-Rust binary, not a Python package, so it isn't installed via `uv`:
-
-```bash
-brew install git-cliff       # macOS
-# or: cargo install git-cliff
-```
-
-Generate the changelog locally with:
-
-```bash
-git-cliff --config cliff.toml --unreleased
-```
-
-### Cutting a release
-
-Releases are cut manually via the `Release` GitHub Actions workflow
-(`.github/workflows/release.yml`), triggered by `workflow_dispatch` — nothing
-is auto-released on merge. It bumps the `version` in `pyproject.toml`, runs
-git-cliff to update `CHANGELOG.md`, then (unless `dry_run` is set) commits,
-tags, pushes, and publishes a GitHub Release.
-
-From the GitHub UI: **Actions → Release → Run workflow**, choose a `bump`
-level (`patch`/`minor`/`major`) and whether to `dry_run`.
-
-From the CLI (requires `gh`, authenticated):
-
-```bash
-# dry run — generates CHANGELOG.md as a build artifact only
-gh workflow run release.yml -f bump=patch -f dry_run=true
-
-# real release — commits, tags, pushes, and publishes a GitHub Release
-gh workflow run release.yml -f bump=minor -f dry_run=false
-```
-
-`workflow_dispatch` workflows only become runnable once they exist on the
-default branch, so this workflow can only be triggered after it's merged to
-`main`.
+Local dev setup, coding conventions, testing, the pull request process, and how releases
+are cut now live in [CONTRIBUTING.md](CONTRIBUTING.md). See
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for backend internals, AI model defaults, and
+dev tooling (code-review-graph, pre-commit).
 
 ## License
 
