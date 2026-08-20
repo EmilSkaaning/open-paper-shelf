@@ -17,7 +17,7 @@ MAX_SUBJECT_LENGTH = 50
 SKIP_PREFIXES = ("Merge ", "Revert ", "fixup!", "squash!")
 
 _SUBJECT_PATTERN = re.compile(
-    r"^(?P<type>[a-zA-Z]+)(?P<scope>\(.+\))?(?P<breaking>!)?: (?P<description>.+)$"
+    r"^(?P<type>[a-zA-Z]+)(?P<scope>\([^)]+\))?(?P<breaking>!)?: (?P<description>.+)$"
 )
 
 
@@ -67,7 +67,16 @@ def validate_subject(subject: str) -> str | None:
 
 def _lint_message_file(path: str) -> int:
     with open(path, encoding="utf-8") as handle:
-        subject = handle.readline().strip()
+        lines = handle.readlines()
+
+    subject = next(
+        (
+            stripped
+            for line in lines
+            if (stripped := line.strip()) and not stripped.startswith("#")
+        ),
+        "",
+    )
 
     if is_skippable(subject):
         return 0

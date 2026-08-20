@@ -7,7 +7,12 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from lint_commit_msg import COMMIT_TYPES, is_skippable, validate_subject
+from lint_commit_msg import (
+    COMMIT_TYPES,
+    _lint_message_file,
+    is_skippable,
+    validate_subject,
+)
 
 
 class TestValidateSubject:
@@ -89,6 +94,63 @@ class TestValidateSubject:
 
         # Act / Assert
         assert COMMIT_TYPES == expected
+
+    def test_scope_does_not_swallow_description_with_parens(self) -> None:
+        # Arrange
+        subject = "fix(scope): change do (x): y"
+
+        # Act
+        error = validate_subject(subject)
+
+        # Assert
+        assert error is None
+
+
+class TestLintMessageFile:
+    """Tests for _lint_message_file, which reads a git commit-msg hook file."""
+
+    def test_accepts_valid_subject_on_first_line(self, tmp_path: Path) -> None:
+        # Arrange
+        path = tmp_path / "COMMIT_EDITMSG"
+        path.write_text("feat: add pdf preview\n", encoding="utf-8")
+
+        # Act
+        exit_code = _lint_message_file(str(path))
+
+        # Assert
+        assert exit_code == 0
+
+    def test_skips_leading_blank_and_comment_lines(self, tmp_path: Path) -> None:
+        # Arrange
+        path = tmp_path / "COMMIT_EDITMSG"
+        path.write_text(
+            "\n# Please enter the commit message for your changes. Lines starting\n"
+            "# with '#' will be ignored, and an empty message aborts the commit.\n"
+            "feat: add pdf preview\n",
+            encoding="utf-8",
+        )
+
+        # Act
+        exit_code = _lint_message_file(str(path))
+
+        # Assert
+        assert exit_code == 0
+
+    def test_rejects_message_with_only_blank_and_comment_lines(
+        self, tmp_path: Path
+    ) -> None:
+        # Arrange
+        path = tmp_path / "COMMIT_EDITMSG"
+        path.write_text(
+            "\n# Please enter the commit message for your changes.\n",
+            encoding="utf-8",
+        )
+
+        # Act
+        exit_code = _lint_message_file(str(path))
+
+        # Assert
+        assert exit_code == 1
 
 
 class TestIsSkippable:
